@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(booksim2_project)
 
+find_package(Boost REQUIRED)
+
 file(GLOB_RECURSE BOOKSIM_SRCS CONFIGURE_DEPENDS src/*.cpp)
 add_library(booksim2 STATIC ${BOOKSIM_SRCS})
 target_include_directories(booksim2 
@@ -13,4 +15,5 @@ target_include_directories(booksim2
   PRIVATE src/routers
   PRIVATE src/networks
 )
+target_link_libraries(booksim2 PRIVATE Boost::headers)
 target_compile_options(booksim2 PRIVATE -Wall -O3)

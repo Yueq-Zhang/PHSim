@@ -27,6 +27,7 @@ The currently validated environment is Linux or WSL2 with:
 - CMake 3.22 or newer
 - GCC 11.4 or newer
 - A C++17-capable standard library
+- BLAS and Boost development headers (for Ubuntu: `libblas-dev libboost-dev`)
 
 Native Windows/MSVC builds are not currently part of the validated workflow.
 
