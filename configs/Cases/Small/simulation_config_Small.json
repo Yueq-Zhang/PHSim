@@ -1,0 +1,8 @@
+{
+    "compute_die_config_file_path": "../configs/Cases/Small/Small_2x128x128.json",
+    "DRAM_config_file_path": "../configs/Cases/Small/Small_4xGDDR6.ini",
+    "PIM_config_file_path": "../configs/Cases/Small/Small_pim_config.json",
+    "model_config_file_path": "../configs/model_config/Opt-7B.json",
+    "inference_config_file_path": "../configs/Cases/inference_config.json",
+    "request_file_path": "../tests/request-traces/clb/share-gpt2-bs512-ms7B-tp4-clb-0.csv"
+}

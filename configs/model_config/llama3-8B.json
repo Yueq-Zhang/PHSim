@@ -1,0 +1,11 @@
+{
+    "model_name": "Llama3-8B",
+    "model_params_b": 8,
+    "model_vocab_size": 128256,
+    "model_n_layer": 1,
+    "model_n_head": 32,
+    "model_n_kv_head": 8,
+    "model_n_embd": 4096,
+    "n_tp": 1,
+    "n_pp": 1
+}

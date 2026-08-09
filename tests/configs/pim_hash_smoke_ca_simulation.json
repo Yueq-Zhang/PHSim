@@ -1,0 +1,8 @@
+{
+    "compute_die_config_file_path": "../configs/Cases/Nano/Nano_1x64x64.json",
+    "DRAM_config_file_path": "../configs/Cases/Nano/Nano_2xLPDDR5.ini",
+    "PIM_config_file_path": "../configs/Cases/Nano/Nano_pim_config.json",
+    "model_config_file_path": "../configs/model_config/OPT-350M.json",
+    "inference_config_file_path": "../tests/configs/pim_hash_smoke_ca_inference.json",
+    "request_file_path": "../tests/request-traces/clb/share-gpt2-bs512-ms7B-tp4-clb-0.csv"
+}

@@ -1,0 +1,8 @@
+{
+    "compute_die_config_file_path": "../configs/Cases/Mobile/Mobile_4x32x32.json",
+    "DRAM_config_file_path": "../configs/Cases/Mobile/Mobile_2xLPDDR5.ini",
+    "PIM_config_file_path": "../configs/Cases/Mobile/Mobile_pim_config.json",
+    "model_config_file_path": "../configs/model_config/gpt3-7B.json",
+    "inference_config_file_path": "../configs/Cases/inference_config.json",
+    "request_file_path": "../tests/request-traces/clb/share-gpt2-bs512-ms7B-tp4-clb-0.csv"
+}

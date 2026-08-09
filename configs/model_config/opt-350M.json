@@ -1,0 +1,10 @@
+{
+    "model_name": "OPT-350M",
+    "model_params_b": 0.35,
+    "model_vocab_size": 50272,
+    "model_n_layer": 1,
+    "model_n_head": 16,
+    "model_n_embd": 1024,
+    "n_tp": 1,
+    "n_pp": 1
+}

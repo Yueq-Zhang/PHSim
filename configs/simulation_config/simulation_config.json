@@ -1,0 +1,8 @@
+{
+    "compute_die_config_file_path": "../configs/compute_die_config/systolic_ws_128x128_dev.json",
+    "DRAM_config_file_path": "../configs/memory_config/HBM2_16Gb_x128_dual_bank_pim.ini",
+    "PIM_config_file_path": "../configs/pim_config/pim_config.json",
+    "model_config_file_path": "../configs/model_config/gpt3-13B.json",
+    "inference_config_file_path": "../configs/inference_config/my_inference_config.json",
+    "request_file_path": "../tests/request-traces/clb/share-gpt2-bs512-ms7B-tp4-clb-0.csv"
+}

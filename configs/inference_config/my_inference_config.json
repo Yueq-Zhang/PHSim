@@ -1,0 +1,18 @@
+{
+    "max_batch_size": 16,
+    "max_active_reqs": 16,
+    "max_seq_len": 1024,
+    "kv_cache_entry_size": 32,
+    "allocation_scheme": "DASH",
+
+    "test_single_op": false,
+    "test_single_op_name": "softmax",
+    "test_multi_layer": false,
+    "test_multi_layer_name": "decode",
+
+    "gen_request": true,
+    "gen_request_count": 1,
+    "gen_request_input_size": 512,
+    "gen_random_request": false,
+    "request_interval": 1
+}
