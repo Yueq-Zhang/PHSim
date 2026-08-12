@@ -3,6 +3,8 @@
 #include "DRAM/EventDrivenDram.h"
 
 #include "DRAM/Dram.h"
+#include "DRAM/DramDataContainer.h"
+#include "DRAM/IDramBackend.h"
 #include "common_function.hpp"
 
 #include "Model/Model.h"
@@ -72,6 +74,7 @@ public:
     std::unique_ptr<DramDataContainer> _data_container;
     std::unique_ptr<PIM> _dram; // std::unique_ptr<MemorySystem> _dram;
     std::unique_ptr<EventDrivenDram> _event_driven_dram; // event driven dram structure
+    IDramBackend* _active_dram_backend = nullptr;
     cycle_type _dram_cycle_count;
 
     // 对于两种DRAM执行Trace的记录与对比

@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 #include "EventDrivenDram.h"
+#include "DramDataContainer.h"
 #include "NewtonSim/src/configuration.h"
 
 #if ENABLE_DRAM_ALIGNMENT_TRACE
@@ -385,24 +386,6 @@ void update_pim_timing_after_normal(DRAMChannel* channel, const std::shared_ptr<
     }
 }
 
-void apply_data_container_response(MemoryAccess* memory_response,
-                                   DramDataContainer* data_container) {
-    if (data_container == nullptr ||
-        memory_response == nullptr || memory_response->request ||
-        memory_response->data_ready) {
-        return;
-    }
-
-    const addr_type addr = memory_response->dram_address;
-    if (memory_response->req_type == MemoryAccessType::READ) {
-        memory_response->data = data_container->read_burst(addr);
-    } else if (memory_response->req_type == MemoryAccessType::WRITE &&
-               !memory_response->data.empty()) {
-        data_container->write_burst(addr, memory_response->data);
-    }
-
-    memory_response->data_ready = true;
-}
 }
 
 DRAMBank::DRAMBank(MemConfig& MemConfig, std::vector<std::pair<int, uint64_t>>* Rank_Activate_Recorder, int Rank_id, int BankGroup_id, int Bank_id) :
@@ -1763,7 +1746,9 @@ void EventDrivenDram::pop(uint32_t cid) {
 
 MemoryAccess *EventDrivenDram::top(uint32_t cid) {
     auto* memory_response = response_event_queues_[cid].top();
-    apply_data_container_response(memory_response, _data_container);
+    if (_data_container != nullptr) {
+        _data_container->apply_response(memory_response);
+    }
     return memory_response;
 }
 

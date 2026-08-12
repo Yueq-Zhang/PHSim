@@ -1,7 +1,7 @@
 #include "MyTensor.hpp"
-#include "../DRAM/DataContainer.h"
 
 #include "../DRAM/Dram.h"
+#include "../DRAM/DramDataContainer.h"
 #include "fmt/format.h"
 #include <numeric>
 
@@ -1636,9 +1636,16 @@ uint32_t MyTensor::pim_output_elements_per_bank() {
 }
 
 
+void MyTensor::initial_data_container(DramDataContainer& data_container) {
+    // The instance-owned container is sparse: an untouched tensor already
+    // reads as zero, so allocating complete DRAM rows here is unnecessary.
+    if (!data_container.enabled()) {
+        return;
+    }
+}
 
-void MyTensor::append_data_into_container(
-    DramDataContainer& data_container, const std::vector<uint8_t>& data) {
+void MyTensor::append_data_into_container(const std::vector<uint8_t>& data,
+                                          DramDataContainer& data_container) {
     if (data.empty()) {
         return;
     }
@@ -1651,7 +1658,8 @@ void MyTensor::append_data_into_container(
         throw std::invalid_argument("Tensor data is larger than tensor allocation");
     }
 
-    const uint32_t bytes_per_dram_burst = data_container.burst_bytes();
+    const uint32_t bytes_per_dram_burst =
+        data_container.burst_length() * data_container.dq_bytes();
     assert(bytes_per_dram_burst == MyAddressAllocator::dram_burst_size);
 
     // Covert row major Byte offset to
@@ -1890,29 +1898,36 @@ void MyTensor::append_data_into_container(
         throw std::runtime_error("append_data_into_container: unsupported tensor type or allocation scheme");
     };
 
-    std::map<addr_type, DramDataContainer::Burst> pending_writes;
-    auto get_or_create_burst =
-        [&pending_writes, bytes_per_dram_burst](addr_type addr) -> DramDataContainer::Burst& {
-        auto [it, inserted] = pending_writes.emplace(addr, DramDataContainer::Burst{});
+    std::map<addr_type, std::vector<std::vector<uint8_t>>> pending_writes;
+    auto get_or_create_burst = [&pending_writes, &data_container](addr_type addr) -> std::vector<std::vector<uint8_t>>& {
+        auto [it, inserted] = pending_writes.emplace(addr, std::vector<std::vector<uint8_t>>{});
         if (inserted) {
-            it->second.assign(bytes_per_dram_burst, 0);
+            it->second.assign(data_container.burst_length(),
+                              std::vector<uint8_t>(data_container.dq_bytes(), 0));
         }
         return it->second;
     };
 
     for (uint64_t byte_offset = 0; byte_offset < data.size(); ++byte_offset) {
-        auto [logical_addr, byte_in_burst] = map_byte(byte_offset);
+        auto [addr, byte_in_burst] = map_byte(byte_offset);
         if (byte_in_burst >= bytes_per_dram_burst) {
             throw std::runtime_error("append_data_into_container: byte offset exceeds DRAM burst size");
         }
-        auto& burst_data = get_or_create_burst(logical_addr);
-        burst_data[byte_in_burst] = data[byte_offset];
+        auto& burst_data = get_or_create_burst(addr);
+        const uint32_t col_offset = byte_in_burst / data_container.dq_bytes();
+        const uint32_t byte_idx = byte_in_burst % data_container.dq_bytes();
+        burst_data[col_offset][byte_idx] = data[byte_offset];
     }
 
-    for (auto& [logical_addr, burst_data] : pending_writes) {
-        const addr_type physical_addr =
-            TwoLevelPageMapper::map_logical_address(logical_addr);
-        data_container.write_burst(physical_addr, std::move(burst_data));
+    for (auto& [addr, burst_data] : pending_writes) {
+        data_container.write_burst(
+            std::move(burst_data),
+            MyAddressAllocator::get_channel_index(addr),
+            MyAddressAllocator::get_rank_index(addr),
+            MyAddressAllocator::get_bankgroup_index(addr),
+            MyAddressAllocator::get_bank_index(addr),
+            MyAddressAllocator::get_row_index(addr),
+            MyAddressAllocator::get_col_index(addr));
     }
 }
 

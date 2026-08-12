@@ -5,8 +5,8 @@
 #endif
 
 #include "../DRAM/Dram.h"
+#include "../DRAM/IDramBackend.h"
 #include "../common_function.hpp"
-#include "DataContainer.h"
 
 #include <algorithm>
 #include <array>
@@ -577,7 +577,9 @@ public:
 };
 
 
-class EventDrivenDram{
+class DramDataContainer;
+
+class EventDrivenDram : public IDramBackend {
 public:
     enum class EDTransactionType {
         DRAM_READ,
@@ -591,15 +593,16 @@ public:
         PIM_Q
     };
 
-    EventDrivenDram(const SysConfig& config, DramDataContainer* data_container);
-    ~EventDrivenDram();
-    void push(uint32_t cid, MemoryAccess *req);  // Push Memory Access
-    void pop(uint32_t cid);
+    EventDrivenDram(const SysConfig& config,
+                    DramDataContainer* data_container = nullptr);
+    ~EventDrivenDram() override;
+    void push(uint32_t cid, MemoryAccess *req) override;  // Push Memory Access
+    void pop(uint32_t cid) override;
 
-    MemoryAccess *top(uint32_t cid);
-    bool is_full(uint32_t cid, MemoryAccess *req);
-    bool is_empty(uint32_t cid);
-    bool running();
+    MemoryAccess *top(uint32_t cid) override;
+    bool is_full(uint32_t cid, MemoryAccess *req) override;
+    bool is_empty(uint32_t cid) override;
+    bool running() override;
 
     Event generate_event_from_req(MemoryAccess *req);
     void schedule_pending_event_transaction(uint32_t cid);
@@ -611,6 +614,7 @@ public:
     void schedule_pending_operation(uint32_t cid, cycle_type current_cycle);
 
     std::unique_ptr<dramsim3::Config> dramsim3_config_;
+    DramDataContainer* _data_container;
     std::unique_ptr<MemorySystem> _memsys;
     std::function<void(uint64_t req_id)> pim_callback_;
 
@@ -640,7 +644,7 @@ public:
 
     std::vector<ResponseQueue> response_event_queues_;
 
-    uint32_t get_channel_id(MemoryAccess *access);
+    uint32_t get_channel_id(MemoryAccess *access) override;
     double   get_avg_bw_util();
     uint64_t get_avg_pim_cycle();
     void     reset_pim_cycle();
@@ -663,7 +667,6 @@ public:
         const std::string& operation, cycle_type skipped_dram_cycles);
 
 private:
-    DramDataContainer* _data_container = nullptr;
 
     struct EventDrivenChannelStats {
         uint64_t num_cycles = 0;

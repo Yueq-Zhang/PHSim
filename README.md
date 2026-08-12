@@ -59,6 +59,10 @@ The current test suite contains:
 - `data_container_event_driven_integration_test`
 - `virtual_memory_address_layout_test`
 - `pim_hash_address_group_test`
+- `data_container_virtual_memory_ca_smoke`
+- `data_container_virtual_memory_ed_smoke`
+- `data_container_gemm_ca_smoke`
+- `data_container_gemm_ed_smoke`
 - `nonvoid_control_flow_test`
 - `statistics_edge_case_test`
 - `runtime_guard_test`
@@ -121,7 +125,7 @@ Small, Base, Mobile, and Server configurations.
 | --- | --- |
 | `allocation_scheme` | Select `NPU`, `IANUS`, or `DASH` allocation |
 | `virtual_mem_hash_enable` | Enable virtual-page mapping and DRAM bank hashing |
-| `dram_data_container_enable` | Maintain simulated DRAM data values with burst-sparse storage |
+| `dram_data_container_enable` | Maintain simulated DRAM data values with instance-owned sparse storage |
 | `dram_data_container_max_payload_mb` | Optional resident DataContainer payload limit in MiB; `0` means unlimited |
 | `dram_trace_simulation_mode` | Use EventDriven DRAM when true; use the cycle-accurate backend when false |
 | `accelerate_ctrl` | Enable simulator workload sampling |
@@ -160,9 +164,9 @@ tests/          Small regression and integration tests
   addition to final completion counts.
 - Distinguish measured, estimated, and logical work when simulation sampling is
   enabled.
-- DataContainer stores only non-zero resident bursts; missing bursts read as
-  zero. Large non-zero workloads can still consume significant host memory, so
-  set `dram_data_container_max_payload_mb` and start with the bundled small
+- DataContainer materializes only touched DRAM columns; missing locations read
+  as zero. Large real-data workloads can still consume significant host memory,
+  so set `dram_data_container_max_payload_mb` and start with the bundled small
   tests before running large models.
 
 ## License

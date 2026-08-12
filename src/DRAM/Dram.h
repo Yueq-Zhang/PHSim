@@ -5,20 +5,23 @@
 #include <unordered_map>
 #include <utility>
 
+#include "IDramBackend.h"
 #include "../common_function.hpp"
-#include "DataContainer.h"
 #include "../ext/NewtonSim/include/newtonsim/NewtonSim.h"
 
-class Dram {
+class DramDataContainer;
+
+class Dram : public IDramBackend {
    public:
-    virtual bool running() = 0;
+    ~Dram() override = default;
+    virtual bool running() override = 0;
     virtual void cycle() = 0;
-    virtual bool is_full(uint32_t cid, MemoryAccess *request) = 0;
-    virtual void push(uint32_t cid, MemoryAccess *request) = 0;
-    virtual bool is_empty(uint32_t cid) = 0;
-    virtual MemoryAccess *top(uint32_t cid) = 0;
-    virtual void pop(uint32_t cid) = 0;
-    virtual uint32_t get_channel_id(MemoryAccess *request) = 0;
+    virtual bool is_full(uint32_t cid, MemoryAccess *request) override = 0;
+    virtual void push(uint32_t cid, MemoryAccess *request) override = 0;
+    virtual bool is_empty(uint32_t cid) override = 0;
+    virtual MemoryAccess *top(uint32_t cid) override = 0;
+    virtual void pop(uint32_t cid) override = 0;
+    virtual uint32_t get_channel_id(MemoryAccess *request) override = 0;
     virtual void print_stat() {}
     addr_type get_addr_align() { return _addr_align; }
 
@@ -37,7 +40,7 @@ class Dram {
 
 class PIM : public Dram {
    public:
-    PIM(const SysConfig& config, DramDataContainer* data_container);
+    PIM(const SysConfig& config, DramDataContainer* data_container = nullptr);
     ~PIM() = default;
     virtual bool running() override;
     virtual void cycle() override;
@@ -74,7 +77,7 @@ class PIM : public Dram {
     void log(Stage stage);
 
     std::unique_ptr<dramsim3::NewtonSim> _mem;
-    DramDataContainer* _data_container = nullptr;
+    DramDataContainer* _data_container;
     std::vector<uint64_t> _total_processed_requests;
     std::vector<uint64_t> _processed_requests;
     uint64_t _mem_req_cnt = 0;

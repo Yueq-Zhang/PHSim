@@ -1,4 +1,5 @@
 #include "Dram.h"
+#include "DramDataContainer.h"
 
 // >>> gsheo
 
@@ -204,19 +205,9 @@ bool PIM::is_empty(uint32_t cid) {
 
 MemoryAccess *PIM::top(uint32_t cid) {
     assert(!is_empty(cid));
-    // This is the operation for data container
     auto* memory_response = (MemoryAccess *)_mem->Top(cid);
     if (_data_container != nullptr) {
-        if (!memory_response->request && !memory_response->data_ready) {
-            const addr_type addr = memory_response->dram_address;
-            if (memory_response->req_type == MemoryAccessType::READ) {
-                memory_response->data = _data_container->read_burst(addr);
-            }
-            else if ((memory_response->req_type == MemoryAccessType::WRITE) && !memory_response->data.empty()) {
-                _data_container->write_burst(addr, memory_response->data);
-            }
-            memory_response->data_ready = true;
-        }
+        _data_container->apply_response(memory_response);
     }
 
     return memory_response;

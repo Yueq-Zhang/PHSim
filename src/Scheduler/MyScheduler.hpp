@@ -14,7 +14,7 @@ class DramDataContainer;
 class MyScheduler {
 public:
     MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
-                DramDataContainer* data_container);
+                DramDataContainer* data_container = nullptr);
     ~MyScheduler() = default;
     void launch(Ptr<Model> model);
     void add_request(std::shared_ptr<InferRequest> request);

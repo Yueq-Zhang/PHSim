@@ -79,8 +79,9 @@ public:
 
     uint32_t pim_output_elements_per_bank();
 
-    void append_data_into_container(DramDataContainer& data_container,
-                                    const std::vector<uint8_t>& data);
+    void initial_data_container(DramDataContainer& data_container);
+    void append_data_into_container(const std::vector<uint8_t>& data,
+                                    DramDataContainer& data_container);
     uint64_t get_total_size();
 
 };

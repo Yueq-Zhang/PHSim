@@ -97,21 +97,22 @@ Simulator::Simulator(const SysConfig& config) :_config(config), _core_cycles(0){
 
     // Initial the DRAM-PIM Object; Here we initialize both two types
     _dram_mode = config.dram_trace_simulation_mode ? DramMode::EVENT_DRIVEN : DramMode::CYCLE_ACCURATE;
-    if (config.dram_data_container_enable) {
-        _data_container = std::make_unique<DramDataContainer>(config);
-    }
+    _data_container = std::make_unique<DramDataContainer>(config);
     _dram = std::make_unique<PIM>(config, _data_container.get());  // cycle accurate dram model based on dramsim3
 
     if (_dram_mode == DramMode::EVENT_DRIVEN) {
-        _event_driven_dram = std::make_unique<EventDrivenDram>(
-            config, _data_container.get());  // self-constructed event-driven dram
+        _event_driven_dram = std::make_unique<EventDrivenDram>(config, _data_container.get());  // self-constructed event-driven dram
     }
     #ifdef TEST_EVENT_DRIVEN_
     if (!_event_driven_dram) {
-        _event_driven_dram = std::make_unique<EventDrivenDram>(
-            config, _data_container.get());
+        _event_driven_dram = std::make_unique<EventDrivenDram>(config, _data_container.get());
     }
     #endif
+    _active_dram_backend =
+        _dram_mode == DramMode::CYCLE_ACCURATE
+            ? static_cast<IDramBackend*>(_dram.get())
+            : static_cast<IDramBackend*>(_event_driven_dram.get());
+    assert(_active_dram_backend != nullptr);
 
     _dram_cycle_count = 0;
 
@@ -145,8 +146,8 @@ Simulator::Simulator(const SysConfig& config) :_config(config), _core_cycles(0){
 
     _client = std::make_unique<Client>(_config);
 
-    _scheduler = std::make_unique<MyScheduler>(
-        _config, &_core_cycles, _data_container.get());
+    _scheduler = std::make_unique<MyScheduler>(_config, &_core_cycles,
+                                               _data_container.get());
     _scheduler->bind_system(_client.get(), _dram.get(),
                             _event_driven_dram.get(), _icnt.get(), _cores);
 
@@ -166,6 +167,7 @@ Simulator::Simulator(const SysConfig& config) :_config(config), _core_cycles(0){
 }
 
 Simulator::~Simulator() {
+    _active_dram_backend = nullptr;
     // Scheduler and transport components only borrow MemoryAccess pointers.
     // Destroy all borrowers before the Core-owned request pools.
     _scheduler.reset();
@@ -624,8 +626,8 @@ void Simulator::cycle() {
 
                 for (int mem_id = 0; mem_id < _n_memories; mem_id++) { // Interconnect push Memory Access to dram and get the result
                     // Push memory request from ICNT output buffer to DRAM
-                    if (!_icnt->is_empty(memory_offset + mem_id) && !_dram->is_full(mem_id, _icnt->top(memory_offset + mem_id)) && _icnt->dram_push_valid(mem_id)) { // _dram->_push_valid[mem_id]
-                        _dram->push(mem_id, _icnt->top(memory_offset + mem_id));  // push the request from interconnect to cycle accurate dram
+                    if (!_icnt->is_empty(memory_offset + mem_id) && !_active_dram_backend->is_full(mem_id, _icnt->top(memory_offset + mem_id)) && _icnt->dram_push_valid(mem_id)) { // _dram->_push_valid[mem_id]
+                        _active_dram_backend->push(mem_id, _icnt->top(memory_offset + mem_id));  // push the request from interconnect to cycle accurate dram
                         #ifdef TEST_EVENT_DRIVEN_
                         auto memory_req = _icnt->top(memory_offset + mem_id);
                         auto deep_copy_req = memory_req->clone();
@@ -650,8 +652,8 @@ void Simulator::cycle() {
                     }
                     #endif
                     // Pop response from DRAM to ICNT input buffer
-                    if (!_dram->is_empty(mem_id) && !_icnt->is_full(memory_offset + mem_id, _dram->top(mem_id)) && _icnt->dram_pop_valid(mem_id)) {  // _dram->_pop_valid[mem_id]
-                        auto* golden_resp = _dram->top(mem_id);
+                    if (!_active_dram_backend->is_empty(mem_id) && !_icnt->is_full(memory_offset + mem_id, _active_dram_backend->top(mem_id)) && _icnt->dram_pop_valid(mem_id)) {  // _dram->_pop_valid[mem_id]
+                        auto* golden_resp = _active_dram_backend->top(mem_id);
                         #ifdef TEST_EVENT_DRIVEN_
                         log_dram_compare_trace("golden", mem_id, golden_resp);
                         #endif
@@ -659,7 +661,7 @@ void Simulator::cycle() {
                         log_dram_completion_trace(_dram_mode, mem_id, golden_resp);
 #endif
                         _icnt->push(memory_offset + mem_id, get_dest_node(golden_resp), golden_resp);
-                        _dram->pop(mem_id);
+                        _active_dram_backend->pop(mem_id);
                         _icnt->consume_dram_pop(mem_id);
                     }
                 }
@@ -710,10 +712,10 @@ void Simulator::cycle() {
 
                 // ICNT <-> Event_Driven DRAM
                 for (int mem_id = 0; mem_id < _n_memories; mem_id++) { // Interconnect push Memory Access to DRAM and get the result
-                    if (!_icnt->is_empty(memory_offset + mem_id) && !_event_driven_dram->is_full(mem_id, _icnt->top(memory_offset + mem_id, _dram_cycle_count)) && _icnt->dram_push_valid(mem_id)) {
+                    if (!_icnt->is_empty(memory_offset + mem_id) && !_active_dram_backend->is_full(mem_id, _icnt->top(memory_offset + mem_id, _dram_cycle_count)) && _icnt->dram_push_valid(mem_id)) {
                         auto memory_req = _icnt->top(memory_offset + mem_id);
                         memory_req->dram_enter_cycle = _dram_cycle_count;
-                        _event_driven_dram->push(mem_id, memory_req);
+                        _active_dram_backend->push(mem_id, memory_req);
                         _icnt->pop(memory_offset + mem_id);
                         _icnt->consume_dram_push(mem_id);
                     }
@@ -721,13 +723,13 @@ void Simulator::cycle() {
                         _event_driven_dram->schedule_pending_operation(mem_id, _dram_cycle_count);
                     }
                     // Pop response from DRAM to ICNT input buffer
-                    if (!_event_driven_dram->is_empty(mem_id) && !_icnt->is_full(memory_offset + mem_id, _event_driven_dram->top(mem_id)) && _icnt->dram_pop_valid(mem_id)) {  // _dram->_pop_valid[mem_id]
-                        auto* event_resp = _event_driven_dram->top(mem_id);
+                    if (!_active_dram_backend->is_empty(mem_id) && !_icnt->is_full(memory_offset + mem_id, _active_dram_backend->top(mem_id)) && _icnt->dram_pop_valid(mem_id)) {  // _dram->_pop_valid[mem_id]
+                        auto* event_resp = _active_dram_backend->top(mem_id);
 #if ENABLE_DRAM_ALIGNMENT_TRACE
                         log_dram_completion_trace(_dram_mode, mem_id, event_resp);
 #endif
                         _icnt->push(memory_offset + mem_id, get_dest_node(event_resp), event_resp);
-                        _event_driven_dram->pop(mem_id);
+                        _active_dram_backend->pop(mem_id);
                         _icnt->consume_dram_pop(mem_id);
                     }
                 }
@@ -811,10 +813,7 @@ bool Simulator::running() {      // return ture if there is any instance is runn
         running = running || core->running();
     }
     running = running || _icnt->running();
-    running = running || _dram->running();
-    if (_event_driven_dram) {
-        running = running || _event_driven_dram->running();
-    }
+    running = running || _active_dram_backend->running();
     running = running || _scheduler->running();
     running = running || _client->running();
     return running;
@@ -843,7 +842,7 @@ void Simulator::set_cycle_mask() {
 uint32_t Simulator::get_dest_node(MemoryAccess *access) {
     // memory_offset = core size * dram_channels, for core, the reset dram_channels port is for the dram
     if (access->request) {
-        return memory_offset + _dram->get_channel_id(access);  // core to memory
+        return memory_offset + _active_dram_backend->get_channel_id(access);  // core to memory
     }
     else {
         return access->core_id * _config.dram_channels + access->mem_id; // memory to core

@@ -1,67 +1,46 @@
 #include "DRAM/Dram.h"
+#include "DRAM/DramDataContainer.h"
+#include "DRAM/IDramBackend.h"
 
 #include <cstdint>
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <type_traits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifndef PH_SIM_SOURCE_DIR
 #define PH_SIM_SOURCE_DIR "."
 #endif
 
+namespace DRAMDataContainer {
+std::unique_ptr<DramDataContainer> storage;
+
+void init(const SysConfig& config) {
+    storage = std::make_unique<DramDataContainer>(config);
+}
+void cleanup() { storage.reset(); }
+void data_write(DramDataContainer::BurstData data, uint32_t ch, uint32_t ra,
+                uint32_t bg, uint32_t ba, uint32_t row, uint32_t col) {
+    storage->write_burst(std::move(data), ch, ra, bg, ba, row, col);
+}
+DramDataContainer::BurstData data_read(uint32_t ch, uint32_t ra, uint32_t bg,
+                                       uint32_t ba, uint32_t row,
+                                       uint32_t col) {
+    return storage->read_burst(ch, ra, bg, ba, row, col);
+}
+std::vector<uint8_t> flatten_burst(
+    const DramDataContainer::BurstData& data) {
+    return storage->flatten_burst(data);
+}
+}  // namespace DRAMDataContainer
+
 namespace {
 
 using Burst = std::vector<std::vector<uint8_t>>;
-
-// Compatibility helpers keep the existing CA integration scenarios focused on
-// DRAM response timing while routing all storage through the instance API.
-namespace DRAMDataContainer {
-std::unique_ptr<DramDataContainer> instance;
-
-void init(const SysConfig& config) {
-    instance = std::make_unique<DramDataContainer>(config);
-}
-
-void cleanup() { instance.reset(); }
-
-DramDataContainer* get() { return instance.get(); }
-
-addr_type make_address(uint32_t ch, uint32_t ra, uint32_t bg, uint32_t ba,
-                       uint32_t row, uint32_t col) {
-    return MyAddressAllocator::make_address_by_index(ra, bg, ba, row, col, ch);
-}
-
-std::vector<uint8_t> flatten_burst(const Burst& data) {
-    std::vector<uint8_t> result;
-    for (const auto& column : data) {
-        result.insert(result.end(), column.begin(), column.end());
-    }
-    return result;
-}
-
-void data_write(Burst data, uint32_t ch, uint32_t ra, uint32_t bg,
-                uint32_t ba, uint32_t row, uint32_t col) {
-    instance->write_burst(make_address(ch, ra, bg, ba, row, col),
-                          flatten_burst(data));
-}
-
-Burst data_read(uint32_t ch, uint32_t ra, uint32_t bg, uint32_t ba,
-                uint32_t row, uint32_t col) {
-    const auto flat = instance->read_burst(
-        make_address(ch, ra, bg, ba, row, col));
-    const uint32_t dq_bytes = instance->burst_bytes() /
-                              MyAddressAllocator::burst_length;
-    Burst result(MyAddressAllocator::burst_length,
-                 std::vector<uint8_t>(dq_bytes, 0));
-    for (uint32_t i = 0; i < flat.size(); ++i) {
-        result[i / dq_bytes][i % dq_bytes] = flat[i];
-    }
-    return result;
-}
-}  // namespace DRAMDataContainer
 
 constexpr uint32_t kMaxDramCyclesPerRequest = 10000;
 int failures = 0;
@@ -118,6 +97,7 @@ void configure_system(SysConfig& config) {
     config.log_dir = "/tmp";
     config.mem_config = MemConfig(memory_config, pim_config, "/tmp");
     config.dram_channels = config.mem_config.channels;
+    config.dram_data_container_enable = true;
     config.dram_freq = 800;
     config.pim_input_buffer_size = config.mem_config.input_buffer_size;
     config.pim_output_buffer_size = config.mem_config.output_buffer_size;
@@ -297,7 +277,7 @@ int main() {
     try {
         SysConfig config;
         configure_system(config);
-        PIM dram(config, DRAMDataContainer::get());
+        PIM dram(config, DRAMDataContainer::storage.get());
 
         test_seeded_read(dram, config);
         test_write_then_read(dram, config);
@@ -321,3 +301,5 @@ int main() {
     std::cerr << "RESULT FAIL: " << failures << " assertion(s) failed\n";
     return 1;
 }
+static_assert(std::is_base_of<IDramBackend, PIM>::value,
+              "PIM must implement the common DRAM backend data path");
