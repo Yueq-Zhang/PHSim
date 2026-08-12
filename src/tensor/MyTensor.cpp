@@ -1,4 +1,5 @@
 #include "MyTensor.hpp"
+#include "../DRAM/DataContainer.h"
 
 #include "../DRAM/Dram.h"
 #include "fmt/format.h"
@@ -1635,146 +1636,9 @@ uint32_t MyTensor::pim_output_elements_per_bank() {
 }
 
 
-void MyTensor::initial_data_container() {
-    // TODO:: For simulation with real data
-    // ??????start_row - end_row????????tensor????????????е?index????????Щindex, ??data container?????????????洢??
-    // ????????????????????????????к???д洢
-    // ????weight Activation KCache ?? VCache, ????????к?????????п?????????????з???????
-    // spdlog::info("Current tensor start_row = {} end_row = {}, start col = {}, end col = {}, Tensor Dims is {}", start_row, end_row, start_col, end_col, _dims);
-    // spdlog::info("The allocated rows of current Tensor = {}", allocate_rows);
-    if (_tensor_type == TensorType::WGT) {
-        if (_dims.size() == 1) {
-            for (uint32_t ch = 0; ch < MyAddressAllocator::dram_channels; ch++) {
-                for (uint32_t ra = 0; ra < MyAddressAllocator::ranks; ra++) {
-                    for (uint32_t bg = 0; bg < MyAddressAllocator::bankgroups; bg++) {
-                        for (uint32_t ba = 0; ba < MyAddressAllocator::banks; ba++) {
-                            for (uint32_t row = start_row; row <= end_row; row++) {  // row_initial
-                                if (DRAMDataContainer::DRAMDataContainer[ch][ra][bg][ba].find(row) != DRAMDataContainer::DRAMDataContainer[ch][ra][bg][ba].end()) {
-                                    continue;  // current is initialized
-                                }
-                                std::vector< std::vector<uint8_t>> current_row;
-                                current_row.reserve(MyAddressAllocator::columns);
-                                for (uint32_t col = start_col; col < end_col; col++) {
-                                    std::vector<uint8_t> data_per_col;
-                                    data_per_col.reserve(DRAMDataContainer::dq_bytes);
-                                    current_row.push_back(data_per_col);
-                                }
-                                DRAMDataContainer::DRAMDataContainer[ch][ra][bg][ba][row] = std::move(current_row);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        else if (_dims.size() == 2 or _dims.size() == 3) {
-            for (uint32_t ch = 0; ch < MyAddressAllocator::dram_channels; ch++) {
-                for (uint32_t ra = 0; ra < MyAddressAllocator::ranks; ra++) {
-                    for (uint32_t bg = 0; bg < MyAddressAllocator::bankgroups; bg++) {
-                        for (uint32_t ba = 0; ba < MyAddressAllocator::banks; ba++) {
-                            for (uint32_t row = start_row; row <= end_row; row++) {  // row_initial
-                                if (DRAMDataContainer::DRAMDataContainer[ch][ra][bg][ba].find(row) != DRAMDataContainer::DRAMDataContainer[ch][ra][bg][ba].end()) {
-                                    continue;  // current is initialized
-                                }
-                                std::vector< std::vector<uint8_t>> current_row;
-                                current_row.reserve(MyAddressAllocator::columns);
-                                for (uint32_t col = 0; col < MyAddressAllocator::columns; col++) {
-                                    std::vector<uint8_t> data_per_col;
-                                    data_per_col.reserve(DRAMDataContainer::dq_bytes);
-                                    current_row.push_back(data_per_col);
-                                }
-                                DRAMDataContainer::DRAMDataContainer[ch][ra][bg][ba][row] = std::move(current_row);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        else {
-            assert(0);
-        }
-    }
-    else if (_tensor_type == TensorType::ACT) {
-        for (uint32_t ch = 0; ch < MyAddressAllocator::dram_channels; ch++) {
-            for (uint32_t ra = 0; ra < MyAddressAllocator::ranks; ra++) {
-                for (uint32_t bg = 0; bg < MyAddressAllocator::bankgroups; bg++) {
-                    for (uint32_t ba = 0; ba < MyAddressAllocator::banks; ba++) {
-                        for (uint32_t row = start_row; row <= end_row; row++) {  // row_initial
-                            if (DRAMDataContainer::DRAMDataContainer[ch][ra][bg][ba].find(row) != DRAMDataContainer::DRAMDataContainer[ch][ra][bg][ba].end()) {
-                                continue;  // current is initialized
-                            }
-                            std::vector< std::vector<uint8_t>> current_row;
-                            current_row.reserve(MyAddressAllocator::columns);
-                            for (uint32_t col = 0; col < MyAddressAllocator::columns; col++) {
-                                std::vector<uint8_t> data_per_col;
-                                data_per_col.reserve(DRAMDataContainer::dq_bytes);
-                                current_row.push_back(data_per_col);
-                            }
-                            DRAMDataContainer::DRAMDataContainer[ch][ra][bg][ba][row] = std::move(current_row);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    else if (_tensor_type == TensorType::KCache) {
-        std::vector<uint32_t> row_indexes;
-        for (uint32_t head_index = 0; head_index < MyAddressAllocator::h_kv; head_index++) {
-            auto head_allocated_row= kv_cache_allocate_rows[head_index];
-            uint32_t channel_index = head_index % MyAddressAllocator::dram_channels;
-            uint32_t channel_head_iteration_index = head_index % MyAddressAllocator::allocated_KCache_head_per_iteration / MyAddressAllocator::dram_channels;
-            auto head_allocated_bank_index = MyAddressAllocator::KCache_interleaved_bank_index[channel_head_iteration_index];
-            for (auto allocate_bank_index : head_allocated_bank_index) {
-                uint32_t rank_index = allocate_bank_index[0];
-                uint32_t bankgroup_index = allocate_bank_index[1];
-                uint32_t bank_index = allocate_bank_index[2];
-                for (uint32_t row : head_allocated_row) {
-                    if (DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index].find(row) !=
-                        DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index].end()) {
-                        continue;  // current is initialized
-                        }
-                    std::vector< std::vector<uint8_t>> current_row;
-                    current_row.reserve(MyAddressAllocator::columns);
-                    for (uint32_t col = 0; col < MyAddressAllocator::columns; col++) {
-                        std::vector<uint8_t> data_per_col;
-                        data_per_col.reserve(DRAMDataContainer::dq_bytes);
-                        current_row.push_back(data_per_col);
-                    }
-                    DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index][row] = std::move(current_row);
-                }
-            }
-        }
-    }
-    else if (_tensor_type == TensorType::VCache) {
-        std::vector<uint32_t> row_indexes;
-        for (uint32_t head_index = 0; head_index < MyAddressAllocator::h_kv; head_index++) {
-            auto head_allocated_row= kv_cache_allocate_rows[head_index];
-            uint32_t channel_index = head_index % MyAddressAllocator::dram_channels;
-            uint32_t channel_head_iteration_index = head_index % MyAddressAllocator::allocated_VCache_head_per_iteration / MyAddressAllocator::dram_channels;
-            auto head_allocated_bank_index = MyAddressAllocator::VCache_interleaved_bank_index[channel_head_iteration_index];
-            for (auto allocate_bank_index : head_allocated_bank_index) {
-                uint32_t rank_index = allocate_bank_index[0];
-                uint32_t bankgroup_index = allocate_bank_index[1];
-                uint32_t bank_index = allocate_bank_index[2];
-                for (uint32_t row : head_allocated_row) {
-                    if (DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index].find(row) !=
-                        DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index].end()) {
-                        continue;  // current is initialized
-                        }
-                    std::vector< std::vector<uint8_t>> current_row;
-                    current_row.reserve(MyAddressAllocator::columns);
-                    for (uint32_t col = 0; col < MyAddressAllocator::columns; col++) {
-                        std::vector<uint8_t> data_per_col;
-                        data_per_col.reserve(DRAMDataContainer::dq_bytes);
-                        current_row.push_back(data_per_col);
-                    }
-                    DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index][row] = std::move(current_row);
-                }
-            }
-        }
-    }
-}
 
-void MyTensor::append_data_into_container(const std::vector<uint8_t>& data) {
+void MyTensor::append_data_into_container(
+    DramDataContainer& data_container, const std::vector<uint8_t>& data) {
     if (data.empty()) {
         return;
     }
@@ -1787,7 +1651,7 @@ void MyTensor::append_data_into_container(const std::vector<uint8_t>& data) {
         throw std::invalid_argument("Tensor data is larger than tensor allocation");
     }
 
-    const uint32_t bytes_per_dram_burst = DRAMDataContainer::burst_length * DRAMDataContainer::dq_bytes;
+    const uint32_t bytes_per_dram_burst = data_container.burst_bytes();
     assert(bytes_per_dram_burst == MyAddressAllocator::dram_burst_size);
 
     // Covert row major Byte offset to
@@ -2026,34 +1890,29 @@ void MyTensor::append_data_into_container(const std::vector<uint8_t>& data) {
         throw std::runtime_error("append_data_into_container: unsupported tensor type or allocation scheme");
     };
 
-    std::map<addr_type, std::vector<std::vector<uint8_t>>> pending_writes;
-    auto get_or_create_burst = [&pending_writes](addr_type addr) -> std::vector<std::vector<uint8_t>>& {
-        auto [it, inserted] = pending_writes.emplace(addr, std::vector<std::vector<uint8_t>>{});
+    std::map<addr_type, DramDataContainer::Burst> pending_writes;
+    auto get_or_create_burst =
+        [&pending_writes, bytes_per_dram_burst](addr_type addr) -> DramDataContainer::Burst& {
+        auto [it, inserted] = pending_writes.emplace(addr, DramDataContainer::Burst{});
         if (inserted) {
-            it->second.assign(DRAMDataContainer::burst_length, std::vector<uint8_t>(DRAMDataContainer::dq_bytes, 0));
+            it->second.assign(bytes_per_dram_burst, 0);
         }
         return it->second;
     };
 
     for (uint64_t byte_offset = 0; byte_offset < data.size(); ++byte_offset) {
-        auto [addr, byte_in_burst] = map_byte(byte_offset);
+        auto [logical_addr, byte_in_burst] = map_byte(byte_offset);
         if (byte_in_burst >= bytes_per_dram_burst) {
             throw std::runtime_error("append_data_into_container: byte offset exceeds DRAM burst size");
         }
-        auto& burst_data = get_or_create_burst(addr);
-        const uint32_t col_offset = byte_in_burst / DRAMDataContainer::dq_bytes;
-        const uint32_t byte_idx = byte_in_burst % DRAMDataContainer::dq_bytes;
-        burst_data[col_offset][byte_idx] = data[byte_offset];
+        auto& burst_data = get_or_create_burst(logical_addr);
+        burst_data[byte_in_burst] = data[byte_offset];
     }
 
-    for (auto& [addr, burst_data] : pending_writes) {
-        DRAMDataContainer::data_write(std::move(burst_data),
-                                      MyAddressAllocator::get_channel_index(addr),
-                                      MyAddressAllocator::get_rank_index(addr),
-                                      MyAddressAllocator::get_bankgroup_index(addr),
-                                      MyAddressAllocator::get_bank_index(addr),
-                                      MyAddressAllocator::get_row_index(addr),
-                                      MyAddressAllocator::get_col_index(addr));
+    for (auto& [logical_addr, burst_data] : pending_writes) {
+        const addr_type physical_addr =
+            TwoLevelPageMapper::map_logical_address(logical_addr);
+        data_container.write_burst(physical_addr, std::move(burst_data));
     }
 }
 

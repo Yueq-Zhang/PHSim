@@ -97,14 +97,19 @@ Simulator::Simulator(const SysConfig& config) :_config(config), _core_cycles(0){
 
     // Initial the DRAM-PIM Object; Here we initialize both two types
     _dram_mode = config.dram_trace_simulation_mode ? DramMode::EVENT_DRIVEN : DramMode::CYCLE_ACCURATE;
-    _dram = std::make_unique<PIM>(config);  // cycle accurate dram model based on dramsim3
+    if (config.dram_data_container_enable) {
+        _data_container = std::make_unique<DramDataContainer>(config);
+    }
+    _dram = std::make_unique<PIM>(config, _data_container.get());  // cycle accurate dram model based on dramsim3
 
     if (_dram_mode == DramMode::EVENT_DRIVEN) {
-        _event_driven_dram = std::make_unique<EventDrivenDram>(config);  // self-constructed event-driven dram
+        _event_driven_dram = std::make_unique<EventDrivenDram>(
+            config, _data_container.get());  // self-constructed event-driven dram
     }
     #ifdef TEST_EVENT_DRIVEN_
     if (!_event_driven_dram) {
-        _event_driven_dram = std::make_unique<EventDrivenDram>(config);
+        _event_driven_dram = std::make_unique<EventDrivenDram>(
+            config, _data_container.get());
     }
     #endif
 
@@ -140,7 +145,8 @@ Simulator::Simulator(const SysConfig& config) :_config(config), _core_cycles(0){
 
     _client = std::make_unique<Client>(_config);
 
-    _scheduler = std::make_unique<MyScheduler>(_config, &_core_cycles);
+    _scheduler = std::make_unique<MyScheduler>(
+        _config, &_core_cycles, _data_container.get());
     _scheduler->bind_system(_client.get(), _dram.get(),
                             _event_driven_dram.get(), _icnt.get(), _cores);
 
@@ -160,10 +166,13 @@ Simulator::Simulator(const SysConfig& config) :_config(config), _core_cycles(0){
 }
 
 Simulator::~Simulator() {
-    _cores.clear();
+    // Scheduler and transport components only borrow MemoryAccess pointers.
+    // Destroy all borrowers before the Core-owned request pools.
+    _scheduler.reset();
+    _event_driven_dram.reset();
     _dram.reset();
     _icnt.reset();
-    _scheduler.reset();
+    _cores.clear();
     _client.reset();
     _stage_stats.clear();
 }
@@ -730,6 +739,20 @@ void Simulator::cycle() {
         }
     }
     spdlog::info(">>>>>> Simulation Finished <<<<<<");
+
+    size_t outstanding_memory_accesses = 0;
+    for (const auto& core : _cores) {
+        outstanding_memory_accesses += core->outstanding_memory_accesses();
+    }
+    spdlog::info("Outstanding MemoryAccess requests at simulation end: {}",
+                 outstanding_memory_accesses);
+    if (outstanding_memory_accesses != 0) {
+        throw std::logic_error(
+            "Simulation finished with " +
+            std::to_string(outstanding_memory_accesses) +
+            " outstanding MemoryAccess requests");
+    }
+
     const double g_dram_icnt_time_sec = g_dram_time_sec + g_icnt_time_sec;
     const uint64_t g_dram_icnt_count = g_dram_time_count + g_icnt_time_count;
     const double total_component_time_sec = g_sched_client_time_sec + g_core_time_sec + g_dram_icnt_time_sec;

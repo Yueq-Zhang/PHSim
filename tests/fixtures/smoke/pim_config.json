@@ -1,0 +1,25 @@
+{
+    "dram_type": "newton",
+    "dram_freq": 800,
+    "DRAM_act_buf_size_MB": 1024,
+
+    "dram_channels": 2,
+    "dram_req_size": 64,
+
+    "PU_location": "bank",
+    "dual_bank": false,
+
+    "pim_PE_num": 16,
+    "pim_input_buffer_size": 512,
+    "pim_output_buffer_size": 64,
+
+    "hybrid_bonding_bw_area_ratio": 0.1,
+    "pim_pu_area": 0.05,
+    "pim_controller_area_overhead": 0.02,
+    "pim_buffer_area_per_kb": 0.01,
+
+    "pim_static_power_per_pu": 0.1,
+    "pim_dynamic_power_per_pu_comp": 0.001,
+    "pim_buffer_static_power_per_kb": 0.5,
+    "pim_buffer_dynamic_power_per_bit": 0.001
+}

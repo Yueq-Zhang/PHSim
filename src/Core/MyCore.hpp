@@ -47,8 +47,12 @@ public:
         return _memory_request_queues[index].front();
     }
 
+    virtual void push_memory_request(std::unique_ptr<MemoryAccess> request);
     virtual void push_memory_request(MemoryAccess *request);
     virtual void push_memory_response(MemoryAccess *response);
+    size_t outstanding_memory_accesses() const {
+        return _memory_access_owner.outstanding();
+    }
     virtual void print_stats();
     virtual void apply_estimated_workload(const ProportionalWorkloadStat& workload);
     virtual void begin_proportional_timing_sampling();
@@ -163,6 +167,7 @@ public:
 
     std::queue<MemoryAccess *> _pim_request_queue;
     std::queue<MemoryAccess *> _pim_response_queue;
+    MemoryAccessOwner _memory_access_owner;
 
     uint32_t _waiting_write_reqs;
     uint32_t _waiting_pim_reqs;

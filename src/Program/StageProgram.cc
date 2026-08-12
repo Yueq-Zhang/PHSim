@@ -32,29 +32,38 @@ uint32_t model_kv_cache_width() {
 }
 
 
-StageProgram::StageProgram(Ptr<Model> model, Ptr<BatchedRequest> batched_request, StagePlatform stage_platform, Stage stage):
+StageProgram::StageProgram(Ptr<Model> model, Ptr<BatchedRequest> batched_request,
+                           StagePlatform stage_platform, Stage stage,
+                           DramDataContainer* data_container):
     _name(stagePlatformToString(stage_platform) + "_stage_" + stageToString(stage)),
     _model(std::move(model)),
     _breq(std::move(batched_request)),
     _stage_platform(stage_platform),
-    _stage(stage) {
+    _stage(stage),
+    _data_container(data_container) {
     this->init_program();
 }
 
-StageProgram::StageProgram(Ops test_single_op_type, std::shared_ptr<BatchedRequest> batched_request, Stage stage):
+StageProgram::StageProgram(Ops test_single_op_type,
+                           std::shared_ptr<BatchedRequest> batched_request,
+                           Stage stage, DramDataContainer* data_container):
     _model(nullptr),
     _breq(std::move(batched_request)),
     _stage_platform(StagePlatform::PIM),
-    _stage(stage) {
+    _stage(stage),
+    _data_container(data_container) {
     this->init_program_single_op(test_single_op_type);
 }
 
-StageProgram::StageProgram(Ptr<Model> model, std::string test_multi_layer_name, std::shared_ptr<BatchedRequest> batched_request, Stage stage):
+StageProgram::StageProgram(Ptr<Model> model, std::string test_multi_layer_name,
+                           std::shared_ptr<BatchedRequest> batched_request,
+                           Stage stage, DramDataContainer* data_container):
     _model(std::move(model)),
     _test_multi_layer_name(std::move(test_multi_layer_name)),
     _stage_platform(StagePlatform::PIM),
     _breq(std::move(batched_request)),
-    _stage(stage) {
+    _stage(stage),
+    _data_container(data_container) {
     this->init_program_multi_layer();
 }
 
@@ -149,16 +158,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
         auto my_bias = std::make_shared<MyTensor>("GEMM_bias", std::vector<uint32_t>{weight_dim[1]}, TensorType::WGT, true);
         auto my_weight = std::make_shared<MyTensor>("GEMM_weight", weight_dim, TensorType::WGT, true);
 
-        if (DRAMDataContainer::dram_data_container_enable) {
-            // Store Bias
-            my_bias->initial_data_container();
-            std::vector<uint8_t> bias_data(my_bias->get_total_size(), 0);
-            my_bias->append_data_into_container(bias_data);
-            // Store Weight
-            std::vector<uint8_t> weight_data(my_weight->get_total_size(), 0);
-            my_weight->initial_data_container();
-            my_weight->append_data_into_container(weight_data);
-        }
+        // Missing DataContainer bursts represent zero-initialized bias/weight.
 
         MyAddressAllocator::activation_malloc();
         // generate activation for multi batches
@@ -166,12 +166,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
         for (auto req : _breq->_reqs) {
             std::vector<uint32_t> input_dim = {req->input_size, static_cast<uint32_t>(Demb * 1.0)} ;
             auto my_input = std::make_shared<MyTensor>("input", input_dim, TensorType::ACT, true);
-            if (DRAMDataContainer::dram_data_container_enable) {
-                // Store Activation data
-                std::vector<uint8_t> activation_data(my_input->get_total_size(), 0);
-                my_input->initial_data_container();
-                my_input->append_data_into_container(activation_data);
-            }
+            // Missing DataContainer bursts represent zero-initialized activation.
 
             my_inputs.push_back(my_input);
         }
@@ -191,16 +186,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
                 std::vector<uint32_t> KVCache_dim = {req->input_size, model_kv_cache_width()};
                 auto my_Q = std::make_shared<MyTensor>("Q", Q_dim, TensorType::ACT, true);
                 auto my_K = std::make_shared<MyTensor>("K", KVCache_dim, TensorType::KCache, true);
-                if (DRAMDataContainer::dram_data_container_enable) {
-                    // Query tensor
-                    my_Q->initial_data_container();
-                    std::vector<uint8_t> query_data(my_Q->get_total_size(), 0);
-                    my_Q->append_data_into_container(query_data);
-                    // Key tensor
-                    my_K->initial_data_container();
-                    std::vector<uint8_t> key_data(my_K->get_total_size(), 0);
-                    my_K->append_data_into_container(key_data);
-                }
+                // Missing DataContainer bursts represent zero-initialized Q/K data.
                 my_inputs_Q.push_back(my_Q);
                 my_inputs_K.push_back(my_K);
             }
@@ -220,15 +206,13 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
                 std::vector<uint32_t> S_dim = {MyAddressAllocator::h, req->input_size, req->input_size};
                 auto my_S = std::make_shared<MyTensor>("S", S_dim, TensorType::ACT, true);
                 auto my_V = std::make_shared<MyTensor>("V", KVCache_dim, TensorType::VCache, true);
-                if (DRAMDataContainer::dram_data_container_enable) {
+                if (_data_container != nullptr) {
                     // Score tensor
-                    my_S->initial_data_container();
                     std::vector<uint8_t> score_data(my_S->get_total_size(), 1);
-                    my_S->append_data_into_container(score_data);
+                    my_S->append_data_into_container(*_data_container, score_data);
                     // Value tensor
-                    my_V->initial_data_container();
                     std::vector<uint8_t> value_data(my_V->get_total_size(), 1);
-                    my_V->append_data_into_container(value_data);
+                    my_V->append_data_into_container(*_data_container, value_data);
                 }
                 my_inputs_S.push_back(my_S);
                 my_inputs_V.push_back(my_V);
@@ -1415,18 +1399,6 @@ std::vector<Ptr<MyTensor>> StageProgram::test_decode_stage_ffn(std::vector<Ptr<M
         throw std::runtime_error("The Supported StagePlatform Only SA and PIM");
     }
 }
-
-
-
-std::vector<Ptr<MyTensor>> StageProgram::test_llama_decode_stage_ffn(std::vector<Ptr<MyTensor>> inputs, int layer) {
-
-
-
-}
-
-
-
-
 Ptr<Operation> StageProgram::add_op(std::shared_ptr<Operation> op) {
     // spdlog::info("operation {} added. add_op", op->get_name());
     _op_map[op->get_id()] = op;

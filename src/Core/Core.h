@@ -29,8 +29,12 @@ class Core {
     virtual MemoryAccess *top_memory_request(uint32_t index) {
         return _memory_request_queues[index].front();
     }
+    virtual void push_memory_request(std::unique_ptr<MemoryAccess> request);
     virtual void push_memory_request(MemoryAccess *request);
     virtual void push_memory_response(MemoryAccess *response);
+    size_t outstanding_memory_accesses() const {
+        return _memory_access_owner.outstanding();
+    }
     virtual void print_stats();
     virtual cycle_type get_compute_cycles() { return _stat_compute_cycle; }
 
@@ -87,6 +91,7 @@ class Core {
     std::vector<std::queue<MemoryAccess *>> _memory_request_queues;
     std::queue<MemoryAccess *> _memory_request_queue;
     std::queue<MemoryAccess *> _memory_response_queue;
+    MemoryAccessOwner _memory_access_owner;
     uint32_t _waiting_write_reqs;
 
     int _current_spad;

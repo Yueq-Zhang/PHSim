@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <exception>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -15,6 +16,53 @@
 namespace {
 
 using Burst = std::vector<std::vector<uint8_t>>;
+
+// Compatibility helpers keep the existing ED integration scenarios focused on
+// event behavior while routing all storage through the instance API.
+namespace DRAMDataContainer {
+std::unique_ptr<DramDataContainer> instance;
+
+void init(const SysConfig& config) {
+    instance = std::make_unique<DramDataContainer>(config);
+}
+
+void cleanup() { instance.reset(); }
+
+DramDataContainer* get() { return instance.get(); }
+
+addr_type make_address(uint32_t ch, uint32_t ra, uint32_t bg, uint32_t ba,
+                       uint32_t row, uint32_t col) {
+    return MyAddressAllocator::make_address_by_index(ra, bg, ba, row, col, ch);
+}
+
+std::vector<uint8_t> flatten_burst(const Burst& data) {
+    std::vector<uint8_t> result;
+    for (const auto& column : data) {
+        result.insert(result.end(), column.begin(), column.end());
+    }
+    return result;
+}
+
+void data_write(Burst data, uint32_t ch, uint32_t ra, uint32_t bg,
+                uint32_t ba, uint32_t row, uint32_t col) {
+    instance->write_burst(make_address(ch, ra, bg, ba, row, col),
+                          flatten_burst(data));
+}
+
+Burst data_read(uint32_t ch, uint32_t ra, uint32_t bg, uint32_t ba,
+                uint32_t row, uint32_t col) {
+    const auto flat = instance->read_burst(
+        make_address(ch, ra, bg, ba, row, col));
+    const uint32_t dq_bytes = instance->burst_bytes() /
+                              MyAddressAllocator::burst_length;
+    Burst result(MyAddressAllocator::burst_length,
+                 std::vector<uint8_t>(dq_bytes, 0));
+    for (uint32_t i = 0; i < flat.size(); ++i) {
+        result[i / dq_bytes][i % dq_bytes] = flat[i];
+    }
+    return result;
+}
+}  // namespace DRAMDataContainer
 
 constexpr uint32_t kMaxDramCycles = 10000;
 int failures = 0;
@@ -396,7 +444,7 @@ int main() {
     try {
         SysConfig config;
         configure_system(config);
-        EventDrivenDram dram(config);
+        EventDrivenDram dram(config, DRAMDataContainer::get());
         EventDrivenHarness harness(dram, config.dram_channels);
 
         test_seeded_read(harness, config);

@@ -78,10 +78,6 @@ int main(int argc, char *argv[]) {
     PIM_Parameters::init(Config::system_config);  // Initial global PIM configuration
     MyAddressAllocator::init(Config::system_config); // MyAddress Allocator
 
-    if (Config::system_config.dram_data_container_enable) {
-        DRAMDataContainer::init(Config::system_config);
-    }
-
     if (Config::system_config.virtual_mem_hash_enable) {
         TwoLevelPageMapper::init_two_level_mapper();
     }
@@ -103,8 +99,6 @@ int main(int argc, char *argv[]) {
     simulator.reset();
     model.reset();
     MyAddressAllocator::cleanup();
-    DRAMDataContainer::cleanup();
-
     file_logger->info("Finish the simulation");
     file_logger->flush();
     file_logger.reset();

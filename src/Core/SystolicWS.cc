@@ -85,8 +85,8 @@ void SystolicWS::cycle() {
             } else {
                 assert(0);
             }
-            for (auto access : accesses) {
-                push_memory_request(access);
+            for (auto& access : accesses) {
+                push_memory_request(std::move(access));
             }
             _ld_inst_queue.pop();
         } else if (front.opcode == Opcode::PIM_HEADER || front.opcode == Opcode::PIM_GWRITE ||
@@ -104,13 +104,13 @@ void SystolicWS::cycle() {
 
             ast(!front.src_addrs.empty());
 
-            MemoryAccess *mem_request = TransToMemoryAccess(
+            auto mem_request = TransToMemoryAccess(
                 front, _config.dram_req_size, _id, _core_cycle, buffer_id, StagePlatform::SA);
 
             if (front.opcode == Opcode::PIM_READRES || front.opcode == Opcode::PIM_COMPS_READRES)
                 buffer->reserve(front.dest_addr, buffer_id, front.size, 1);
 
-            push_memory_request(mem_request);
+            push_memory_request(std::move(mem_request));
             _ld_inst_queue.pop();
 
         } else {
@@ -143,8 +143,8 @@ void SystolicWS::cycle() {
             } else {
                 assert(0);
             }
-            for (auto access : accesses) {
-                push_memory_request(access);
+            for (auto& access : accesses) {
+                push_memory_request(std::move(access));
                 _waiting_write_reqs++;
             }
             _st_inst_queue.pop();

@@ -18,6 +18,18 @@ add_subdirectory("${PROJECT_SOURCE_DIR}/ext/NewtonSim")
 # Add libaray booksim
 add_subdirectory("${PROJECT_SOURCE_DIR}/ext/booksim")
 
+add_library(
+        phsim_data_container STATIC
+        src/DRAM/DataContainer.h
+        src/DRAM/DataContainer.cpp
+)
+target_include_directories(
+        phsim_data_container
+        PUBLIC
+        "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/ext"
+)
+target_link_libraries(phsim_data_container PUBLIC dramsim3)
 
 
 file(GLOB_RECURSE SRC_FILES
@@ -88,7 +100,7 @@ add_executable(
         src/simulator.cpp
 )
 
-target_link_libraries(NMC_Simulator dramsim3 booksim2)
+target_link_libraries(NMC_Simulator dramsim3 booksim2 phsim_data_container)
 
 include(CTest)
 
@@ -103,7 +115,8 @@ if(BUILD_TESTING)
         "${PROJECT_SOURCE_DIR}/src"
         "${PROJECT_SOURCE_DIR}/ext"
     )
-    target_link_libraries(data_container_test PRIVATE dramsim3 format)
+    target_link_libraries(
+        data_container_test PRIVATE phsim_data_container format)
     add_test(NAME data_container_test COMMAND data_container_test)
 
     add_executable(
@@ -126,7 +139,7 @@ if(BUILD_TESTING)
     target_link_libraries(
         data_container_dram_integration_test
         PRIVATE
-        dramsim3
+        phsim_data_container
         format
     )
     add_test(
@@ -154,7 +167,7 @@ if(BUILD_TESTING)
     target_link_libraries(
         data_container_event_driven_integration_test
         PRIVATE
-        dramsim3
+        phsim_data_container
         format
     )
     add_test(
@@ -180,7 +193,7 @@ if(BUILD_TESTING)
     target_link_libraries(
         virtual_memory_address_layout_test
         PRIVATE
-        dramsim3
+        phsim_data_container
         format
     )
     add_test(
@@ -207,5 +220,134 @@ if(BUILD_TESTING)
     add_test(
         NAME pim_hash_address_group_test
         COMMAND pim_hash_address_group_test
+    )
+
+    add_executable(
+        nonvoid_control_flow_test
+        tests/nonvoid_control_flow_test.cpp
+    )
+    target_include_directories(
+        nonvoid_control_flow_test
+        PRIVATE
+        "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/ext"
+    )
+    target_link_libraries(
+        nonvoid_control_flow_test
+        PRIVATE
+        dramsim3
+        format
+    )
+    add_test(
+        NAME nonvoid_control_flow_test
+        COMMAND nonvoid_control_flow_test
+    )
+
+    add_executable(
+        statistics_edge_case_test
+        tests/statistics_edge_case_test.cpp
+    )
+    target_include_directories(
+        statistics_edge_case_test
+        PRIVATE
+        "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/ext"
+    )
+    target_link_libraries(
+        statistics_edge_case_test
+        PRIVATE
+        dramsim3
+        format
+    )
+    add_test(
+        NAME statistics_edge_case_test
+        COMMAND statistics_edge_case_test
+    )
+
+    add_executable(
+        runtime_guard_test
+        tests/runtime_guard_test.cpp
+    )
+    target_include_directories(
+        runtime_guard_test
+        PRIVATE
+        "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/ext"
+    )
+    target_link_libraries(
+        runtime_guard_test
+        PRIVATE
+        dramsim3
+        format
+    )
+    add_test(
+        NAME runtime_guard_test
+        COMMAND runtime_guard_test
+    )
+
+    add_test(
+        NAME full_simulation_smoke_test
+        COMMAND
+            ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -DTEST_MODE=full-simulation-smoke
+            -P ${PROJECT_SOURCE_DIR}/tests/full_simulation_test.cmake
+    )
+    set_tests_properties(
+        full_simulation_smoke_test
+        PROPERTIES TIMEOUT 30
+    )
+
+    add_test(
+        NAME ca_ed_consistency_test
+        COMMAND
+            ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -DTEST_MODE=ca-ed-consistency
+            -P ${PROJECT_SOURCE_DIR}/tests/full_simulation_test.cmake
+    )
+    set_tests_properties(
+        ca_ed_consistency_test
+        PROPERTIES TIMEOUT 30
+    )
+
+    add_executable(
+        memory_access_owner_test
+        tests/memory_access_owner_test.cpp
+    )
+    target_include_directories(
+        memory_access_owner_test
+        PRIVATE
+        "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/ext"
+    )
+    target_link_libraries(
+        memory_access_owner_test
+        PRIVATE
+        dramsim3
+        format
+    )
+    add_test(
+        NAME memory_access_owner_test
+        COMMAND memory_access_owner_test
+    )
+
+    add_test(
+        NAME memory_access_lifecycle_gemm_test
+        COMMAND
+            ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -DTEST_MODE=memory-access-gemm
+            -P ${PROJECT_SOURCE_DIR}/tests/full_simulation_test.cmake
+    )
+    set_tests_properties(
+        memory_access_lifecycle_gemm_test
+        PROPERTIES TIMEOUT 30
     )
 endif()

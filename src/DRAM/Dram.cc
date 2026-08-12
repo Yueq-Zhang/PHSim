@@ -2,9 +2,10 @@
 
 // >>> gsheo
 
-PIM::PIM(const SysConfig& config)
+PIM::PIM(const SysConfig& config, DramDataContainer* data_container)
     : Dram(config),
-      _mem(std::make_unique<dramsim3::NewtonSim>(config.memory_config_path_, config.log_dir)) {
+      _mem(std::make_unique<dramsim3::NewtonSim>(config.memory_config_path_, config.log_dir)),
+      _data_container(data_container) {
     _total_processed_requests.resize(config.dram_channels);
     _processed_requests.resize(config.dram_channels);
 
@@ -205,33 +206,14 @@ MemoryAccess *PIM::top(uint32_t cid) {
     assert(!is_empty(cid));
     // This is the operation for data container
     auto* memory_response = (MemoryAccess *)_mem->Top(cid);
-    if (DRAMDataContainer::dram_data_container_enable) {
+    if (_data_container != nullptr) {
         if (!memory_response->request && !memory_response->data_ready) {
             const addr_type addr = memory_response->dram_address;
-            const uint32_t ch = MyAddressAllocator::get_channel_index(addr);
-            const uint32_t ra = MyAddressAllocator::get_rank_index(addr);
-            const uint32_t bg = MyAddressAllocator::get_bankgroup_index(addr);
-            const uint32_t ba = MyAddressAllocator::get_bank_index(addr);
-            const uint32_t row = MyAddressAllocator::get_row_index(addr);
-            const uint32_t col = MyAddressAllocator::get_col_index(addr);
-
             if (memory_response->req_type == MemoryAccessType::READ) {
-                memory_response->data = DRAMDataContainer::flatten_burst(
-                    DRAMDataContainer::data_read(ch, ra, bg, ba, row, col));
+                memory_response->data = _data_container->read_burst(addr);
             }
             else if ((memory_response->req_type == MemoryAccessType::WRITE) && !memory_response->data.empty()) {
-                std::vector<std::vector<uint8_t>> burst_data(
-                    DRAMDataContainer::burst_length,
-                    std::vector<uint8_t>(DRAMDataContainer::dq_bytes, 0));
-                for (uint32_t col_offset = 0; col_offset < DRAMDataContainer::burst_length; col_offset++) {
-                    for (uint32_t byte_idx = 0; byte_idx < DRAMDataContainer::dq_bytes; byte_idx++) {
-                        const uint64_t src_idx = static_cast<uint64_t>(col_offset) * DRAMDataContainer::dq_bytes + byte_idx;
-                        if (src_idx < memory_response->data.size()) {
-                            burst_data[col_offset][byte_idx] = memory_response->data[src_idx];
-                        }
-                    }
-                }
-                DRAMDataContainer::data_write(std::move(burst_data), ch, ra, bg, ba, row, col);
+                _data_container->write_burst(addr, memory_response->data);
             }
             memory_response->data_ready = true;
         }

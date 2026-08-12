@@ -112,6 +112,8 @@ void SysConfig::initialize_inference_config(std::string inference_config_path) {
     allocation_scheme = inference_config["allocation_scheme"];
     virtual_mem_hash_enable = inference_config.value("virtual_mem_hash_enable", false);
     dram_data_container_enable = inference_config.value("dram_data_container_enable", false);
+    dram_data_container_max_payload_mb =
+        inference_config.value("dram_data_container_max_payload_mb", 0ULL);
 
     // Single Test Model
     test_single_op = inference_config["test_single_op"];
@@ -744,100 +746,6 @@ bool PIM_Parameters::init(const SysConfig& config) {
     pim_buffer_dynamic_power_per_bit = config.pim_buffer_dynamic_power_per_bit;
     return true;
 }
-
-
-namespace DRAMDataContainer {
-    bool dram_data_container_enable = false; // 对enable信号进行初始化，默认为false
-    uint32_t burst_length;
-    uint32_t dq_width;
-    uint32_t dq_bytes;
-
-    std::vector<std::vector<std::vector<std::vector<std::unordered_map<uint32_t, std::vector< std::vector<uint8_t>>>>>>> DRAMDataContainer;
-              // Channel    // Rank    // BankGroup // Bank           // Row     // Column   //DQ
-
-    static void ensure_row(uint32_t ch, uint32_t ra, uint32_t bg, uint32_t ba, uint32_t row) {
-        auto& bank = DRAMDataContainer[ch][ra][bg][ba];
-        auto it = bank.find(row);
-        if (it == bank.end()) {
-            it = bank.emplace(row, std::vector<std::vector<uint8_t>>(MyAddressAllocator::columns)).first;
-        } else if (it->second.size() < MyAddressAllocator::columns) {
-            it->second.resize(MyAddressAllocator::columns);
-        }
-        for (auto& column : it->second) {
-            if (column.size() < dq_bytes) {
-                column.resize(dq_bytes, 0);
-            }
-        }
-    }
-}
-
-void DRAMDataContainer::init(const SysConfig& config) {
-    dram_data_container_enable = true;
-
-    burst_length = config.mem_config.BL;
-    dq_width = config.mem_config.bus_width;
-    dq_bytes = dq_width / 8;
-
-    DRAMDataContainer.resize(config.dram_channels);
-    for (uint32_t ch = 0; ch < config.dram_channels; ch++) {
-        DRAMDataContainer[ch].resize(config.mem_config.ranks);
-        for (uint32_t ra = 0; ra < config.mem_config.ranks; ra++) {
-            DRAMDataContainer[ch][ra].resize(config.mem_config.bankgroups);
-            for (uint32_t bg = 0; bg < config.mem_config.bankgroups; bg++) {
-                DRAMDataContainer[ch][ra][bg].resize(config.mem_config.banks_per_group);
-                for (uint32_t ba = 0; ba < config.mem_config.banks_per_group; ba++) {
-                    // create bank level structure, unordered map，row is key, column is 2D vector, with column number and multiple uint8 instance based on DQ width
-                    DRAMDataContainer[ch][ra][bg][ba] = std::unordered_map<uint32_t, std::vector< std::vector<uint8_t>>>();
-                }
-            }
-        }
-    }
-}
-
-
-void DRAMDataContainer::data_write(std::vector<std::vector<uint8_t>> data, uint32_t ch, uint32_t ra, uint32_t bg, uint32_t ba, uint32_t row, uint32_t col) {
-    assert(data.size() <= burst_length);
-    assert(col + data.size() <= MyAddressAllocator::columns);
-    ensure_row(ch, ra, bg, ba, row);
-    // max data amount of one data write is burst size
-    for (uint32_t col_offset = 0; col_offset < data.size(); col_offset++) {
-        if (data[col_offset].size() < dq_bytes) {
-            data[col_offset].resize(dq_bytes, 0);
-        }
-        DRAMDataContainer[ch][ra][bg][ba][row][col + col_offset] = data[col_offset];
-    }
-}
-
-
-std::vector<std::vector<uint8_t>> DRAMDataContainer::data_read(uint32_t ch, uint32_t ra, uint32_t bg, uint32_t ba, uint32_t row, uint32_t col) {
-    // the data amount of one read is burst size
-    assert(col + burst_length <= MyAddressAllocator::columns);
-    ensure_row(ch, ra, bg, ba, row);
-    std::vector<std::vector<uint8_t>> read_data;
-    read_data.reserve(burst_length);
-    for (uint32_t col_offset = 0; col_offset < burst_length; col_offset++) {
-        read_data.emplace_back(DRAMDataContainer[ch][ra][bg][ba][row][col + col_offset]);
-    }
-    return read_data;
-}
-
-
-std::vector<uint8_t> DRAMDataContainer::flatten_burst(const std::vector<std::vector<uint8_t>>& data) {
-    std::vector<uint8_t> flattened;
-    flattened.reserve(data.size() * dq_bytes);
-    for (const auto& column : data) {
-        for (uint32_t i = 0; i < dq_bytes; i++) {
-            flattened.push_back(i < column.size() ? column[i] : 0);
-        }
-    }
-    return flattened;
-}
-
-
-void DRAMDataContainer::cleanup() {
-    std::vector< std::vector< std::vector< std::vector<  std::unordered_map<uint32_t, std::vector< std::vector<uint8_t>>>>>>>().swap(DRAMDataContainer);
-}
-
 
 
 namespace MyAddressAllocator {
@@ -1901,30 +1809,6 @@ uint32_t MyAddressAllocator::kvcache_append(std::vector<std::vector<uint32_t>>* 
                 uint32_t head_iteration_index = head_index / allocated_KCache_head_per_iteration;
                 uint32_t row_offset = cache_row + head_iteration_index * KVCache_allocate_row;
                 (*allocated_kvcache_rows)[head_index].push_back(row_offset);
-                if (DRAMDataContainer::dram_data_container_enable) { // Expand Data Container for Store
-                    // first the allocated cache row index is row_offset, the allocated bank index and channel index can et based on the head index
-                    uint32_t channel_index =  head_index % MyAddressAllocator::dram_channels;
-                    uint32_t channel_head_iteration_index = head_index % MyAddressAllocator::allocated_KCache_head_per_iteration / MyAddressAllocator::dram_channels;
-                    auto head_allocated_bank_index = MyAddressAllocator::KCache_interleaved_bank_index[channel_head_iteration_index];
-                    for (auto allocate_bank_index : head_allocated_bank_index) {
-                        uint32_t rank_index = allocate_bank_index[0];
-                        uint32_t bankgroup_index = allocate_bank_index[1];
-                        uint32_t bank_index = allocate_bank_index[2];
-
-                        if (DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index].find(row_offset) !=
-                        DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index].end()) {
-                            continue;  // current is initialized
-                        }
-                        std::vector< std::vector<uint8_t>> current_row;
-                        current_row.reserve(MyAddressAllocator::columns);
-                        for (uint32_t col = 0; col < MyAddressAllocator::columns; col++) {
-                            std::vector<uint8_t> data_per_col;
-                            data_per_col.reserve(DRAMDataContainer::dq_bytes);
-                            current_row.push_back(data_per_col);
-                        }
-                        DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index][row_offset] = std::move(current_row);
-                    }
-                }
             }
             cache_row = cache_row + std::ceil(static_cast<double>(h_kv) / allocated_KCache_head_per_iteration) * KVCache_allocate_row;
             return KCache_rows_per_allocation * KVCache_allocate_row;
@@ -1934,32 +1818,6 @@ uint32_t MyAddressAllocator::kvcache_append(std::vector<std::vector<uint32_t>>* 
                 uint32_t head_iteration_index = head_index / allocated_VCache_head_per_iteration;
                 uint32_t row_offset = cache_row + head_iteration_index * KVCache_allocate_row;
                 (*allocated_kvcache_rows)[head_index].push_back(row_offset);
-                if (DRAMDataContainer::dram_data_container_enable) { // Expand Data Container for Store
-                    // first the allocated cache row index is row_offset, the allocated bank index and channel index can et based on the head index
-                    uint32_t channel_index =  head_index % MyAddressAllocator::dram_channels;
-                    uint32_t channel_head_iteration_index = head_index % MyAddressAllocator::allocated_VCache_head_per_iteration / MyAddressAllocator::dram_channels;
-                    auto head_allocated_bank_index = MyAddressAllocator::VCache_interleaved_bank_index[channel_head_iteration_index];
-                    for (auto allocate_bank_index : head_allocated_bank_index) {
-                        uint32_t rank_index = allocate_bank_index[0];
-                        uint32_t bankgroup_index = allocate_bank_index[1];
-                        uint32_t bank_index = allocate_bank_index[2];
-
-                        if (DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index].find(row_offset) !=
-                        DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index].end()) {
-                            continue;  // current is initialized
-                        }
-                        std::vector< std::vector<uint8_t>> current_row;
-                        current_row.reserve(MyAddressAllocator::columns);
-                        for (uint32_t col = 0; col < MyAddressAllocator::columns; col++) {
-                            std::vector<uint8_t> data_per_col;
-                            data_per_col.reserve(DRAMDataContainer::dq_bytes);
-                            current_row.push_back(data_per_col);
-                        }
-                        DRAMDataContainer::DRAMDataContainer[channel_index][rank_index][bankgroup_index][bank_index][row_offset] = std::move(current_row);
-                    }
-                }
-
-
             }
             cache_row = cache_row + std::ceil(static_cast<double>(h_kv) / allocated_VCache_head_per_iteration) * KVCache_allocate_row;
             return VCache_rows_per_allocation * KVCache_allocate_row;
@@ -2453,9 +2311,9 @@ std::string Tile::repr() {
 }
 
 
-MemoryAccess *TransToMemoryAccess(Instruction &inst, uint32_t size, uint32_t core_id,
-                                 cycle_type start_cycle, int buffer_id,
-                                 StagePlatform stage_platform){
+std::unique_ptr<MemoryAccess> TransToMemoryAccess(
+    Instruction &inst, uint32_t size, uint32_t core_id,
+    cycle_type start_cycle, int buffer_id, StagePlatform stage_platform) {
     MemoryAccessType req_type;
     switch (inst.opcode){
         case Opcode::PIM_HEADER:
@@ -2489,7 +2347,7 @@ MemoryAccess *TransToMemoryAccess(Instruction &inst, uint32_t size, uint32_t cor
     assert(it != inst.src_addrs.end());
     addr_type dram_addr = *it;
 
-    MemoryAccess *mem_request = new MemoryAccess{
+    auto mem_request = std::unique_ptr<MemoryAccess>(new MemoryAccess{
         .id = generate_mem_access_id(),
         .logical_dram_address = dram_addr,
         .dram_address = dram_addr,
@@ -2504,7 +2362,7 @@ MemoryAccess *TransToMemoryAccess(Instruction &inst, uint32_t size, uint32_t cor
         .buffer_id = buffer_id,
         .parent_tile = inst.parent_tile,
         .stage_platform = stage_platform,
-    };
+    });
     return mem_request;
 }
 
@@ -2527,9 +2385,10 @@ std::string memAccessTypeString(MemoryAccessType type) {
         case (MemoryAccessType::COMPS_READRES):
             return "COMPS_READRES";
         default:
-            assert(0);
+            throw std::invalid_argument(
+                "Unknown MemoryAccessType: " +
+                std::to_string(static_cast<int>(type)));
     }
-    return "Unknown";
 }
 
 std::string opcodeTypeString(Opcode opcode) {
@@ -2553,7 +2412,7 @@ std::string opcodeTypeString(Opcode opcode) {
     }
 }
 
-std::vector<MemoryAccess *> MemoryAccess::from_instruction(Instruction &inst, uint32_t id, uint32_t size, MemoryAccessType req_type, bool request, uint32_t core_id,
+std::vector<std::unique_ptr<MemoryAccess>> MemoryAccess::from_instruction(Instruction &inst, uint32_t id, uint32_t size, MemoryAccessType req_type, bool request, uint32_t core_id,
                                                                   cycle_type start_cycle, int buffer_id, StagePlatform stage_platform) {
     // generate trace from the generated instructions, add the channel index when loading the Core,
     // where the number of src_add is the number of bursts required during the loading process
@@ -2568,10 +2427,10 @@ std::vector<MemoryAccess *> MemoryAccess::from_instruction(Instruction &inst, ui
     }
 
 
-    std::vector<MemoryAccess *> ret;
+    std::vector<std::unique_ptr<MemoryAccess>> ret;
     for (auto &addr : aligned_src_addrs) {
         req_count++;
-        MemoryAccess *mem_access = new MemoryAccess{
+        auto mem_access = std::unique_ptr<MemoryAccess>(new MemoryAccess{
             .id = id,
             .dram_address = addr,
             .spad_address = inst.dest_addr,
@@ -2583,25 +2442,25 @@ std::vector<MemoryAccess *> MemoryAccess::from_instruction(Instruction &inst, ui
             .buffer_id = buffer_id,
             .parent_tile = inst.parent_tile,
             .stage_platform = stage_platform,
-        };
-        ret.push_back(mem_access);
+        });
+        ret.push_back(std::move(mem_access));
     }
 
     return ret;
 }
 
 
-std::vector<MemoryAccess *> MemoryAccess::gen_trace_from_instruction(Instruction &inst, uint32_t id, uint32_t size, MemoryAccessType req_type, bool request, uint32_t core_id,
+std::vector<std::unique_ptr<MemoryAccess>> MemoryAccess::gen_trace_from_instruction(Instruction &inst, uint32_t id, uint32_t size, MemoryAccessType req_type, bool request, uint32_t core_id,
                                                                   cycle_type start_cycle, int buffer_id, StagePlatform stage_platform) {
 
-    std::vector<MemoryAccess *> ret;
+    std::vector<std::unique_ptr<MemoryAccess>> ret;
     std::vector<addr_type> address_with_channel_index;
 
     if (inst.per_ch_inst) {
         for (auto addr : inst.src_addrs) {
             auto ch = MyAddressAllocator::get_channel_index(addr);
             req_count++;
-            MemoryAccess *mem_access = new MemoryAccess{
+            auto mem_access = std::unique_ptr<MemoryAccess>(new MemoryAccess{
                 .id = ch,
                 .dram_address = addr,
                 .spad_address = inst.dest_addr,
@@ -2613,8 +2472,8 @@ std::vector<MemoryAccess *> MemoryAccess::gen_trace_from_instruction(Instruction
                 .buffer_id = buffer_id,
                 .parent_tile = inst.parent_tile,
                 .stage_platform = stage_platform,
-            };
-            ret.push_back(mem_access);
+            });
+            ret.push_back(std::move(mem_access));
         }
     }
     else {
@@ -2625,7 +2484,7 @@ std::vector<MemoryAccess *> MemoryAccess::gen_trace_from_instruction(Instruction
                 assert(channel == ch);
                 address_with_channel_index.push_back(convert_address);
                 req_count++;
-                MemoryAccess *mem_access = new MemoryAccess{
+                auto mem_access = std::unique_ptr<MemoryAccess>(new MemoryAccess{
                     .id = ch,
                     .dram_address = convert_address,
                     .spad_address = inst.dest_addr,
@@ -2637,8 +2496,8 @@ std::vector<MemoryAccess *> MemoryAccess::gen_trace_from_instruction(Instruction
                     .buffer_id = buffer_id,
                     .parent_tile = inst.parent_tile,
                     .stage_platform = stage_platform,
-                };
-                ret.push_back(mem_access);
+                });
+                ret.push_back(std::move(mem_access));
             }
         }
     }
@@ -2646,9 +2505,9 @@ std::vector<MemoryAccess *> MemoryAccess::gen_trace_from_instruction(Instruction
 }
 
 
-std::vector<MemoryAccess *> MemoryAccess::gen_pim_trace_from_instruction(Instruction &inst, uint32_t id, uint32_t size, MemoryAccessType req_type, bool request, uint32_t core_id,
+std::vector<std::unique_ptr<MemoryAccess>> MemoryAccess::gen_pim_trace_from_instruction(Instruction &inst, uint32_t id, uint32_t size, MemoryAccessType req_type, bool request, uint32_t core_id,
                                                                   cycle_type start_cycle, int buffer_id, StagePlatform stage_platform) {
-    std::vector<MemoryAccess *> ret;
+    std::vector<std::unique_ptr<MemoryAccess>> ret;
     const uint32_t parallel_n = Config::system_config.pim_parallel_bank_accesses;
     // const bool pim_comp_bank_stagger = (parallel_n > 0 && req_type == MemoryAccessType::COMP && (parallel_n % MyAddressAllocator::dram_channels) == 0);
     for (auto addr : inst.src_addrs) {
@@ -2663,7 +2522,7 @@ std::vector<MemoryAccess *> MemoryAccess::gen_pim_trace_from_instruction(Instruc
                         for (uint32_t channel_index = 0; channel_index < MyAddressAllocator::dram_channels; channel_index++) {
                             const addr_type dram_addr = MyAddressAllocator::make_address_by_index(rank_index, bankgroup_index, bank_index, row, col, channel_index);
                             req_count++;
-                            MemoryAccess *mem_access = new MemoryAccess{
+                            auto mem_access = std::unique_ptr<MemoryAccess>(new MemoryAccess{
                                 .id = channel_index,
                                 .logical_dram_address = dram_addr,
                                 .dram_address = dram_addr,
@@ -2678,8 +2537,8 @@ std::vector<MemoryAccess *> MemoryAccess::gen_pim_trace_from_instruction(Instruc
                                 .buffer_id = buffer_id,
                                 .parent_tile = inst.parent_tile,
                                 .stage_platform = stage_platform,
-                            };
-                            ret.push_back(mem_access);
+                            });
+                            ret.push_back(std::move(mem_access));
                         }
                     }
                 }
@@ -2696,7 +2555,7 @@ std::vector<MemoryAccess *> MemoryAccess::gen_pim_trace_from_instruction(Instruc
                 const addr_type dram_addr =
                     MyAddressAllocator::make_address_by_index(ra_s, bg_s, ba_s, row, col, ch);
                 req_count++;
-                MemoryAccess *mem_access = new MemoryAccess{
+                auto mem_access = std::unique_ptr<MemoryAccess>(new MemoryAccess{
                     .id = ch,
                     .logical_dram_address = dram_addr,
                     .dram_address = dram_addr,
@@ -2711,8 +2570,8 @@ std::vector<MemoryAccess *> MemoryAccess::gen_pim_trace_from_instruction(Instruc
                     .buffer_id = buffer_id,
                     .parent_tile = inst.parent_tile,
                     .stage_platform = stage_platform,
-                };
-                ret.push_back(mem_access);
+                });
+                ret.push_back(std::move(mem_access));
             }
             */
         }
@@ -2731,7 +2590,7 @@ std::vector<MemoryAccess *> MemoryAccess::gen_pim_trace_from_instruction(Instruc
                 auto channel = MyAddressAllocator::get_channel_index(convert_address);
                 assert(channel == ch);
                 req_count++;
-                MemoryAccess *mem_access = new MemoryAccess{
+                auto mem_access = std::unique_ptr<MemoryAccess>(new MemoryAccess{
                     .id = ch,
                     .logical_dram_address = convert_address,
                     .dram_address = convert_address,
@@ -2746,8 +2605,8 @@ std::vector<MemoryAccess *> MemoryAccess::gen_pim_trace_from_instruction(Instruc
                     .buffer_id = buffer_id,
                     .parent_tile = inst.parent_tile,
                     .stage_platform = stage_platform,
-                };
-                ret.push_back(mem_access);
+                });
+                ret.push_back(std::move(mem_access));
             }
         }
     }

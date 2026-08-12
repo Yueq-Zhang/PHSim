@@ -69,6 +69,7 @@ public:
 
 
     DramMode _dram_mode;
+    std::unique_ptr<DramDataContainer> _data_container;
     std::unique_ptr<PIM> _dram; // std::unique_ptr<MemorySystem> _dram;
     std::unique_ptr<EventDrivenDram> _event_driven_dram; // event driven dram structure
     cycle_type _dram_cycle_count;

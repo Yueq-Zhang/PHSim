@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "../common_function.hpp"
+#include "DataContainer.h"
 #include "../ext/NewtonSim/include/newtonsim/NewtonSim.h"
 
 class Dram {
@@ -36,7 +37,7 @@ class Dram {
 
 class PIM : public Dram {
    public:
-    PIM(const SysConfig& config);
+    PIM(const SysConfig& config, DramDataContainer* data_container);
     ~PIM() = default;
     virtual bool running() override;
     virtual void cycle() override;
@@ -73,6 +74,7 @@ class PIM : public Dram {
     void log(Stage stage);
 
     std::unique_ptr<dramsim3::NewtonSim> _mem;
+    DramDataContainer* _data_container = nullptr;
     std::vector<uint64_t> _total_processed_requests;
     std::vector<uint64_t> _processed_requests;
     uint64_t _mem_req_cnt = 0;

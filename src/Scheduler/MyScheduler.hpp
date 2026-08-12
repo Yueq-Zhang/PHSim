@@ -9,10 +9,12 @@ class EventDrivenDram;
 class MyCore;
 class MyInterconnect;
 class Client;
+class DramDataContainer;
 
 class MyScheduler {
 public:
-    MyScheduler(const SysConfig& config, const cycle_type *core_cycle);
+    MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
+                DramDataContainer* data_container);
     ~MyScheduler() = default;
     void launch(Ptr<Model> model);
     void add_request(std::shared_ptr<InferRequest> request);
@@ -322,6 +324,7 @@ public:
     Client* _client = nullptr;
     PIM* _dram = nullptr;
     EventDrivenDram* _event_driven_dram = nullptr;
+    DramDataContainer* _data_container = nullptr;
     MyInterconnect* _icnt = nullptr;
     std::vector<MyCore*> _cores;
 

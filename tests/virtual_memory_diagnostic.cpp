@@ -1,4 +1,5 @@
 #include "common_function.hpp"
+#include "DRAM/DataContainer.h"
 
 #include <array>
 #include <cstdint>
@@ -204,6 +205,16 @@ int main() {
         TwoLevelPageMapper::map_logical_address(probe_address);
     const bool wrapper_deterministic = wrapper_first == wrapper_second;
 
+    DramDataContainer mapped_data_container(Config::system_config);
+    DramDataContainer::Burst mapped_payload(
+        mapped_data_container.burst_bytes(), 0x5A);
+    mapped_data_container.write_burst(wrapper_first, mapped_payload);
+    const bool mapped_data_round_trip =
+        mapped_data_container.read_burst(
+            TwoLevelPageMapper::map_logical_address(probe_address)) ==
+            mapped_payload &&
+        mapped_data_container.resident_bursts() == 1;
+
     std::ostringstream page_table;
     TwoLevelPageMapper::dump_page_table(page_table);
     const bool wrapper_page_allocated =
@@ -279,6 +290,7 @@ int main() {
 
     print_check("disabled_mapping_is_identity", disabled_pass_through);
     print_check("enabled_mapping_is_deterministic", wrapper_deterministic);
+    print_check("mapped_data_container_round_trip", mapped_data_round_trip);
     print_check("page_table_records_first_touch", wrapper_page_allocated);
     print_check("address_units_match_mem_config", address_units_match_config);
     print_check("mapper_and_dram_decoders_agree", decoders_agree);
@@ -320,6 +332,7 @@ int main() {
     }
 
     const bool healthy = disabled_pass_through && wrapper_deterministic &&
+                         mapped_data_round_trip &&
                          wrapper_page_allocated && address_units_match_config &&
                          decoders_agree &&
                          hash_changes_runtime_bank && channel_is_preserved &&

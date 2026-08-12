@@ -14,6 +14,7 @@
 #include <queue>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -782,6 +783,7 @@ public:
     std::string allocation_scheme;
 
     bool dram_data_container_enable;
+    uint64_t dram_data_container_max_payload_mb = 0;
     bool virtual_mem_hash_enable;
 
     // For Single Operation Test
@@ -958,9 +960,8 @@ typedef struct NPUStat {
                 return "StartCycle";
             case StatType::NumCalculations:
                 return "NumCalculations";
-            default:
-                assert(0);
         }
+        throw std::invalid_argument("Unknown NPUStat::StatType");
     }
 
     std::string get_by_enum(StatType stat_type) {
@@ -971,9 +972,8 @@ typedef struct NPUStat {
                 return std::to_string(start_cycle);
             case StatType::NumCalculations:
                 return std::to_string(num_calculations);
-            default:
-                assert(0);
         }
+        throw std::invalid_argument("Unknown NPUStat::StatType");
     }
 
     static std::string get_columns() {
@@ -1069,9 +1069,8 @@ typedef struct MemoryIOStat {
                 return "PIMBandwidth";
             case StatType::PIMEnergy:
                 return "PIMEnergy";
-            default:
-                assert(0);
         }
+        throw std::invalid_argument("Unknown MemoryIOStat::StatType");
     }
 
     std::string get_by_enum(StatType stat_type) {
@@ -1103,12 +1102,16 @@ typedef struct MemoryIOStat {
             case StatType::PIMComps:
                 return std::to_string(pim_comps);
             case StatType::PIMBandwidth:
-                return std::to_string((pim_reads + pim_writes) * core_cycle / num_cycles);
+                if (num_cycles == 0) {
+                    return "0";
+                }
+                return std::to_string(static_cast<uint64_t>(
+                    (static_cast<long double>(pim_reads) + pim_writes) *
+                    core_cycle / num_cycles));
             case StatType::PIMEnergy:
                 return std::to_string(pim_energy);
-            default:
-                assert(0);
         }
+        throw std::invalid_argument("Unknown MemoryIOStat::StatType");
     }
 
     static std::string get_columns() {
@@ -1291,13 +1294,11 @@ typedef struct OperationStat {
                 return "EstimatedNumCalculation";
             case StatType::NpuUtilization:
                 return "NpuUtilization";
-            default:
-                assert(0);
         }
+        throw std::invalid_argument("Unknown OperationStat::StatType");
     }
 
     std::string get_by_enum(StatType stat_type) {
-        double npu_util;
         uint64_t total_cycle = end_cycle - start_cycle;
         uint64_t core_cycle = Config::system_config.core_freq * 1000000;
 
@@ -1346,13 +1347,17 @@ typedef struct OperationStat {
             case StatType::EstimatedNumCalculation:
                 return std::to_string(estimated_num_calculation);
             case StatType::NpuUtilization:
-                npu_util = (double)num_calculation /
-                           (double)(compute_cycles * Config::system_config.core_width *
-                                    Config::system_config.core_height);
-                return std::to_string(npu_util);
-            default:
-                assert(0);
+                if (compute_cycles == 0 || Config::system_config.core_width == 0 ||
+                    Config::system_config.core_height == 0) {
+                    return "0";
+                }
+                return std::to_string(static_cast<double>(
+                    static_cast<long double>(num_calculation) /
+                    (static_cast<long double>(compute_cycles) *
+                     Config::system_config.core_width *
+                     Config::system_config.core_height)));
         }
+        throw std::invalid_argument("Unknown OperationStat::StatType");
     }
 
     static std::string get_columns() {
@@ -1798,23 +1803,6 @@ std::vector<AddressGroup> group_comp_addresses(
 }  // namespace PIMHashAddressing
 
 
-namespace DRAMDataContainer {
-    extern bool dram_data_container_enable;
-    extern std::vector< std::vector< std::vector< std::vector<  std::unordered_map<uint32_t, std::vector< std::vector<uint8_t>>>>>>> DRAMDataContainer;
-    extern uint32_t burst_length;
-    extern uint32_t dq_width;
-    extern uint32_t dq_bytes;
-    //     channel   // Rank      // BankGroup  // Bank              // Row     // Column
-    // 其中
-    void init(const SysConfig& config);
-    void cleanup();
-
-    void data_write(std::vector<std::vector<uint8_t>> data, uint32_t ch, uint32_t ra, uint32_t bg, uint32_t ba, uint32_t row, uint32_t col);
-    std::vector<std::vector<uint8_t>> data_read(uint32_t ch, uint32_t ra, uint32_t bg, uint32_t ba, uint32_t row, uint32_t col);
-    std::vector<uint8_t> flatten_burst(const std::vector<std::vector<uint8_t>>& data);
-}
-
-
 namespace PIM_Parameters {
     extern bool dual_bank;
     extern uint32_t PU_num_per_channel;
@@ -2140,19 +2128,19 @@ typedef struct MemoryAccess {
     std::vector<uint8_t> data;
     bool data_ready;
 
-    static std::vector<MemoryAccess *> from_instruction(Instruction &inst, uint32_t id,
+    static std::vector<std::unique_ptr<MemoryAccess>> from_instruction(Instruction &inst, uint32_t id,
                                                         uint32_t size, MemoryAccessType req_type,
                                                         bool request, uint32_t core_id,
                                                         cycle_type start_cycle, int buffer_id,
                                                         StagePlatform stage_platform);
 
-    static std::vector<MemoryAccess *> gen_trace_from_instruction(Instruction &inst, uint32_t id,
+    static std::vector<std::unique_ptr<MemoryAccess>> gen_trace_from_instruction(Instruction &inst, uint32_t id,
                                                         uint32_t size, MemoryAccessType req_type,
                                                         bool request, uint32_t core_id,
                                                         cycle_type start_cycle, int buffer_id,
                                                         StagePlatform stage_platform);
 
-    static std::vector<MemoryAccess *> gen_pim_trace_from_instruction(Instruction &inst, uint32_t id,
+    static std::vector<std::unique_ptr<MemoryAccess>> gen_pim_trace_from_instruction(Instruction &inst, uint32_t id,
                                                         uint32_t size, MemoryAccessType req_type,
                                                         bool request, uint32_t core_id,
                                                         cycle_type start_cycle, int buffer_id,
@@ -2163,15 +2151,71 @@ typedef struct MemoryAccess {
     // SA program / PIM program (for sub-batch interleaving)
     StagePlatform stage_platform;
 
+    // Set only while the request is owned by a Core MemoryAccessOwner. All
+    // transport queues and DRAM models hold non-owning pointers.
+    static constexpr size_t unowned_slot = static_cast<size_t>(-1);
+    size_t owner_slot;
+
     static void log_count() {
         spdlog::info("total pre req count {} / memory request count {}", pre_req_count, req_count);
     }
 
     std::unique_ptr<MemoryAccess> clone() const {
-        return std::unique_ptr<MemoryAccess>(new MemoryAccess(*this));
+        auto result = std::unique_ptr<MemoryAccess>(new MemoryAccess(*this));
+        result->owner_slot = unowned_slot;
+        return result;
     }
 
 } MemoryAccess;
+
+
+// Owns every live request created by one Core. Requests keep a stable heap
+// address while raw observer pointers move through Core, ICNT, and DRAM
+// queues. Reusing vacant slots keeps ownership overhead proportional to the
+// peak number of in-flight requests rather than the total simulation count.
+class MemoryAccessOwner {
+public:
+    MemoryAccess* adopt(std::unique_ptr<MemoryAccess> access) {
+        assert(access != nullptr);
+
+        size_t slot;
+        if (_free_slots.empty()) {
+            slot = _slots.size();
+            _slots.push_back(nullptr);
+        }
+        else {
+            slot = _free_slots.back();
+            _free_slots.pop_back();
+        }
+
+        access->owner_slot = slot;
+        MemoryAccess* observer = access.get();
+        _slots[slot] = std::move(access);
+        _outstanding++;
+        return observer;
+    }
+
+    void release(MemoryAccess* access) {
+        assert(access != nullptr);
+        const size_t slot = access->owner_slot;
+        assert(slot != MemoryAccess::unowned_slot);
+        assert(slot < _slots.size());
+        assert(_slots[slot].get() == access);
+
+        access->owner_slot = MemoryAccess::unowned_slot;
+        _slots[slot].reset();
+        _free_slots.push_back(slot);
+        assert(_outstanding > 0);
+        _outstanding--;
+    }
+
+    size_t outstanding() const { return _outstanding; }
+
+private:
+    std::vector<std::unique_ptr<MemoryAccess>> _slots;
+    std::vector<size_t> _free_slots;
+    size_t _outstanding = 0;
+};
 
 
 
@@ -2253,9 +2297,9 @@ std::vector<T> slice(std::vector<T> &inp, int start, int end) {
     return std::vector<T>(inp.begin() + start, inp.begin() + end);
 }
 
-MemoryAccess *TransToMemoryAccess(Instruction &inst, uint32_t size, uint32_t core_id,
-                                  cycle_type start_cycle, int buffer_id,
-                                  StagePlatform stage_platform);
+std::unique_ptr<MemoryAccess> TransToMemoryAccess(
+    Instruction &inst, uint32_t size, uint32_t core_id,
+    cycle_type start_cycle, int buffer_id, StagePlatform stage_platform);
 
 inline int MemoryAccess::req_count = 0;
 inline int MemoryAccess::pre_req_count = 0;

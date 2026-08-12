@@ -209,6 +209,10 @@ bool Core::running() {
 }
 
 // push into target channel memory request queue
+void Core::push_memory_request(std::unique_ptr<MemoryAccess> request) {
+    push_memory_request(_memory_access_owner.adopt(std::move(request)));
+}
+
 void Core::push_memory_request(MemoryAccess *request) {
     int channel = AddressConfig::mask_channel(request->dram_address);
 
@@ -244,7 +248,7 @@ void Core::push_memory_response(MemoryAccess *response) {
         // case3: load activation or weight to _spad
         _spad.fill(response->spad_address, response->buffer_id);
     }
-    delete response;
+    _memory_access_owner.release(response);
 }
 
 // checks if inputs are loaded.

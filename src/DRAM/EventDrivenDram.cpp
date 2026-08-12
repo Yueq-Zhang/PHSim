@@ -1,5 +1,7 @@
 #include <iostream>
 #include <fstream>
+#include <stdexcept>
+#include <string>
 #include "EventDrivenDram.h"
 #include "NewtonSim/src/configuration.h"
 
@@ -62,8 +64,9 @@ PimCmdSlot pim_slot(MemoryAccessType type) {
         case MemoryAccessType::COMPS_READRES:
             return PimCmdSlot::READRES;
         default:
-            assert(false);
-            return PimCmdSlot::P_HEADER;
+            throw std::invalid_argument(
+                "Unsupported PIM memory access type: " +
+                std::to_string(static_cast<int>(type)));
     }
 }
 
@@ -136,8 +139,10 @@ uint64_t pim_same_channel_delay(PimCmdSlot from, PimCmdSlot to, const MemConfig&
             }
             break;
     }
-    assert(false);
-    return 0;
+    throw std::logic_error(
+        "Unsupported PIM timing transition from slot " +
+        std::to_string(pim_slot_index(from)) + " to slot " +
+        std::to_string(pim_slot_index(to)));
 }
 
 void update_pim_ready_after_cmd(DRAMBank* bank, PimCmdSlot from, uint64_t issue_cycle, const MemConfig& config) {
@@ -380,45 +385,20 @@ void update_pim_timing_after_normal(DRAMChannel* channel, const std::shared_ptr<
     }
 }
 
-void apply_data_container_response(MemoryAccess* memory_response) {
-    if (!DRAMDataContainer::dram_data_container_enable ||
+void apply_data_container_response(MemoryAccess* memory_response,
+                                   DramDataContainer* data_container) {
+    if (data_container == nullptr ||
         memory_response == nullptr || memory_response->request ||
         memory_response->data_ready) {
         return;
     }
 
     const addr_type addr = memory_response->dram_address;
-    const uint32_t ch = MyAddressAllocator::get_channel_index(addr);
-    const uint32_t ra = MyAddressAllocator::get_rank_index(addr);
-    const uint32_t bg = MyAddressAllocator::get_bankgroup_index(addr);
-    const uint32_t ba = MyAddressAllocator::get_bank_index(addr);
-    const uint32_t row = MyAddressAllocator::get_row_index(addr);
-    const uint32_t col = MyAddressAllocator::get_col_index(addr);
-
     if (memory_response->req_type == MemoryAccessType::READ) {
-        memory_response->data = DRAMDataContainer::flatten_burst(
-            DRAMDataContainer::data_read(ch, ra, bg, ba, row, col));
+        memory_response->data = data_container->read_burst(addr);
     } else if (memory_response->req_type == MemoryAccessType::WRITE &&
                !memory_response->data.empty()) {
-        std::vector<std::vector<uint8_t>> burst_data(
-            DRAMDataContainer::burst_length,
-            std::vector<uint8_t>(DRAMDataContainer::dq_bytes, 0));
-        for (uint32_t col_offset = 0;
-             col_offset < DRAMDataContainer::burst_length; ++col_offset) {
-            for (uint32_t byte_idx = 0;
-                 byte_idx < DRAMDataContainer::dq_bytes; ++byte_idx) {
-                const uint64_t src_idx =
-                    static_cast<uint64_t>(col_offset) *
-                        DRAMDataContainer::dq_bytes +
-                    byte_idx;
-                if (src_idx < memory_response->data.size()) {
-                    burst_data[col_offset][byte_idx] =
-                        memory_response->data[src_idx];
-                }
-            }
-        }
-        DRAMDataContainer::data_write(
-            std::move(burst_data), ch, ra, bg, ba, row, col);
+        data_container->write_burst(addr, memory_response->data);
     }
 
     memory_response->data_ready = true;
@@ -1468,7 +1448,7 @@ void ResponseQueue::reserve() {
     NumReserved++;
 }
 
-void ResponseQueue::push(void *original_req) {
+void ResponseQueue::push(MemoryAccess* original_req) {
     OutputQueue.push_back(original_req);
     assert(NumReserved > 0);
     NumReserved--;
@@ -1481,15 +1461,17 @@ void ResponseQueue::pop() {
     OutputQueue.pop_front();
 }
 
-void *ResponseQueue::top() const { return OutputQueue.front(); }
+MemoryAccess* ResponseQueue::top() const { return OutputQueue.front(); }
 
 
 //////////////////////////////////////////
 // EventDrivenDram constructor
 //////////////////////////////////////////
-EventDrivenDram::EventDrivenDram(const SysConfig& config)
+EventDrivenDram::EventDrivenDram(const SysConfig& config,
+                                 DramDataContainer* data_container)
     : dramsim3_config_(std::make_unique<dramsim3::Config>(
-          config.memory_config_path_, config.output_path_)) {
+          config.memory_config_path_, config.output_path_)),
+      _data_container(data_container) {
     // PIM completion callback
     std::function<void(uint64_t)> pim_callback = [&](uint64_t addr) {
         auto channel_index = MyAddressAllocator::get_channel_index(addr);
@@ -1707,6 +1689,11 @@ void EventDrivenDram::push(uint32_t cid, MemoryAccess *req) {
         }
 
         auto response_event = std::make_shared<Event>(*event);
+        // The physical write event remains in the write buffer after the
+        // logical response returns to the Core. Only the response event may
+        // retain this borrowed pointer; otherwise the physical event would
+        // keep a dangling pointer after Core releases the request.
+        event->original_req = nullptr;
         response_event->response_only = true;
         response_event->complete_cycle = _memsys->dram_channels[cid]->_dram_cycle + 1;
         _memsys->dram_channels[cid]->return_queue.push_back(response_event);
@@ -1768,15 +1755,15 @@ void EventDrivenDram::push(uint32_t cid, MemoryAccess *req) {
 }
 
 void EventDrivenDram::pop(uint32_t cid) {
-    auto response_transaction = (MemoryAccess *)response_event_queues_[cid].top();
+    auto* response_transaction = response_event_queues_[cid].top();
     response_event_queues_[cid].pop();
     spdlog::debug("(EventDriven DRAM) ResponseQueue : At Cycle {}, channel {} pop transaction {}, {} exist",
         _memsys->dram_channels[cid]->_dram_cycle, cid, response_transaction->dram_address, response_event_queues_[cid].NumReserved);
 }
 
 MemoryAccess *EventDrivenDram::top(uint32_t cid) {
-    auto* memory_response = (MemoryAccess *)response_event_queues_[cid].top();
-    apply_data_container_response(memory_response);
+    auto* memory_response = response_event_queues_[cid].top();
+    apply_data_container_response(memory_response, _data_container);
     return memory_response;
 }
 
@@ -2171,7 +2158,9 @@ void EventDrivenDram::schedule_pending_event_transaction(uint32_t cid) {
             issue_pending_pim_event(cid);
             break;
         default:
-            assert(false);
+            throw std::logic_error(
+                "Unknown EventDriven DRAM queue class on channel " +
+                std::to_string(cid));
     }
 }
 
@@ -2382,7 +2371,10 @@ void EventDrivenDram::issue_pending_read_event(uint32_t cid) {
     }
     auto read_event = _read_queue[cid].front();
     if (read_event->processed) {
-        assert(0);
+        throw std::logic_error(
+            "EventDriven DRAM attempted to process read event twice on channel " +
+            std::to_string(cid) + ", address " +
+            std::to_string(read_event->dram_address));
     }
     ED_TRACE_TRANSACTION(cid, _memsys->dram_channels[cid]->_dram_cycle,
                       "TO_ROW_STATE", read_event);
@@ -2402,7 +2394,10 @@ void EventDrivenDram::issue_pending_write_event(uint32_t cid) {
     if (!_write_buffer[cid].empty() && _write_draining[cid] > 0) {
         auto write_event = _write_buffer[cid].front();
         if (write_event->processed) {
-            assert(0); // continue;
+            throw std::logic_error(
+                "EventDriven DRAM attempted to process write event twice on channel " +
+                std::to_string(cid) + ", address " +
+                std::to_string(write_event->dram_address));
         }
         ED_TRACE_TRANSACTION(cid, _memsys->dram_channels[cid]->_dram_cycle,
                           "TO_ROW_STATE", write_event);
@@ -2427,7 +2422,10 @@ void EventDrivenDram::issue_pending_pim_event(uint32_t cid) {
     if (!_pim_queue[cid].empty()) {
         auto pim_event = _pim_queue[cid].front();
         if (pim_event->processed) {
-            assert(0); // continue;
+            throw std::logic_error(
+                "EventDriven DRAM attempted to process PIM event twice on channel " +
+                std::to_string(cid) + ", address " +
+                std::to_string(pim_event->dram_address));
         }
         // The physical PIM command queue changes from empty/non-empty at this
         // point.  Settle the preceding interval using the old queue state;

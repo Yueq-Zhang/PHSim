@@ -7,11 +7,19 @@
 #include "../operations/Operation.h"
 #include "../tensor/BTensor.h"
 
+class DramDataContainer;
+
 class StageProgram {
    public:
-    StageProgram(std::shared_ptr<Model> model, Ptr<BatchedRequest> batched_request, StagePlatform stage_type, Stage stage);
-    StageProgram(Ops test_single_op_type, std::shared_ptr<BatchedRequest> batched_request, Stage stage);  // for the single op test
-    StageProgram(std::shared_ptr<Model> model, std::string test_multi_layer_name, std::shared_ptr<BatchedRequest> batched_request, Stage stage);  // for model inference
+    StageProgram(std::shared_ptr<Model> model, Ptr<BatchedRequest> batched_request,
+                 StagePlatform stage_type, Stage stage,
+                 DramDataContainer* data_container);
+    StageProgram(Ops test_single_op_type,
+                 std::shared_ptr<BatchedRequest> batched_request, Stage stage,
+                 DramDataContainer* data_container);  // for the single op test
+    StageProgram(std::shared_ptr<Model> model, std::string test_multi_layer_name,
+                 std::shared_ptr<BatchedRequest> batched_request, Stage stage,
+                 DramDataContainer* data_container);  // for model inference
 
     void init_program();
     Ptr<Operation> add_op(Ptr<Operation> op);
@@ -45,6 +53,7 @@ class StageProgram {
     // Sub-batch interleaving
     StagePlatform _stage_platform;
     Stage _stage;
+    DramDataContainer* _data_container = nullptr;
 
     void init_program_single_op(Ops test_single_op_type);
     void init_program_multi_layer();
@@ -64,7 +73,6 @@ class StageProgram {
 
     // new generate blocks for llama model
     std::vector<Ptr<MyTensor>> test_llama_ffn_block(std::vector<Ptr<MyTensor>> inputs, int layer);
-    std::vector<Ptr<MyTensor>> test_llama_decode_stage_ffn(std::vector<Ptr<MyTensor>> inputs, int layer);
     std::vector<Ptr<MyTensor>> test_llama_attn_block(std::vector<Ptr<MyTensor>> inputs, int layer);
     std::vector<Ptr<MyTensor>> test_llama_decode_stage_atten(std::vector<Ptr<MyTensor>> inputs, int layer);
 };

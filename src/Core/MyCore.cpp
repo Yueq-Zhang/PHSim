@@ -2,6 +2,7 @@
 #include "MyCore.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 
 MyCore::MyCore(uint32_t id, const SysConfig& config):
     _id(id),
@@ -225,10 +226,10 @@ void MyCore::ld_queue_cycle() {
                 assert(0);
             }
             // Append the Read memory requests to memory request queue
-            for (auto access : my_accesses) {
+            for (auto& access : my_accesses) {
                 filled = true;
                 ch_req_dist[MyAddressAllocator::get_channel_index(access->dram_address)]++;
-                push_memory_request(access);
+                push_memory_request(std::move(access));
             }
             _ld_inst_queue.pop();
             _read_count += my_accesses.size();
@@ -275,8 +276,8 @@ void MyCore::st_queue_cycle() {
             } else {
                 assert(0);
             }
-            for (auto access : my_accesses) {
-                push_memory_request(access);
+            for (auto& access : my_accesses) {
+                push_memory_request(std::move(access));
                 _waiting_write_reqs++;
             }
             _st_inst_queue.pop();
@@ -325,8 +326,8 @@ void MyCore::pim_queue_cycle() {
                     // spdlog::info("All MOVEIN Instruction is finished, Issued PIM instruction is PIM_Header");
                     auto my_accesses = MemoryAccess::gen_pim_trace_from_instruction(front, generate_mem_access_id(), 0,
                         MemoryAccessType::P_HEADER,true, _id, _core_cycle, tile->spad_id, StagePlatform::PIM);
-                    for (auto access : my_accesses) {
-                        push_memory_request(access);
+                    for (auto& access : my_accesses) {
+                        push_memory_request(std::move(access));
                         _waiting_pim_reqs++;
                     }
                     // tile->pim_inst_count += my_accesses.size();  Pheader is not take into account
@@ -348,8 +349,8 @@ void MyCore::pim_queue_cycle() {
                 auto my_accesses = MemoryAccess::gen_pim_trace_from_instruction(front, generate_mem_access_id(), 0,
                     MemoryAccessType::GWRITE,true, _id, _core_cycle, tile->spad_id, StagePlatform::PIM);
 
-                for (auto access : my_accesses) {
-                    push_memory_request(access);
+                for (auto& access : my_accesses) {
+                    push_memory_request(std::move(access));
                     _waiting_pim_reqs++;
                 }
                 // tile->pim_inst_count += front.src_addrs.size();
@@ -370,8 +371,8 @@ void MyCore::pim_queue_cycle() {
                 // spdlog::info("After all the PIM input data was written by PIM_GWRITE, Begin PIM_COMP");
                 auto my_accesses = MemoryAccess::gen_pim_trace_from_instruction(front, generate_mem_access_id(), 0,
                     MemoryAccessType::COMP,true, _id, _core_cycle, tile->spad_id, StagePlatform::PIM);
-                for (auto access : my_accesses) {
-                    push_memory_request(access);
+                for (auto& access : my_accesses) {
+                    push_memory_request(std::move(access));
                     _waiting_pim_reqs++;
                 }
                 if (PIM_Parameters::dual_bank) {
@@ -398,8 +399,8 @@ void MyCore::pim_queue_cycle() {
                 // spdlog::info("After all the PIM input data was written by PIM_GWRITE, Begin PIM_COMP");
                 auto my_accesses = MemoryAccess::gen_pim_trace_from_instruction(front, generate_mem_access_id(), 0,
                     MemoryAccessType::COMP_HASH,true, _id, _core_cycle, tile->spad_id, StagePlatform::PIM);
-                for (auto access : my_accesses) {
-                    push_memory_request(access);
+                for (auto& access : my_accesses) {
+                    push_memory_request(std::move(access));
                     _waiting_pim_reqs++;
                 }
                 tile->pim_inst_count += (my_accesses.size()/ MyAddressAllocator::total_banks) * (MyAddressAllocator::AddrGranularity_Hash_Bytes / MyAddressAllocator::dram_burst_size);
@@ -441,8 +442,8 @@ void MyCore::pim_queue_cycle() {
                 auto my_accesses = MemoryAccess::gen_pim_trace_from_instruction(front, generate_mem_access_id(), 0,
                     MemoryAccessType::READRES,true, _id, _core_cycle, buffer_id, StagePlatform::PIM);
 
-                for (auto access : my_accesses) {
-                    push_memory_request(access);
+                for (auto& access : my_accesses) {
+                    push_memory_request(std::move(access));
                     _waiting_pim_reqs++;
                 }
 
@@ -732,6 +733,10 @@ Ptr<Tile> MyCore::pop_finished_tile() {
 }
 
 
+void MyCore::push_memory_request(std::unique_ptr<MemoryAccess> request) {
+    push_memory_request(_memory_access_owner.adopt(std::move(request)));
+}
+
 void MyCore::push_memory_request(MemoryAccess *request) {
     //if (request->req_type == MemoryAccessType::P_HEADER || request->req_type == MemoryAccessType::GWRITE || request->req_type == MemoryAccessType::COMP || request->req_type == MemoryAccessType::READRES) {
     uint32_t channel_index = MyAddressAllocator::get_channel_index(request->dram_address);
@@ -808,7 +813,7 @@ void MyCore::push_memory_response(MemoryAccess *response) {
         // case3: load activation or weight to _spad
         spad->fill(response->spad_address, response->buffer_id);
     }
-    delete response;
+    _memory_access_owner.release(response);
 }
 
 
@@ -899,8 +904,8 @@ cycle_type MyCore::get_vector_compute_cycles(Instruction &inst) {
         case Opcode::DUMMY:
             return 1;
         default:
-            spdlog::info("not configured operation. {}", inst.id);
-            assert(0);
+            spdlog::error("not configured operation. {}", inst.id);
+            throw std::invalid_argument("Unsupported opcode in MyCore vector cycle calculation");
     }
 }
 
@@ -1533,13 +1538,13 @@ void MyCore::pim_ld_queue_cycle() {
                 buffer_id = front.spad_id;
             }
             ast(!front.src_addrs.empty());
-            MemoryAccess *mem_request = TransToMemoryAccess(
+            auto mem_request = TransToMemoryAccess(
                 front, MyAddressAllocator::dram_burst_size, _id, _core_cycle, buffer_id, StagePlatform::PIM);
 
             if (front.opcode == Opcode::PIM_READRES || front.opcode == Opcode::PIM_COMPS_READRES)
                 buffer->reserve(front.dest_addr, buffer_id, front.size, 1);
 
-            push_memory_request(mem_request);
+            push_memory_request(std::move(mem_request));
             _ld_inst_queue_for_pim.pop();
 
             } else {
@@ -1575,8 +1580,8 @@ void MyCore::pim_st_queue_cycle() {
             } else {
                 assert(0);
             }
-            for (auto access : accesses) {
-                push_memory_request(access);
+            for (auto& access : accesses) {
+                push_memory_request(std::move(access));
                 _waiting_write_reqs++;
             }
             _st_inst_queue_for_pim.pop();

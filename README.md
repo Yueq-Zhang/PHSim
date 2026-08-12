@@ -59,9 +59,24 @@ The current test suite contains:
 - `data_container_event_driven_integration_test`
 - `virtual_memory_address_layout_test`
 - `pim_hash_address_group_test`
+- `nonvoid_control_flow_test`
+- `statistics_edge_case_test`
+- `runtime_guard_test`
+- `full_simulation_smoke_test`
+- `ca_ed_consistency_test`
+- `memory_access_owner_test`
+- `memory_access_lifecycle_gemm_test`
 
-These tests are intentionally small and do not launch a full transformer
-simulation.
+The two full-simulation tests use a dedicated 64-dimensional, four-token Add
+workload. They exercise the main executable through the scheduler, core,
+interconnect, and both DRAM backends without the memory and runtime cost of a
+full transformer workload. The CA/ED test requires identical logical traffic
+and completion counts while allowing backend timing and write-command issue
+counts to differ.
+
+The MemoryAccess tests verify unique request ownership, reusable owner slots,
+zero outstanding requests at normal completion, and a fixed single-operation
+GEMM baseline on both CycleAccurate and EventDriven DRAM.
 
 ## Run a simulation
 
@@ -106,7 +121,8 @@ Small, Base, Mobile, and Server configurations.
 | --- | --- |
 | `allocation_scheme` | Select `NPU`, `IANUS`, or `DASH` allocation |
 | `virtual_mem_hash_enable` | Enable virtual-page mapping and DRAM bank hashing |
-| `dram_data_container_enable` | Maintain simulated DRAM data values |
+| `dram_data_container_enable` | Maintain simulated DRAM data values with burst-sparse storage |
+| `dram_data_container_max_payload_mb` | Optional resident DataContainer payload limit in MiB; `0` means unlimited |
 | `dram_trace_simulation_mode` | Use EventDriven DRAM when true; use the cycle-accurate backend when false |
 | `accelerate_ctrl` | Enable simulator workload sampling |
 | `accelerate_method` | Select the configured sampling method, such as `Loop_wise` or `Proportional` |
@@ -144,8 +160,10 @@ tests/          Small regression and integration tests
   addition to final completion counts.
 - Distinguish measured, estimated, and logical work when simulation sampling is
   enabled.
-- DataContainer and virtual-memory features increase host-memory usage; start
-  with the bundled small tests before running large models.
+- DataContainer stores only non-zero resident bursts; missing bursts read as
+  zero. Large non-zero workloads can still consume significant host memory, so
+  set `dram_data_container_max_payload_mb` and start with the bundled small
+  tests before running large models.
 
 ## License
 

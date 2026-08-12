@@ -6,6 +6,7 @@
 
 #include "../DRAM/Dram.h"
 #include "../common_function.hpp"
+#include "DataContainer.h"
 
 #include <algorithm>
 #include <array>
@@ -514,13 +515,13 @@ public:
     bool isAvailable(uint32_t count) const;
     bool isEmpty() const;
     void reserve();
-    void push(void *original_req);
-    void *top() const;
+    void push(MemoryAccess* original_req);
+    MemoryAccess* top() const;
     void pop();
 
     const uint32_t Size;
     uint32_t NumReserved;
-    std::deque<void *> OutputQueue;
+    std::deque<MemoryAccess*> OutputQueue;
 };
 
 
@@ -590,7 +591,7 @@ public:
         PIM_Q
     };
 
-    EventDrivenDram(const SysConfig& config);
+    EventDrivenDram(const SysConfig& config, DramDataContainer* data_container);
     ~EventDrivenDram();
     void push(uint32_t cid, MemoryAccess *req);  // Push Memory Access
     void pop(uint32_t cid);
@@ -662,6 +663,7 @@ public:
         const std::string& operation, cycle_type skipped_dram_cycles);
 
 private:
+    DramDataContainer* _data_container = nullptr;
 
     struct EventDrivenChannelStats {
         uint64_t num_cycles = 0;

@@ -9,7 +9,12 @@
 
 #include "../Client/Client.h"
 
-MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle) : _config(config), _core_cycle(core_cycle), _cycles(0) {
+MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
+                         DramDataContainer* data_container)
+    : _config(config),
+      _core_cycle(core_cycle),
+      _cycles(0),
+      _data_container(data_container) {
     _max_batch_size = config.max_batch_size;   // 256;   // config.max_batch_size;
     _max_active_reqs = 1024;  // 256;  // 70;
 
@@ -144,7 +149,8 @@ void MyScheduler::make_program() {
         auto batch_for_single_op = std::make_shared<BatchedRequest>(_breq);
         spdlog::info("Create a New Program to test the single operation: {}, (batch.size: {})",_test_single_op_name, batch_for_single_op->_batch_size);
         _stage = Stage::Single_test;
-        _model_program = std::make_unique<StageProgram>(_test_single_op_type, batch_for_single_op, _stage);
+        _model_program = std::make_unique<StageProgram>(
+            _test_single_op_type, batch_for_single_op, _stage, _data_container);
         spdlog::info("*************************************************************");
         spdlog::info("Initialize Single-Layer Test Program for Inference");
         spdlog::info("*************************************************************");
@@ -157,7 +163,9 @@ void MyScheduler::make_program() {
             _config.decode_pruning_enabled &&
             (_test_multi_layer_name == "decode" ||
              _test_multi_layer_name == "npu_decode");
-        _model_program = std::make_unique<StageProgram>(_model, _test_multi_layer_name, batch_for_multi_layer, _stage);
+        _model_program = std::make_unique<StageProgram>(
+            _model, _test_multi_layer_name, batch_for_multi_layer, _stage,
+            _data_container);
         Config::system_config.decode_pruning_compile_context = false;
         spdlog::info("*************************************************************");
         spdlog::info("Initialize Multi-Layer Test Program for Inference");
@@ -169,7 +177,9 @@ void MyScheduler::make_program() {
         spdlog::info("*************************************************************");
         auto batch_for_prefill = std::make_shared<BatchedRequest>(_breq);
         spdlog::info("New Program for SA (batch.size: {})", batch_for_prefill->_reqs.size());
-        _model_program = std::make_unique<StageProgram>(_model, batch_for_prefill, StagePlatform::SA, _stage);
+        _model_program = std::make_unique<StageProgram>(
+            _model, batch_for_prefill, StagePlatform::SA, _stage,
+            _data_container);
     }
     else if (_stage == Stage::Decode) {
         spdlog::info("*************************************************************");
@@ -179,7 +189,9 @@ void MyScheduler::make_program() {
         spdlog::info("New Program for PIM  (batch.size: {})", batch_for_decode->_reqs.size());
         Config::system_config.decode_pruning_compile_context =
             _config.decode_pruning_enabled;
-        _model_program = std::make_unique<StageProgram>(_model, batch_for_decode, StagePlatform::PIM, _stage);
+        _model_program = std::make_unique<StageProgram>(
+            _model, batch_for_decode, StagePlatform::PIM, _stage,
+            _data_container);
         Config::system_config.decode_pruning_compile_context = false;
     }
     else if (_stage == Stage::NPU_Decode) {
@@ -190,7 +202,9 @@ void MyScheduler::make_program() {
         spdlog::info("New Program for SA (batch.size: {})", batch_for_decode->_reqs.size());
         Config::system_config.decode_pruning_compile_context =
             _config.decode_pruning_enabled;
-        _model_program = std::make_unique<StageProgram>(_model, batch_for_decode, StagePlatform::SA, _stage);
+        _model_program = std::make_unique<StageProgram>(
+            _model, batch_for_decode, StagePlatform::SA, _stage,
+            _data_container);
         Config::system_config.decode_pruning_compile_context = false;
     }
     program_start_cycle = _cycles;

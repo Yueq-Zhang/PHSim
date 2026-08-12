@@ -2,6 +2,7 @@
 
 #include "BTensor.h"
 
+class DramDataContainer;
 
 class MyTensor : public BTensor {
 public:
@@ -78,8 +79,8 @@ public:
 
     uint32_t pim_output_elements_per_bank();
 
-    void initial_data_container();
-    void append_data_into_container(const std::vector<uint8_t>& data);
+    void append_data_into_container(DramDataContainer& data_container,
+                                    const std::vector<uint8_t>& data);
     uint64_t get_total_size();
 
 };
