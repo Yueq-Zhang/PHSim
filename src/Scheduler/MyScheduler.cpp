@@ -30,6 +30,21 @@ MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
     _test_multi_layer = config.test_multi_layer;
     _test_multi_layer_name = config.test_multi_layer_name;
 
+    _output_token_iteration_enable =
+        config.output_token_iteration_enable && !_test_single_op &&
+        !_test_multi_layer;
+    if (config.output_token_iteration_enable &&
+        (_test_single_op || _test_multi_layer)) {
+        spdlog::warn(
+            "output_token_iteration_enable is ignored in single-op and "
+            "multi-layer test modes");
+    }
+    if (_output_token_iteration_enable) {
+        spdlog::info(
+            "Output-token iteration enabled; Decode backend: {}",
+            config.allocation_scheme == "NPU" ? "NPU/SA" : "PIM");
+    }
+
     _acceletare_ctrl = config.accelerate_ctrl;
 
     for (int i=0; i<config.num_cores;i++) {
@@ -37,6 +52,7 @@ MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
     }
 
     _core_rr_id = 0;
+    _active_reqs = 0;
 }
 
 void MyScheduler::launch(Ptr<Model> model) {  // Register the model on memory
@@ -79,6 +95,7 @@ void MyScheduler::init_batches() {
         }
         if (!request->is_initiated) {
             _breq.push_back(request);
+            _active_reqs++;
             batch_size++;
         }
     }
@@ -92,24 +109,94 @@ void MyScheduler::cleanup_batch(std::vector<Ptr<InferRequest>> batch_request) {
         request->is_initiated = true;
         request->generated++;
 
-        // clear Key/Value Cache of request
-        _model->_stored_KVCache.erase(request.get());
-
         assert(_stage == Stage::Finish);
-        spdlog::info("Scheduler:: The inference process of request {} is done", request->id);
-        _completed_request_queue.push(request);
+        complete_request(request);
+    }
+}
 
-        // when completed, free KV cache
-        for (auto itr = _request_queue.begin(); itr != _request_queue.end();) {
-            Ptr<InferRequest> cur = *itr;
-            if (cur->id == request->id) {
-                itr = _request_queue.erase(itr);
+Stage MyScheduler::iterative_decode_stage() const {
+    return _config.allocation_scheme == "NPU" ? Stage::NPU_Decode
+                                               : Stage::Decode;
+}
+
+void MyScheduler::complete_request(const Ptr<InferRequest>& request) {
+    request->is_initiated = true;
+    _model->_stored_KVCache.erase(request.get());
+    _completed_request_queue.push(request);
+
+    if (!_output_token_iteration_enable) {
+        spdlog::info(
+            "Scheduler:: The inference process of request {} is done",
+            request->id);
+    }
+
+    for (auto itr = _request_queue.begin(); itr != _request_queue.end();) {
+        if ((*itr)->id == request->id) {
+            itr = _request_queue.erase(itr);
+            if (_active_reqs > 0) {
                 _active_reqs--;
-                spdlog::info("Scheduler::Free the KV cache of the done request {} ", request->id);
-            } else {
-                itr++;
             }
+            if (!_output_token_iteration_enable) {
+                spdlog::info(
+                    "Scheduler::Free the KV cache of the done request {} ",
+                    request->id);
+            }
+        } else {
+            ++itr;
         }
+    }
+    if (_output_token_iteration_enable) {
+        spdlog::info(
+            "Scheduler:: Request {} completed after generating {}/{} tokens; "
+            "KV cache released",
+            request->id, request->generated, request->output_size);
+    }
+}
+
+void MyScheduler::advance_iterative_inference(Stage completed_stage) {
+    if (completed_stage != Stage::Prefill &&
+        completed_stage != Stage::Decode &&
+        completed_stage != Stage::NPU_Decode) {
+        _stage = Stage::Finish;
+        return;
+    }
+
+    if (completed_stage == Stage::Prefill) {
+        for (const auto& request : _breq) {
+            request->is_initiated = true;
+        }
+    } else {
+        for (const auto& request : _breq) {
+            if (request->generated >= request->output_size) {
+                throw std::runtime_error(fmt::format(
+                    "Request {} entered an extra Decode iteration ({}/{})",
+                    request->id, request->generated, request->output_size));
+            }
+            request->generated++;
+            spdlog::info(
+                "Scheduler:: Request {} generated token {}/{}",
+                request->id, request->generated, request->output_size);
+        }
+    }
+
+    std::vector<Ptr<InferRequest>> pending_requests;
+    pending_requests.reserve(_breq.size());
+    for (const auto& request : _breq) {
+        if (request->generated >= request->output_size) {
+            complete_request(request);
+        } else {
+            pending_requests.push_back(request);
+        }
+    }
+    _breq = std::move(pending_requests);
+
+    if (!_breq.empty()) {
+        _stage = iterative_decode_stage();
+    } else if (!_request_queue.empty()) {
+        // More requests may be waiting behind max_batch_size.
+        _stage = _init_stage;
+    } else {
+        _stage = Stage::Finish;
     }
 }
 
@@ -387,6 +474,9 @@ void MyScheduler::refresh_stage() {
 
         if (_prev_stage == Stage::Single_test or _prev_stage == Stage::Multi_test) {
             _stage = Stage::Finish;
+        }
+        else if (_output_token_iteration_enable) {
+            advance_iterative_inference(_prev_stage);
         }
         else {
             int stageValue = static_cast<int>(_stage);  // Update to the next stage

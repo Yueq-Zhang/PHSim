@@ -71,6 +71,192 @@ enum class DramMode {
 
 typedef uint64_t cycle_type;
 
+inline int ReadTCKESRWithLegacyFallback(const INIReader& reader) {
+    constexpr int default_tckesr = 12;
+    const std::string canonical_text = reader.Get("timing", "tCKESR", "");
+    const std::string legacy_text = reader.Get("timing", "tCKSRE", "");
+    const bool has_canonical = !canonical_text.empty();
+    const bool has_legacy = !legacy_text.empty();
+
+    const auto read_nonnegative_timing = [&](const std::string& key) {
+        constexpr long invalid_value = std::numeric_limits<long>::min();
+        const long value = reader.GetInteger("timing", key, invalid_value);
+        if (value == invalid_value || value < 0 ||
+            value > std::numeric_limits<int>::max()) {
+            throw std::runtime_error("Invalid non-negative DRAM timing value for " + key);
+        }
+        return static_cast<int>(value);
+    };
+
+    if (has_canonical && has_legacy) {
+        const int canonical_value = read_nonnegative_timing("tCKESR");
+        const int legacy_value = read_nonnegative_timing("tCKSRE");
+        if (canonical_value != legacy_value) {
+            throw std::runtime_error(
+                "Conflicting DRAM timing values: tCKESR=" +
+                std::to_string(canonical_value) + " and deprecated tCKSRE=" +
+                std::to_string(legacy_value));
+        }
+        spdlog::warn(
+            "Deprecated DRAM timing key tCKSRE duplicates tCKESR; remove tCKSRE");
+        return canonical_value;
+    }
+
+    if (has_canonical) {
+        return read_nonnegative_timing("tCKESR");
+    }
+    if (has_legacy) {
+        const int legacy_value = read_nonnegative_timing("tCKSRE");
+        spdlog::warn(
+            "Deprecated DRAM timing key tCKSRE is used as tCKESR={}; migrate the INI to tCKESR",
+            legacy_value);
+        return legacy_value;
+    }
+    return default_tckesr;
+}
+
+inline void ValidateDramBackendCapabilities(DramMode mode,
+                                            bool enable_self_refresh) {
+    if (mode == DramMode::EVENT_DRIVEN && enable_self_refresh) {
+        throw std::invalid_argument(
+            "EventDriven DRAM does not model self-refresh timing; disable "
+            "enable_self_refresh or use the CycleAccurate backend");
+    }
+}
+
+inline uint32_t ValidateDramRequestSizeConsistency(
+    uint32_t configured_request_size_bytes, uint32_t burst_length,
+    uint32_t bus_width_bits, const std::string& pim_config_path = {},
+    const std::string& memory_config_path = {}) {
+    if (burst_length == 0) {
+        throw std::invalid_argument(
+            "DRAM burst length must be greater than zero");
+    }
+    if (bus_width_bits == 0 || bus_width_bits % 8 != 0) {
+        throw std::invalid_argument(
+            "DRAM bus_width must be a positive multiple of 8 bits");
+    }
+
+    const uint64_t derived_request_size_bytes =
+        static_cast<uint64_t>(burst_length) * bus_width_bits / 8;
+    if (derived_request_size_bytes > std::numeric_limits<uint32_t>::max()) {
+        throw std::overflow_error(
+            "Derived DRAM burst size does not fit in uint32_t");
+    }
+    if (configured_request_size_bytes == 0) {
+        throw std::invalid_argument(
+            "PIM config dram_req_size must be greater than zero");
+    }
+    if (configured_request_size_bytes != derived_request_size_bytes) {
+        std::ostringstream message;
+        message << "DRAM request-size mismatch";
+        if (!pim_config_path.empty()) {
+            message << ": PIM config '" << pim_config_path << "'";
+        }
+        message << " sets dram_req_size=" << configured_request_size_bytes
+                << " bytes";
+        if (!memory_config_path.empty()) {
+            message << ", but memory config '" << memory_config_path << "'";
+        } else {
+            message << ", but the memory config";
+        }
+        message << " implies BL(" << burst_length << ") * bus_width("
+                << bus_width_bits << " bits) / 8 = "
+                << derived_request_size_bytes << " bytes";
+        throw std::invalid_argument(message.str());
+    }
+
+    return static_cast<uint32_t>(derived_request_size_bytes);
+}
+
+inline uint32_t ValidateDramChannelConsistency(
+    uint32_t configured_channels, int memory_channels,
+    const std::string& pim_config_path = {},
+    const std::string& memory_config_path = {}) {
+    const auto is_power_of_two = [](uint32_t value) {
+        return value != 0 && (value & (value - 1)) == 0;
+    };
+
+    if (configured_channels == 0) {
+        throw std::invalid_argument(
+            "PIM config dram_channels must be greater than zero");
+    }
+    if (memory_channels <= 0) {
+        throw std::invalid_argument(
+            "Memory config channels must be greater than zero");
+    }
+
+    const auto memory_channels_unsigned =
+        static_cast<uint32_t>(memory_channels);
+    if (!is_power_of_two(configured_channels)) {
+        throw std::invalid_argument(
+            "PIM config dram_channels must be a power of two");
+    }
+    if (!is_power_of_two(memory_channels_unsigned)) {
+        throw std::invalid_argument(
+            "Memory config channels must be a power of two");
+    }
+
+    if (configured_channels != memory_channels_unsigned) {
+        std::ostringstream message;
+        message << "DRAM channel-count mismatch";
+        if (!pim_config_path.empty()) {
+            message << ": PIM config '" << pim_config_path << "'";
+        }
+        message << " sets dram_channels=" << configured_channels;
+        if (!memory_config_path.empty()) {
+            message << ", but memory config '" << memory_config_path << "'";
+        } else {
+            message << ", but the memory config";
+        }
+        message << " sets channels=" << memory_channels_unsigned;
+        throw std::invalid_argument(message.str());
+    }
+
+    return configured_channels;
+}
+
+inline double ValidateDramFrequencyConsistency(
+    uint32_t configured_frequency_mhz, double tck_ns,
+    const std::string& pim_config_path = {},
+    const std::string& memory_config_path = {}) {
+    constexpr double relative_tolerance = 1.0e-3;
+
+    if (configured_frequency_mhz == 0) {
+        throw std::invalid_argument(
+            "PIM config dram_freq must be greater than zero");
+    }
+    if (!std::isfinite(tck_ns) || tck_ns <= 0.0) {
+        throw std::invalid_argument(
+            "Memory config tCK must be a finite value greater than zero");
+    }
+
+    const double derived_frequency_mhz = 1000.0 / tck_ns;
+    const double relative_error =
+        std::abs(static_cast<double>(configured_frequency_mhz) -
+                 derived_frequency_mhz) /
+        derived_frequency_mhz;
+    if (relative_error > relative_tolerance) {
+        std::ostringstream message;
+        message << "DRAM frequency mismatch";
+        if (!pim_config_path.empty()) {
+            message << ": PIM config '" << pim_config_path << "'";
+        }
+        message << " sets dram_freq=" << configured_frequency_mhz << " MHz";
+        if (!memory_config_path.empty()) {
+            message << ", but memory config '" << memory_config_path << "'";
+        } else {
+            message << ", but the memory config";
+        }
+        message << " sets tCK=" << tck_ns << " ns, which implies "
+                << derived_frequency_mhz
+                << " MHz (allowed relative error 0.1%)";
+        throw std::invalid_argument(message.str());
+    }
+
+    return derived_frequency_mhz;
+}
+
 
 ///////////////////////////////////////////////////
 //  Memory_Config: 生成对于PIM 计算单元的配置类
@@ -607,7 +793,7 @@ inline void MemConfig::InitTimingParams() {
     tRFC = GetInteger("timing", "tRFC", 74);
     tRC = tRAS + tRP;
     tCKE = GetInteger("timing", "tCKE", 6);
-    tCKESR = GetInteger("timing", "tCKESR", 12);
+    tCKESR = ReadTCKESRWithLegacyFallback(reader);
     tXS = GetInteger("timing", "tXS", 432);
     tXP = GetInteger("timing", "tXP", 8);
     tRFCb = GetInteger("timing", "tRFCb", 20);
@@ -816,7 +1002,11 @@ public:
     bool gen_request;
     u_int32_t gen_request_count;
     u_int32_t gen_request_input_size;
-    u_int32_t gen_request_output_size;
+    u_int32_t gen_request_output_size = 0;
+    // Legacy mode (false) executes the existing fixed stage sequence once.
+    // When enabled, Prefill runs once and the selected Decode backend repeats
+    // until each request reaches InferRequest::output_size.
+    bool output_token_iteration_enable = false;
     bool gen_random_request;
 
     uint32_t request_interval;

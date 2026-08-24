@@ -78,6 +78,19 @@ void Client::cycle() {
             }
         }
 
+        const bool iterative_full_model =
+            _config.output_token_iteration_enable &&
+            !_config.test_single_op && !_config.test_multi_layer;
+        const uint64_t requested_sequence_length =
+            static_cast<uint64_t>(input_size) + output_size;
+        if (iterative_full_model &&
+            requested_sequence_length > _config.max_seq_len) {
+            throw std::invalid_argument(fmt::format(
+                "Request {} needs {} input+output tokens, exceeding "
+                "max_seq_len {}",
+                request_id, requested_sequence_length, _config.max_seq_len));
+        }
+
         std::shared_ptr<InferRequest> request =
             std::make_shared<InferRequest>(InferRequest{.id = request_id, // request_index
                                                         .arrival_cycle = _cycles,  // the Operation cycle
@@ -119,7 +132,11 @@ std::shared_ptr<InferRequest> Client::pop_request() {
 }
 
 void Client::receive_response(std::shared_ptr<InferRequest> response) {
-    // ast(response->generated == response->output_size);
+    const bool iterative_full_model =
+        _config.output_token_iteration_enable &&
+        !_config.test_single_op && !_config.test_multi_layer;
+    assert(!iterative_full_model ||
+           response->generated == response->output_size);
     response->completed_cycle = _cycles;
     _completed_cnt++;
 

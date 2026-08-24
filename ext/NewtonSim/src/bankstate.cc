@@ -215,6 +215,13 @@ Command BankState::GetReadyNormalCommand(const Command &cmd, uint64_t clk) const
                         required_type = CommandType::PIM_PRECHARGE;
                     }
                     break;
+                case CommandType::SREF_ENTER:
+                    if (pim_state_ == State::CLOSED) {
+                        required_type = cmd.cmd_type;
+                    } else {
+                        required_type = CommandType::PIM_PRECHARGE;
+                    }
+                    break;
                 default:
                     std::cerr << "(GetReadyNormalCommand) Unknown type!" << std::endl;
                     AbruptExit(__FILE__, __LINE__);
@@ -247,6 +254,7 @@ Command BankState::GetReadyNormalCommand(const Command &cmd, uint64_t clk) const
                     }
                     break;
                 case CommandType::REFRESH:
+                case CommandType::SREF_ENTER:
                     required_type = CommandType::PRECHARGE;
                     break;
                 default:
@@ -256,6 +264,13 @@ Command BankState::GetReadyNormalCommand(const Command &cmd, uint64_t clk) const
             }
             break;
         case State::SREF:
+            if (cmd.cmd_type == CommandType::SREF_EXIT) {
+                required_type = CommandType::SREF_EXIT;
+            } else {
+                std::cerr << "Expected SREF_EXIT while rank is self-refreshing" << std::endl;
+                AbruptExit(__FILE__, __LINE__);
+            }
+            break;
         case State::PD:
         case State::SIZE:
             std::cerr << "In unknown state" << std::endl;
@@ -319,6 +334,13 @@ void BankState::UpdateNormalState(const Command &cmd) {
                 default:
                     std::cout << cmd << std::endl;
                     AbruptExit(__FILE__, __LINE__);
+            }
+            break;
+        case State::SREF:
+            if (cmd.cmd_type == CommandType::SREF_EXIT) {
+                state_ = State::CLOSED;
+            } else {
+                AbruptExit(__FILE__, __LINE__);
             }
             break;
         default:
@@ -425,6 +447,9 @@ Command BankState::GetReadyCommandSingle(const Command &cmd, uint64_t clk) const
                 case CommandType::REFRESH:
                     required_type = cmd.cmd_type;  // Refresh指令可以立即执行
                     break;
+                case CommandType::SREF_ENTER:
+                    required_type = cmd.cmd_type;
+                    break;
                 default:
                     PrintWarning("(GetReadyCommandSingle) Unknown type! addr: ",
                                  HexString(cmd.hex_addr), "channel:", cmd.Channel(),
@@ -476,12 +501,23 @@ Command BankState::GetReadyCommandSingle(const Command &cmd, uint64_t clk) const
                 case CommandType::REFRESH:
                     required_type = CommandType::PRECHARGE;
                     break;
+                case CommandType::SREF_ENTER:
+                    required_type = CommandType::PRECHARGE;
+                    break;
                 // <<< gsheo
                 default:
                     std::cerr << "(GetReadyCommandSingle) Unknown type!" << std::endl;
                     PrintStateAndCommand(cmd);
                     AbruptExit(__FILE__, __LINE__);
                     break;
+            }
+            break;
+        case State::SREF:
+            if (cmd.cmd_type == CommandType::SREF_EXIT) {
+                required_type = CommandType::SREF_EXIT;
+            } else {
+                std::cerr << "Expected SREF_EXIT while rank is self-refreshing" << std::endl;
+                AbruptExit(__FILE__, __LINE__);
             }
             break;
         case State::PD:
@@ -578,6 +614,13 @@ void BankState::UpdateStateSingle(const Command &cmd) {
                               << " bank:" << cmd.Bank() << " ";
                     PrintStateAndCommand(cmd);
                     AbruptExit(__FILE__, __LINE__);
+            }
+            break;
+        case State::SREF:
+            if (cmd.cmd_type == CommandType::SREF_EXIT) {
+                state_ = State::CLOSED;
+            } else {
+                AbruptExit(__FILE__, __LINE__);
             }
             break;
         default:

@@ -1,0 +1,35 @@
+{
+    "max_batch_size": 1,
+    "max_active_reqs": 1,
+    "max_seq_len": 16,
+    "kv_cache_entry_size": 32,
+
+    "allocation_scheme": "DASH",
+    "virtual_mem_hash_enable": false,
+    "dram_data_container_enable": false,
+
+    "test_single_op": false,
+    "test_single_op_name": "add",
+    "test_multi_layer": false,
+    "test_multi_layer_name": "prefill",
+
+    "accelerate_ctrl": false,
+    "accelerate_method": "Loop_wise",
+    "accelerate_sample_ratio": 1.0,
+    "attention_command_warmup_weight": 0.0,
+    "softmax_warmup_rounds": 1,
+    "softmax_sample_rounds": 1,
+    "compile_time_tile_pruning": false,
+    "decode_pruning_enabled": false,
+    "decode_pruning_iterations": 1,
+    "decode_pruning_sample_iterations": 1,
+
+    "dram_trace_simulation_mode": true,
+
+    "gen_request": true,
+    "gen_request_count": 1,
+    "gen_request_input_size": 4,
+    "gen_request_output_size": 2,
+    "gen_random_request": false,
+    "request_interval": 1
+}

@@ -78,6 +78,132 @@ function(run_backend backend config_name output_variable)
     set(${output_variable} "${output_dir}" PARENT_SCOPE)
 endfunction()
 
+function(run_iterative_decode_backend backend config_name)
+    set(output_dir
+        "${BINARY_DIR}/test-output/${TEST_MODE}/${backend}")
+    file(REMOVE_RECURSE "${output_dir}")
+    file(MAKE_DIRECTORY "${output_dir}")
+
+    execute_process(
+        COMMAND
+            "${SIMULATOR}"
+            --simulation_config
+            "${SOURCE_DIR}/tests/fixtures/smoke/${config_name}"
+            --output_path
+            "${output_dir}"
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        RESULT_VARIABLE simulator_result
+        OUTPUT_VARIABLE simulator_stdout
+        ERROR_VARIABLE simulator_stderr
+        TIMEOUT 60
+    )
+
+    file(WRITE "${output_dir}/test-process.log"
+        "${simulator_stdout}\n${simulator_stderr}")
+
+    if(NOT simulator_result EQUAL 0)
+        message(FATAL_ERROR
+            "${backend} iterative Decode failed with exit code "
+            "${simulator_result}. See ${output_dir}/test-process.log")
+    endif()
+    if(NOT simulator_stdout MATCHES "Finish the simulation" OR
+       NOT simulator_stdout MATCHES
+           "Outstanding MemoryAccess requests at simulation end: 0")
+        message(FATAL_ERROR
+            "${backend} iterative Decode did not finish cleanly")
+    endif()
+
+    string(REGEX MATCHALL
+        "Scheduler:: Request 0 generated token [12]/2"
+        token_progress "${simulator_stdout}")
+    list(LENGTH token_progress token_progress_count)
+    if(NOT token_progress_count EQUAL 2 OR
+       NOT simulator_stdout MATCHES "generated token 1/2" OR
+       NOT simulator_stdout MATCHES "generated token 2/2")
+        message(FATAL_ERROR
+            "${backend} did not execute exactly two output-token iterations")
+    endif()
+
+    string(REGEX MATCHALL "New Program for PIM" pim_decode_programs
+        "${simulator_stdout}")
+    list(LENGTH pim_decode_programs pim_decode_program_count)
+    if(NOT pim_decode_program_count EQUAL 2)
+        message(FATAL_ERROR
+            "${backend} expected two PIM Decode programs, found "
+            "${pim_decode_program_count}")
+    endif()
+
+    file(STRINGS "${output_dir}/_summary.tsv" summary_lines)
+    list(LENGTH summary_lines summary_line_count)
+    if(NOT summary_line_count EQUAL 4)
+        message(FATAL_ERROR
+            "${backend} expected header + Prefill + two Decode rows, found "
+            "${summary_line_count} lines")
+    endif()
+    list(GET summary_lines 1 prefill_row)
+    list(GET summary_lines 2 decode_row_1)
+    list(GET summary_lines 3 decode_row_2)
+    if(NOT prefill_row MATCHES "^Prefill\t" OR
+       NOT decode_row_1 MATCHES "^Decode\t" OR
+       NOT decode_row_2 MATCHES "^Decode\t")
+        message(FATAL_ERROR
+            "${backend} iterative stage order is not Prefill/Decode/Decode")
+    endif()
+endfunction()
+
+function(run_legacy_stage_backend backend config_name)
+    set(output_dir
+        "${BINARY_DIR}/test-output/${TEST_MODE}/legacy-${backend}")
+    file(REMOVE_RECURSE "${output_dir}")
+    file(MAKE_DIRECTORY "${output_dir}")
+
+    execute_process(
+        COMMAND
+            "${SIMULATOR}"
+            --simulation_config
+            "${SOURCE_DIR}/tests/fixtures/smoke/${config_name}"
+            --output_path
+            "${output_dir}"
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        RESULT_VARIABLE simulator_result
+        OUTPUT_VARIABLE simulator_stdout
+        ERROR_VARIABLE simulator_stderr
+        TIMEOUT 60
+    )
+
+    file(WRITE "${output_dir}/test-process.log"
+        "${simulator_stdout}\n${simulator_stderr}")
+    if(NOT simulator_result EQUAL 0 OR
+       NOT simulator_stdout MATCHES "Finish the simulation" OR
+       NOT simulator_stdout MATCHES
+           "Outstanding MemoryAccess requests at simulation end: 0")
+        message(FATAL_ERROR
+            "${backend} legacy stage sequence failed; see "
+            "${output_dir}/test-process.log")
+    endif()
+    if(simulator_stdout MATCHES "generated token [0-9]+/[0-9]+")
+        message(FATAL_ERROR
+            "${backend} default-disabled mode unexpectedly iterated tokens")
+    endif()
+
+    file(STRINGS "${output_dir}/_summary.tsv" summary_lines)
+    list(LENGTH summary_lines summary_line_count)
+    if(NOT summary_line_count EQUAL 4)
+        message(FATAL_ERROR
+            "${backend} legacy mode expected header plus three stage rows")
+    endif()
+    list(GET summary_lines 1 prefill_row)
+    list(GET summary_lines 2 decode_row)
+    list(GET summary_lines 3 npu_decode_row)
+    if(NOT prefill_row MATCHES "^Prefill\t" OR
+       NOT decode_row MATCHES "^Decode\t" OR
+       NOT npu_decode_row MATCHES "^NPU_Decode\t")
+        message(FATAL_ERROR
+            "${backend} default-disabled mode did not preserve the legacy "
+            "Prefill/Decode/NPU_Decode sequence")
+    endif()
+endfunction()
+
 function(read_summary output_dir prefix)
     file(STRINGS "${output_dir}/_summary.tsv" summary_lines)
     list(GET summary_lines 1 summary_row)
@@ -300,6 +426,18 @@ elseif(TEST_MODE STREQUAL "memory-access-gemm")
         "ED ${EVENT_READ_COMMANDS}/${EVENT_WRITE_COMMANDS}; "
         "DataContainer enabled CA ${DC_CA_READ_COMMANDS}/${DC_CA_WRITE_COMMANDS}, "
         "ED ${DC_EVENT_READ_COMMANDS}/${DC_EVENT_WRITE_COMMANDS}")
+elseif(TEST_MODE STREQUAL "iterative-decode")
+    run_legacy_stage_backend(
+        cycle-accurate simulation_legacy_stage_sequence_cycle_accurate.json)
+    run_legacy_stage_backend(
+        event-driven simulation_legacy_stage_sequence_event_driven.json)
+    run_iterative_decode_backend(
+        cycle-accurate simulation_iterative_decode_cycle_accurate.json)
+    run_iterative_decode_backend(
+        event-driven simulation_iterative_decode_event_driven.json)
+    message(STATUS
+        "Legacy and iterative Decode passed in CycleAccurate and "
+        "EventDriven modes")
 else()
     message(FATAL_ERROR "Unsupported TEST_MODE: ${TEST_MODE}")
 endif()

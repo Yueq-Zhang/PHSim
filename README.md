@@ -102,6 +102,11 @@ The simulator removes an existing `log.txt` in the selected output directory,
 initializes the configured accelerator and memory system, runs the model, and
 writes statistics to that directory.
 
+For a field-by-field Chinese configuration reference, output/statistics
+definitions, and copyable examples for full-model, single-operation, CA/ED,
+DataContainer, and virtual-memory runs, see
+[`docs/USER_GUIDE_zh.md`](docs/USER_GUIDE_zh.md).
+
 ## Configuration structure
 
 A top-level `simulation_config_*.json` file connects the other configuration
@@ -133,6 +138,8 @@ Small, Base, Mobile, and Server configurations.
 | `test_single_op` | Run a configured single-operation workload |
 | `test_multi_layer` | Run a configured multi-layer workload |
 | `gen_request` | Generate requests instead of consuming the request trace |
+| `gen_request_output_size` | Set the output-token target for fixed requests |
+| `output_token_iteration_enable` | Repeat Decode to the output-token target; defaults to the legacy fixed stage sequence |
 
 Address values passed through the DRAM-facing simulator interfaces use one
 address unit per complete DRAM burst. When virtual memory is enabled, the

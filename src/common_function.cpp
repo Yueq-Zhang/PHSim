@@ -165,7 +165,10 @@ void SysConfig::initialize_inference_config(std::string inference_config_path) {
     gen_request = inference_config["gen_request"];
     gen_request_count = inference_config["gen_request_count"];
     gen_request_input_size = inference_config["gen_request_input_size"];
-    // gen_request_output_size = inference_config["gen_request_output_size"];
+    gen_request_output_size =
+        inference_config.value("gen_request_output_size", 0U);
+    output_token_iteration_enable =
+        inference_config.value("output_token_iteration_enable", false);
 
     gen_random_request = inference_config["gen_random_request"];
     request_interval = inference_config["request_interval"];
@@ -206,8 +209,17 @@ void SysConfig::initialize_PIM_config(std::string pim_config) {
         throw std::runtime_error(
             fmt::format("Not implemented dram type {} ", (std::string)mem_config["dram_type"]));
     dram_freq = mem_config["dram_freq"];
+    ValidateDramFrequencyConsistency(
+        dram_freq, this->mem_config.tCK, pim_config, memory_config_path_);
     DRAM_act_buf_size = (uint64_t)(mem_config["DRAM_act_buf_size_MB"])MB;
     dram_channels = mem_config["dram_channels"];
+    ValidateDramChannelConsistency(
+        dram_channels, this->mem_config.channels, pim_config,
+        memory_config_path_);
+    dram_req_size = mem_config.value("dram_req_size", 0U);
+    ValidateDramRequestSizeConsistency(
+        dram_req_size, this->mem_config.BL, this->mem_config.bus_width,
+        pim_config, memory_config_path_);
     // PIM config
     pim_PE_num = mem_config["pim_PE_num"]; // PE_num in each PIM PU
     pim_input_buffer_size = mem_config["pim_input_buffer_size"];  // PIM Input Buffer size, Global Input Buffer(Byte)

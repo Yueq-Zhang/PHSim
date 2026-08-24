@@ -97,6 +97,7 @@ Simulator::Simulator(const SysConfig& config) :_config(config), _core_cycles(0){
 
     // Initial the DRAM-PIM Object; Here we initialize both two types
     _dram_mode = config.dram_trace_simulation_mode ? DramMode::EVENT_DRIVEN : DramMode::CYCLE_ACCURATE;
+    ValidateDramBackendCapabilities(_dram_mode, config.mem_config.enable_self_refresh);
     _data_container = std::make_unique<DramDataContainer>(config);
     _dram = std::make_unique<PIM>(config, _data_container.get());  // cycle accurate dram model based on dramsim3
 
@@ -618,8 +619,10 @@ void Simulator::cycle() {
                         }
                         // Cores require the memory response from interconnect
                         if (!_icnt->is_empty(core_id * _n_memories + mem_id)) {
-                            _cores[core_id]->push_memory_response(_icnt->top(core_id * _n_memories + mem_id));
-                            _icnt->pop(core_id * _n_memories + mem_id);
+                            const uint32_t response_node = core_id * _n_memories + mem_id;
+                            MemoryAccess* response = _icnt->top(response_node);
+                            _icnt->pop(response_node);
+                            _cores[core_id]->push_memory_response(response);
                         }
                     }
                 }
@@ -704,8 +707,9 @@ void Simulator::cycle() {
                         // ICNT -> Core (response), if current core node has memory response, fetch the memory response
                         uint32_t core_node = core_id * _n_memories + mem_id;
                         if (!_icnt->is_empty(core_node)) {
-                            _cores[core_id]->push_memory_response(_icnt->top(core_node));
+                            MemoryAccess* response = _icnt->top(core_node);
                             _icnt->pop(core_node);
+                            _cores[core_id]->push_memory_response(response);
                         }
                     }
                 }

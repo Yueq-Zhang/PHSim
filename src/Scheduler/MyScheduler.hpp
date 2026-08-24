@@ -112,6 +112,7 @@ public:
 
     bool _has_stage_changed;
     Stage _prev_stage;          // The original stage
+    bool _output_token_iteration_enable = false;
 
     cycle_type program_start_cycle;
 
@@ -321,6 +322,10 @@ public:
                      const std::vector<std::unique_ptr<MyCore>>& cores);
     void sync_accelerated_cycles(cycle_type core_cycle, cycle_type dram_delta, cycle_type icnt_delta);
     private:
+    Stage iterative_decode_stage() const;
+    void complete_request(const Ptr<InferRequest>& request);
+    void advance_iterative_inference(Stage completed_stage);
+
     Client* _client = nullptr;
     PIM* _dram = nullptr;
     EventDrivenDram* _event_driven_dram = nullptr;

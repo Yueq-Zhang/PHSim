@@ -351,7 +351,7 @@ void Config::InitTimingParams() {
     tRFC = GetInteger("timing", "tRFC", 74);
     tRC = tRAS + tRP;
     tCKE = GetInteger("timing", "tCKE", 6);
-    tCKESR = GetInteger("timing", "tCKESR", 12);
+    tCKESR = ReadTCKESRWithLegacyFallback(reader);
     tXS = GetInteger("timing", "tXS", 432);
     tXP = GetInteger("timing", "tXP", 8);
     tRFCb = GetInteger("timing", "tRFCb", 20);

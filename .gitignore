@@ -5,7 +5,6 @@ output/
 /tools/*
 !/tools/run_dataconvert_power_matrix.ps1
 /configs/experiments/
-/docs/
 /scripts/
 .codex/
 .idea/

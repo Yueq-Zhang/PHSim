@@ -215,6 +215,35 @@ if(BUILD_TESTING)
         COMMAND pim_hash_address_group_test
     )
 
+    add_test(
+        NAME duplicate_dram_config_consistency_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -P ${PROJECT_SOURCE_DIR}/tests/duplicate_dram_config_consistency_test.cmake
+    )
+
+    add_executable(
+        self_refresh_timing_config_test
+        tests/self_refresh_timing_config_test.cpp
+    )
+    target_include_directories(
+        self_refresh_timing_config_test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/ext"
+        "${PROJECT_SOURCE_DIR}/ext/NewtonSim/src"
+    )
+    target_compile_definitions(
+        self_refresh_timing_config_test PRIVATE
+        PH_SIM_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
+    target_link_libraries(
+        self_refresh_timing_config_test PRIVATE dramsim3 format
+    )
+    add_test(
+        NAME self_refresh_timing_config_test
+        COMMAND self_refresh_timing_config_test
+    )
+
     file(MAKE_DIRECTORY
         "${CMAKE_BINARY_DIR}/test-output/data-container-vm-ca"
         "${CMAKE_BINARY_DIR}/test-output/data-container-vm-ed"
@@ -280,6 +309,36 @@ if(BUILD_TESTING)
     add_test(NAME runtime_guard_test COMMAND runtime_guard_test)
 
     add_test(
+        NAME dram_request_size_mismatch_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -P ${PROJECT_SOURCE_DIR}/tests/dram_request_size_mismatch_test.cmake
+    )
+    set_tests_properties(dram_request_size_mismatch_test PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME dram_channel_mismatch_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -P ${PROJECT_SOURCE_DIR}/tests/dram_channel_mismatch_test.cmake
+    )
+    set_tests_properties(dram_channel_mismatch_test PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME dram_frequency_mismatch_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -P ${PROJECT_SOURCE_DIR}/tests/dram_frequency_mismatch_test.cmake
+    )
+    set_tests_properties(dram_frequency_mismatch_test PROPERTIES TIMEOUT 30)
+
+    add_test(
         NAME full_simulation_smoke_test
         COMMAND ${CMAKE_COMMAND}
             -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
@@ -300,6 +359,17 @@ if(BUILD_TESTING)
             -P ${PROJECT_SOURCE_DIR}/tests/full_simulation_test.cmake
     )
     set_tests_properties(ca_ed_consistency_test PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME iterative_decode_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -DTEST_MODE=iterative-decode
+            -P ${PROJECT_SOURCE_DIR}/tests/full_simulation_test.cmake
+    )
+    set_tests_properties(iterative_decode_test PROPERTIES TIMEOUT 150)
 
     add_executable(
         memory_access_owner_test

@@ -4,7 +4,7 @@
     "DRAM_act_buf_size_MB": 1024,
 
     "dram_channels": 2,
-    "dram_req_size": 64,
+    "dram_req_size": 32,
 
     "PU_location": "bank",
     "dual_bank": false,

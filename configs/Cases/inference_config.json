@@ -31,6 +31,7 @@
 
     "gen_request_input_size": 256,
     "gen_request_output_size": 128,
+    "output_token_iteration_enable": false,
     "gen_random_request": false,
     "request_interval": 1
 }
