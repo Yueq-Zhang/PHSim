@@ -244,6 +244,27 @@ if(BUILD_TESTING)
         COMMAND self_refresh_timing_config_test
     )
 
+    add_executable(
+        dram_geometry_config_test
+        tests/dram_geometry_config_test.cpp
+    )
+    target_include_directories(
+        dram_geometry_config_test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src"
+        "${PROJECT_SOURCE_DIR}/ext"
+    )
+    target_compile_definitions(
+        dram_geometry_config_test PRIVATE
+        PH_SIM_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
+    target_link_libraries(
+        dram_geometry_config_test PRIVATE dramsim3 format
+    )
+    add_test(
+        NAME dram_geometry_config_test
+        COMMAND dram_geometry_config_test
+    )
+
     file(MAKE_DIRECTORY
         "${CMAKE_BINARY_DIR}/test-output/data-container-vm-ca"
         "${CMAKE_BINARY_DIR}/test-output/data-container-vm-ed"

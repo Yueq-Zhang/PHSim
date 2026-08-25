@@ -245,9 +245,9 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 
 | 字段 | 类型/单位 | 默认值 | 说明与约束 |
 | --- | --- | --- | --- |
-| `channel_size` | 整数/MiB/通道 | `1024` | 目标通道容量。会根据器件几何向完整rank容量对齐；过小时会提升到单rank容量。 |
+| `channel_size` | 整数/MiB/通道 | `1024` | 必须大于0。会根据器件几何向完整rank容量对齐；过小时会提升到单rank容量。对齐后的rank数必须是2的幂，否则启动失败。 |
 | `channels` | 整数/通道 | `1` | 必须大于0、为2的幂，并与PIM JSON `dram_channels`一致；启动时会强制检查。 |
-| `bus_width` | 整数/bit/通道 | `64` | 必须大于0并能被 `device_width` 整除；DataContainer还要求是8的倍数。 |
+| `bus_width` | 整数/bit/通道 | `64` | 必须大于0、是8的倍数并能被 `device_width` 整除；启动时会强制检查。 |
 | `address_mapping` | 12字符字符串 | `chrobabgraco` | 必须恰好由 `ch`、`ra`、`bg`、`ba`、`ro`、`co` 六个二字符字段各组成一次；字符串左侧为高位、右侧为低位。 |
 | `queue_structure` | 字符串 | `PER_BANK` | NewtonSim命令队列组织，常用 `PER_BANK`。 |
 | `row_buf_policy` | 字符串 | `OPEN_PAGE` | 行缓冲策略，常用 `OPEN_PAGE` 或后端支持的其他值。 |
@@ -273,18 +273,18 @@ request_size_bytes = bus_width / 8 × BL
 | 字段 | 类型/单位 | 默认值 | 说明与约束 |
 | --- | --- | --- | --- |
 | `protocol` | 字符串 | `DDR3` | 支持 `DDR3`、`DDR4`、`GDDR5`、`GDDR5X`、`GDDR6`、`LPDDR`、`LPDDR3`、`LPDDR4`、`LPDDR5`、`HBM`、`HBM2`、`HMC`。 |
-| `bankgroups` | 整数/组 | `2` | bank-group数量，应为2的幂。 |
-| `banks_per_group` | 整数/bank/组 | `2` | 每组bank数，应为2的幂。 |
+| `bankgroups` | 整数/组 | `2` | bank-group数量，必须是正的2的幂，启动时会强制检查。 |
+| `banks_per_group` | 整数/bank/组 | `2` | 每组bank数，必须是正的2的幂，启动时会强制检查。 |
 | `bankgroup_enable` | 布尔 | `true` | 关闭时将所有bank合并到一个bank-group。 |
-| `rows` | 整数/行/bank | `65536` | 应为2的幂。 |
-| `columns` | 整数/物理列/行 | `1024` | 应为2的幂；必须至少覆盖BL保留低位。 |
-| `device_width` | 整数/bit/device | `8` | 单器件DQ宽度；`bus_width % device_width == 0`。 |
-| `BL` | 整数/传输拍 | `8` | Burst length，通常为2的幂。`BL=0`表示理想带宽，内部仍为容量计算选择协议默认BL。 |
+| `rows` | 整数/行/bank | `65536` | 必须是正的2的幂，启动时会强制检查。 |
+| `columns` | 整数/物理列/行 | `1024` | 必须是正的2的幂，不小于BL且能被BL整除；启动时会强制检查。 |
+| `device_width` | 整数/bit/device | `8` | 必须大于0，且 `bus_width % device_width == 0`；启动时会强制检查。 |
+| `BL` | 整数/传输拍 | `8` | Burst length。有效BL必须是正的2的幂。`BL=0`表示理想带宽，内部会按协议默认BL进行容量和地址计算。 |
 | `num_dies` | 整数/die | `1` | 堆叠die数量。 |
 | `hbm_dual_cmd` | 布尔 | `true` | 仅HBM协议实际启用双命令。 |
 | `pim_type` | 字符串 | `SINGLE` | NewtonSim的PIM内存类型；常用 `SINGLE`，dual-bank配置按后端支持值设置。 |
 
-总bank数为 `bankgroups × banks_per_group`；每rank器件数为 `bus_width / device_width`。通道容量会从 `rows × columns × device_width × banks × devices_per_rank` 推导rank数量。
+总bank数为 `bankgroups × banks_per_group`；每rank器件数为 `bus_width / device_width`。通道容量会从 `rows × columns × device_width × banks × devices_per_rank` 推导rank数量。上述容量中间量使用64位无符号整数计算；若乘法溢出、单rank不是整MiB，或总地址布局超过64位，仿真器会在启动时报错。
 
 ### 4.3 `[timing]`
 
