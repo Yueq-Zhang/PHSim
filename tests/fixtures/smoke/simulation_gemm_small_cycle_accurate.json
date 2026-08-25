@@ -1,0 +1,8 @@
+{
+    "compute_die_config_file_path": "../configs/Cases/Small/Small_2x128x128.json",
+    "DRAM_config_file_path": "../configs/Cases/Small/Small_4xGDDR6.ini",
+    "PIM_config_file_path": "../configs/Cases/Small/Small_pim_config.json",
+    "model_config_file_path": "../tests/fixtures/smoke/model_config.json",
+    "inference_config_file_path": "../tests/fixtures/smoke/inference_gemm_cycle_accurate.json",
+    "request_file_path": "../sample_trace/request-traces/clb/share-gpt2-bs512-ms7B-tp4-clb-0.csv"
+}

@@ -9,23 +9,31 @@
 namespace dramsim3 {
 
 Config::Config(std::string config_file, std::string out_dir)
-    : output_dir(out_dir), reader_(new INIReader(config_file)) {
+    : output_dir(out_dir), reader_(new INIReader(config_file)),
+      config_file_(config_file) {
     if (reader_->ParseError() < 0) {
         std::cerr << "Can't load config file - " << config_file << std::endl;
         AbruptExit(__FILE__, __LINE__);
     }
 
-    // The initialization of the parameters has to be strictly in this order
-    // because of internal dependencies
-    InitSystemParams();
-    InitDRAMParams();
-    CalculateSize();
-    SetAddressMapping();
-    InitTimingParams();
-    InitPowerParams();
-    InitOtherParams();
+    try {
+        // The initialization of the parameters has to be strictly in this
+        // order because of internal dependencies.
+        InitSystemParams();
+        InitDRAMParams();
+        CalculateSize();
+        SetAddressMapping();
+        InitTimingParams();
+        InitPowerParams();
+        InitOtherParams();
+    } catch (...) {
+        delete reader_;
+        reader_ = nullptr;
+        throw;
+    }
 
-    delete (reader_);
+    delete reader_;
+    reader_ = nullptr;
 }
 
 uint64_t Config::MakeAddress(int channel, int rank, int bankgroup, int bank, int row, int col) {
@@ -86,23 +94,33 @@ Address Config::AddressMapping(uint64_t hex_addr) const {
 }
 
 void Config::CalculateSize() {
-    // calculate rank and re-calculate channel_size
-    devices_per_rank = bus_width / device_width;
-    int page_size = columns * device_width / 8; // page size in bytes
-    int megs_per_bank = page_size * (rows / 1024) / 1024;
-    int megs_per_rank = megs_per_bank * banks * devices_per_rank;
+    phsim::DramGeometryInput input = {};
+    input.channel_size_mib = static_cast<uint64_t>(channel_size);
+    input.channels = static_cast<uint64_t>(channels);
+    input.bankgroups = static_cast<uint64_t>(bankgroups);
+    input.banks_per_group = static_cast<uint64_t>(banks_per_group);
+    input.rows = static_cast<uint64_t>(rows);
+    input.columns = static_cast<uint64_t>(columns);
+    input.device_width_bits = static_cast<uint64_t>(device_width);
+    input.bus_width_bits = static_cast<uint64_t>(bus_width);
+    input.burst_length = static_cast<uint64_t>(BL);
+    input.bankgroup_enable = bankgroup_enable_;
+    geometry_ = phsim::CalculateDramGeometry(input, config_file_);
 
-    if (megs_per_rank > channel_size) {
+    if (geometry_.channel_size_increased) {
         std::cout << "WARNING: Cannot create memory system of size " << channel_size
-                  << "MB with given device choice! Using default size " << megs_per_rank
+                  << "MB with given device choice! Using default size "
+                  << geometry_.rank_size_mib
                   << " instead!" << std::endl;
-        ranks = 1;
-        channel_size = megs_per_rank;
-    } else {
-        ranks = channel_size / megs_per_rank;
-        channel_size = ranks * megs_per_rank;
     }
-    return;
+    channel_size = static_cast<int>(geometry_.channel_size_mib);
+    ranks = static_cast<int>(geometry_.ranks);
+    banks = static_cast<int>(geometry_.banks);
+    bankgroups = static_cast<int>(geometry_.bankgroups);
+    banks_per_group = static_cast<int>(geometry_.banks_per_group);
+    devices_per_rank = static_cast<int>(geometry_.devices_per_rank);
+    request_size_bytes = static_cast<int>(geometry_.request_size_bytes);
+    shift_bits = static_cast<int>(geometry_.shift_bits);
 }
 
 DRAMProtocol Config::GetDRAMProtocol(std::string protocol_str) {
@@ -148,13 +166,8 @@ void Config::InitDRAMParams() {
     protocol = GetDRAMProtocol(reader.Get("dram_structure", "protocol", "DDR3"));
     bankgroups = GetInteger("dram_structure", "bankgroups", 2);
     banks_per_group = GetInteger("dram_structure", "banks_per_group", 2);
-    bool bankgroup_enable = reader.GetBoolean("dram_structure", "bankgroup_enable", true);
-    // GDDR5/6 can chose to enable/disable bankgroups
-    if (!bankgroup_enable) { // aggregating all banks to one group
-        banks_per_group *= bankgroups;
-        bankgroups = 1;
-    }
-    banks = bankgroups * banks_per_group;
+    bankgroup_enable_ =
+        reader.GetBoolean("dram_structure", "bankgroup_enable", true);
     rows = GetInteger("dram_structure", "rows", 1 << 16);
     columns = GetInteger("dram_structure", "columns", 1 << 10);
     device_width = GetInteger("dram_structure", "device_width", 8);
@@ -389,19 +402,15 @@ void Config::SetAddressMapping() {
     // memory addresses are byte addressable, but each request comes with
     // multiple bytes because of bus width, and burst length
     PrintInfo("Columns: " + std::to_string(columns));
-    request_size_bytes = bus_width / 8 * BL;
-    shift_bits = LogBase2(request_size_bytes);
-    int col_low_bits = LogBase2(BL);
-    int actual_col_bits = LogBase2(columns) - col_low_bits;
 
     // has to strictly follow the order of chan, rank, bg, bank, row, col
     std::map<std::string, int> field_widths;
-    field_widths["ch"] = LogBase2(channels);
-    field_widths["ra"] = LogBase2(ranks);
-    field_widths["bg"] = LogBase2(bankgroups);
-    field_widths["ba"] = LogBase2(banks_per_group);
-    field_widths["ro"] = LogBase2(rows);
-    field_widths["co"] = actual_col_bits;
+    field_widths["ch"] = static_cast<int>(geometry_.channel_bits);
+    field_widths["ra"] = static_cast<int>(geometry_.rank_bits);
+    field_widths["bg"] = static_cast<int>(geometry_.bankgroup_bits);
+    field_widths["ba"] = static_cast<int>(geometry_.bank_bits);
+    field_widths["ro"] = static_cast<int>(geometry_.row_bits);
+    field_widths["co"] = static_cast<int>(geometry_.column_bits);
 
     /*
     // 检测构建的DRAM和Address Allocator是否相同
@@ -451,12 +460,12 @@ void Config::SetAddressMapping() {
     ro_pos = field_pos.at("ro");
     co_pos = field_pos.at("co");
 
-    ch_mask = (1 << field_widths.at("ch")) - 1;
-    ra_mask = (1 << field_widths.at("ra")) - 1;
-    bg_mask = (1 << field_widths.at("bg")) - 1;
-    ba_mask = (1 << field_widths.at("ba")) - 1;
-    ro_mask = (1 << field_widths.at("ro")) - 1;
-    co_mask = (1 << field_widths.at("co")) - 1;
+    ch_mask = phsim::MaskForWidth(geometry_.channel_bits);
+    ra_mask = phsim::MaskForWidth(geometry_.rank_bits);
+    bg_mask = phsim::MaskForWidth(geometry_.bankgroup_bits);
+    ba_mask = phsim::MaskForWidth(geometry_.bank_bits);
+    ro_mask = phsim::MaskForWidth(geometry_.row_bits);
+    co_mask = phsim::MaskForWidth(geometry_.column_bits);
     /*
     if (ch_pos != MyAddressAllocator::field_pos["ch"] or
         ra_pos != MyAddressAllocator::field_pos["ra"] or

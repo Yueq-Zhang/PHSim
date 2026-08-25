@@ -34,6 +34,7 @@ file(GLOB_RECURSE OPERATION_SRC_FILES
 add_executable(
         NMC_Simulator src/main.cpp
         src/common_function.hpp
+        src/dram_geometry.hpp
 
         src/operations/Operation.h
         src/operations/Operation.cc
@@ -252,6 +253,7 @@ if(BUILD_TESTING)
         dram_geometry_config_test PRIVATE
         "${PROJECT_SOURCE_DIR}/src"
         "${PROJECT_SOURCE_DIR}/ext"
+        "${PROJECT_SOURCE_DIR}/ext/NewtonSim/src"
     )
     target_compile_definitions(
         dram_geometry_config_test PRIVATE
@@ -270,6 +272,8 @@ if(BUILD_TESTING)
         "${CMAKE_BINARY_DIR}/test-output/data-container-vm-ed"
         "${CMAKE_BINARY_DIR}/test-output/data-container-gemm-ca"
         "${CMAKE_BINARY_DIR}/test-output/data-container-gemm-ed"
+        "${CMAKE_BINARY_DIR}/test-output/base-gemm-ca"
+        "${CMAKE_BINARY_DIR}/test-output/small-gemm-ca"
     )
     add_test(
         NAME data_container_virtual_memory_ca_smoke
@@ -294,6 +298,18 @@ if(BUILD_TESTING)
         COMMAND NMC_Simulator
             -sc ../tests/configs/data_container_gemm_ed_simulation.json
             -o "${CMAKE_BINARY_DIR}/test-output/data-container-gemm-ed"
+    )
+    add_test(
+        NAME base_gemm_cycle_accurate_smoke
+        COMMAND NMC_Simulator
+            -sc ../tests/fixtures/smoke/simulation_gemm_base_cycle_accurate.json
+            -o "${CMAKE_BINARY_DIR}/test-output/base-gemm-ca"
+    )
+    add_test(
+        NAME small_gemm_cycle_accurate_smoke
+        COMMAND NMC_Simulator
+            -sc ../tests/fixtures/smoke/simulation_gemm_small_cycle_accurate.json
+            -o "${CMAKE_BINARY_DIR}/test-output/small-gemm-ca"
     )
 
     add_executable(

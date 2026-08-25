@@ -30,6 +30,7 @@
 
 #include "json.hpp"
 #include "INIReader.h"
+#include "dram_geometry.hpp"
 
 #include <spdlog/fmt/ranges.h>
 #include <spdlog/spdlog.h>
@@ -294,10 +295,6 @@ inline int LogBase2(int power_of_two) {
     return i;
 }
 
-inline bool IsPositivePowerOfTwo(uint64_t value) {
-    return value != 0 && (value & (value - 1)) == 0;
-}
-
 inline bool DirExist(std::string dir) {
     // courtesy to stackoverflow
     struct stat info;
@@ -503,14 +500,14 @@ public:
 private:
     std::shared_ptr<INIReader> reader_;
     std::string memory_config_path_;
+    bool bankgroup_enable_;
+    phsim::DramGeometryResult geometry_;
     int GetInteger(const std::string& sec, const std::string& opt, int default_val) const;  //
     static DRAMProtocol GetDRAMProtocol(std::string protocol_str);
 
     void InitSystemParams();
     void InitDRAMParams();
-    void ValidateGeometryBeforeSize() const;
     void CalculateSize();
-    void ValidateGeometryAfterSize() const;
     void SetAddressMapping();
     void InitTimingParams();
     void InitPowerParams();
@@ -538,9 +535,7 @@ inline MemConfig::MemConfig(std::string memory_config_path, std::string pim_conf
     // because of internal dependencies
     InitSystemParams();
     InitDRAMParams();
-    ValidateGeometryBeforeSize();
     CalculateSize();
-    ValidateGeometryAfterSize();
     SetAddressMapping();
     InitTimingParams();
     InitPowerParams();
@@ -553,146 +548,34 @@ inline MemConfig::MemConfig(std::string memory_config_path, std::string pim_conf
     reader_.reset();
 }
 
-inline void MemConfig::ValidateGeometryBeforeSize() const {
-    const std::string prefix = "Invalid DRAM geometry in '" +
-                               memory_config_path_ + "': ";
-    const auto require_power_of_two = [&](uint64_t value,
-                                          const std::string& field) {
-        if (!IsPositivePowerOfTwo(value) ||
-            value > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
-            throw std::invalid_argument(
-                prefix + field + " must be a positive power of two");
-        }
-    };
-
-    if (channel_size == 0 ||
-        channel_size > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
-        throw std::invalid_argument(prefix +
-                                    "channel_size must be greater than zero");
-    }
-    require_power_of_two(channels, "channels");
-    require_power_of_two(bankgroups, "bankgroups");
-    require_power_of_two(banks_per_group, "banks_per_group");
-    require_power_of_two(rows, "rows");
-    require_power_of_two(columns, "columns");
-    require_power_of_two(BL, "effective BL");
-
-    if (device_width == 0 ||
-        device_width > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
-        throw std::invalid_argument(prefix +
-                                    "device_width must be greater than zero");
-    }
-    if (bus_width == 0 || bus_width % 8 != 0 ||
-        bus_width > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
-        throw std::invalid_argument(
-            prefix + "bus_width must be a positive multiple of 8 bits");
-    }
-    if (bus_width % device_width != 0) {
-        throw std::invalid_argument(
-            prefix + "bus_width must be divisible by device_width");
-    }
-    if (columns < BL || columns % BL != 0) {
-        throw std::invalid_argument(
-            prefix + "columns must be divisible by and no smaller than BL");
-    }
-    if ((static_cast<uint64_t>(columns) * device_width) % 8 != 0) {
-        throw std::invalid_argument(
-            prefix + "columns * device_width must represent whole bytes");
-    }
-
-    const uint64_t bank_count =
-        static_cast<uint64_t>(bankgroups) * banks_per_group;
-    if (bank_count != banks ||
-        bank_count > std::numeric_limits<uint32_t>::max()) {
-        throw std::invalid_argument(prefix +
-                                    "bankgroups * banks_per_group overflows");
-    }
-}
-
 inline void MemConfig::CalculateSize() {
-    const std::string prefix = "Invalid DRAM capacity in '" +
-                               memory_config_path_ + "': ";
-    const auto checked_multiply = [&](uint64_t left, uint64_t right,
-                                      const std::string& expression) {
-        if (right != 0 && left > std::numeric_limits<uint64_t>::max() / right) {
-            throw std::overflow_error(prefix + expression + " overflows uint64_t");
-        }
-        return left * right;
-    };
+    phsim::DramGeometryInput input = {};
+    input.channel_size_mib = channel_size;
+    input.channels = channels;
+    input.bankgroups = bankgroups;
+    input.banks_per_group = banks_per_group;
+    input.rows = rows;
+    input.columns = columns;
+    input.device_width_bits = device_width;
+    input.bus_width_bits = bus_width;
+    input.burst_length = BL;
+    input.bankgroup_enable = bankgroup_enable_;
+    geometry_ = phsim::CalculateDramGeometry(input, memory_config_path_);
 
-    devices_per_rank = bus_width / device_width;
-    const uint64_t page_bits =
-        checked_multiply(columns, device_width, "columns * device_width");
-    const uint64_t page_bytes = page_bits / 8;
-    const uint64_t bank_bytes =
-        checked_multiply(page_bytes, rows, "page_bytes * rows");
-    const uint64_t rank_device_bytes =
-        checked_multiply(bank_bytes, banks, "bank_bytes * banks");
-    const uint64_t rank_bytes = checked_multiply(
-        rank_device_bytes, devices_per_rank,
-        "bank_bytes * banks * devices_per_rank");
-    constexpr uint64_t bytes_per_mib = 1024ULL * 1024ULL;
-    if (rank_bytes == 0 || rank_bytes % bytes_per_mib != 0) {
-        throw std::invalid_argument(
-            prefix + "one rank must have a positive whole-MiB capacity");
-    }
-    const uint64_t megs_per_rank_64 = rank_bytes / bytes_per_mib;
-    if (megs_per_rank_64 > std::numeric_limits<uint32_t>::max()) {
-        throw std::overflow_error(prefix +
-                                  "one-rank capacity does not fit in uint32_t MiB");
-    }
-    const uint32_t megs_per_rank = static_cast<uint32_t>(megs_per_rank_64);
-
-    if (megs_per_rank > channel_size) {
+    if (geometry_.channel_size_increased) {
         std::cout << "WARNING: Cannot create memory system of size "
                   << channel_size
                   << "MB with given device choice! Using default size "
-                  << megs_per_rank << " instead!" << std::endl;
-        ranks = 1;
-        channel_size = megs_per_rank;
-    } else {
-        ranks = channel_size / megs_per_rank;
-        channel_size = ranks * megs_per_rank;
+                  << geometry_.rank_size_mib << " instead!" << std::endl;
     }
-}
-
-inline void MemConfig::ValidateGeometryAfterSize() const {
-    const std::string prefix = "Invalid DRAM address layout in '" +
-                               memory_config_path_ + "': ";
-    if (!IsPositivePowerOfTwo(ranks)) {
-        throw std::invalid_argument(
-            prefix + "derived ranks must be a positive power of two");
-    }
-    if (devices_per_rank == 0) {
-        throw std::invalid_argument(prefix +
-                                    "derived devices_per_rank must be positive");
-    }
-
-    const uint64_t request_size =
-        static_cast<uint64_t>(bus_width) / 8 * BL;
-    if (!IsPositivePowerOfTwo(request_size) ||
-        request_size > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
-        throw std::invalid_argument(
-            prefix + "bus_width / 8 * BL must be a positive power of two");
-    }
-    const uint64_t bursts_per_row = columns / BL;
-    if (!IsPositivePowerOfTwo(bursts_per_row)) {
-        throw std::invalid_argument(
-            prefix + "columns / BL must be a positive power of two");
-    }
-
-    const uint64_t address_bits =
-        static_cast<uint64_t>(LogBase2(static_cast<int>(request_size))) +
-        LogBase2(static_cast<int>(channels)) +
-        LogBase2(static_cast<int>(ranks)) +
-        LogBase2(static_cast<int>(bankgroups)) +
-        LogBase2(static_cast<int>(banks_per_group)) +
-        LogBase2(static_cast<int>(rows)) +
-        LogBase2(static_cast<int>(bursts_per_row));
-    if (address_bits > 64) {
-        throw std::invalid_argument(prefix +
-                                    "combined byte-address layout exceeds 64 bits");
-    }
+    channel_size = geometry_.channel_size_mib;
+    ranks = geometry_.ranks;
+    banks = geometry_.banks;
+    bankgroups = geometry_.bankgroups;
+    banks_per_group = geometry_.banks_per_group;
+    devices_per_rank = geometry_.devices_per_rank;
+    request_size_bytes = static_cast<int>(geometry_.request_size_bytes);
+    shift_bits = static_cast<int>(geometry_.shift_bits);
 }
 
 inline DRAMProtocol MemConfig::GetDRAMProtocol(std::string protocol_str) {
@@ -747,28 +630,8 @@ inline void MemConfig::InitDRAMParams() {
     protocol = GetDRAMProtocol(reader.Get("dram_structure", "protocol", "DDR3"));
     bankgroups = GetInteger("dram_structure", "bankgroups", 2);
     banks_per_group = GetInteger("dram_structure", "banks_per_group", 2);
-    bool bankgroup_enable = reader.GetBoolean("dram_structure", "bankgroup_enable", true);
-
-    // GDDR5/6 can chose to enable/disable bankgroups
-    if (!bankgroup_enable) {  // aggregating all banks to one group
-        const uint64_t combined_banks =
-            static_cast<uint64_t>(banks_per_group) * bankgroups;
-        if (combined_banks > std::numeric_limits<uint32_t>::max()) {
-            throw std::overflow_error(
-                "Invalid DRAM geometry in '" + memory_config_path_ +
-                "': bankgroups * banks_per_group overflows uint32_t");
-        }
-        banks_per_group = static_cast<uint32_t>(combined_banks);
-        bankgroups = 1;
-    }
-    const uint64_t bank_count =
-        static_cast<uint64_t>(bankgroups) * banks_per_group;
-    if (bank_count > std::numeric_limits<uint32_t>::max()) {
-        throw std::overflow_error(
-            "Invalid DRAM geometry in '" + memory_config_path_ +
-            "': bankgroups * banks_per_group overflows uint32_t");
-    }
-    banks = static_cast<uint32_t>(bank_count);
+    bankgroup_enable_ =
+        reader.GetBoolean("dram_structure", "bankgroup_enable", true);
     rows = GetInteger("dram_structure", "rows", 1 << 16);
     columns = GetInteger("dram_structure", "columns", 1 << 10);
     device_width = GetInteger("dram_structure", "device_width", 8);
@@ -879,20 +742,14 @@ inline void MemConfig::InitOtherParams() {
 
 inline void MemConfig::SetAddressMapping() {
     // memory addresses are byte-addressable, but each request comes with multiple bytes because of bus width, and burst length
-    request_size_bytes = static_cast<int>(
-        static_cast<uint64_t>(bus_width) / 8 * BL);
-    shift_bits = LogBase2(request_size_bytes);    // atom operation
-    int col_low_bits = LogBase2(BL);              // the reserved low bits for burst length, if BL=8, the LSB 3-bit is mapping for the bank - row - column
-    int actual_col_bits = LogBase2(columns) - col_low_bits;
-
     // has to strictly follow the order of chan, rank, bg, bank, row, col
     std::map<std::string, int> field_widths;
-    field_widths["ch"] = LogBase2(channels);
-    field_widths["ra"] = LogBase2(ranks);
-    field_widths["bg"] = LogBase2(bankgroups);
-    field_widths["ba"] = LogBase2(banks_per_group);
-    field_widths["ro"] = LogBase2(rows);
-    field_widths["co"] = actual_col_bits;
+    field_widths["ch"] = static_cast<int>(geometry_.channel_bits);
+    field_widths["ra"] = static_cast<int>(geometry_.rank_bits);
+    field_widths["bg"] = static_cast<int>(geometry_.bankgroup_bits);
+    field_widths["ba"] = static_cast<int>(geometry_.bank_bits);
+    field_widths["ro"] = static_cast<int>(geometry_.row_bits);
+    field_widths["co"] = static_cast<int>(geometry_.column_bits);
 
     if (address_mapping.size() != 12) {
         throw std::runtime_error("Unknown address mapping (6 fields each 2 chars required) ");
@@ -925,12 +782,12 @@ inline void MemConfig::SetAddressMapping() {
     ro_pos = field_pos.at("ro");
     co_pos = field_pos.at("co");
 
-    ch_mask = (uint64_t{1} << field_widths.at("ch")) - 1;
-    ra_mask = (uint64_t{1} << field_widths.at("ra")) - 1;
-    bg_mask = (uint64_t{1} << field_widths.at("bg")) - 1;
-    ba_mask = (uint64_t{1} << field_widths.at("ba")) - 1;
-    ro_mask = (uint64_t{1} << field_widths.at("ro")) - 1;
-    co_mask = (uint64_t{1} << field_widths.at("co")) - 1;
+    ch_mask = phsim::MaskForWidth(geometry_.channel_bits);
+    ra_mask = phsim::MaskForWidth(geometry_.rank_bits);
+    bg_mask = phsim::MaskForWidth(geometry_.bankgroup_bits);
+    ba_mask = phsim::MaskForWidth(geometry_.bank_bits);
+    ro_mask = phsim::MaskForWidth(geometry_.row_bits);
+    co_mask = phsim::MaskForWidth(geometry_.column_bits);
 }
 
 inline void MemConfig::InitTimingParams() {

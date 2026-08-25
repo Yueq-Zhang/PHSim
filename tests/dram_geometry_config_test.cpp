@@ -1,7 +1,9 @@
 #include "common_function.hpp"
+#include "configuration.h"
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -46,8 +48,49 @@ void expect_valid(const std::filesystem::path& memory_config,
                   const std::filesystem::path& output_dir,
                   const std::string& name) {
     try {
-        MemConfig config(memory_config.string(), pim_config.string(),
-                         output_dir.string());
+        MemConfig outer(memory_config.string(), pim_config.string(),
+                        output_dir.string());
+        dramsim3::Config newton(memory_config.string(), output_dir.string());
+
+        const auto expect_equal = [&](uint64_t outer_value,
+                                      uint64_t newton_value,
+                                      const std::string& field) {
+            if (outer_value != newton_value) {
+                throw std::runtime_error(
+                    name + " mismatch for " + field + ": MemConfig=" +
+                    std::to_string(outer_value) + ", NewtonSim=" +
+                    std::to_string(newton_value));
+            }
+        };
+        expect_equal(outer.channel_size, newton.channel_size, "channel_size");
+        expect_equal(outer.channels, newton.channels, "channels");
+        expect_equal(outer.ranks, newton.ranks, "ranks");
+        expect_equal(outer.banks, newton.banks, "banks");
+        expect_equal(outer.bankgroups, newton.bankgroups, "bankgroups");
+        expect_equal(outer.banks_per_group, newton.banks_per_group,
+                     "banks_per_group");
+        expect_equal(outer.rows, newton.rows, "rows");
+        expect_equal(outer.columns, newton.columns, "columns");
+        expect_equal(outer.device_width, newton.device_width, "device_width");
+        expect_equal(outer.bus_width, newton.bus_width, "bus_width");
+        expect_equal(outer.devices_per_rank, newton.devices_per_rank,
+                     "devices_per_rank");
+        expect_equal(outer.BL, newton.BL, "BL");
+        expect_equal(outer.request_size_bytes, newton.request_size_bytes,
+                     "request_size_bytes");
+        expect_equal(outer.shift_bits, newton.shift_bits, "shift_bits");
+        expect_equal(outer.ch_pos, newton.ch_pos, "ch_pos");
+        expect_equal(outer.ra_pos, newton.ra_pos, "ra_pos");
+        expect_equal(outer.bg_pos, newton.bg_pos, "bg_pos");
+        expect_equal(outer.ba_pos, newton.ba_pos, "ba_pos");
+        expect_equal(outer.ro_pos, newton.ro_pos, "ro_pos");
+        expect_equal(outer.co_pos, newton.co_pos, "co_pos");
+        expect_equal(outer.ch_mask, newton.ch_mask, "ch_mask");
+        expect_equal(outer.ra_mask, newton.ra_mask, "ra_mask");
+        expect_equal(outer.bg_mask, newton.bg_mask, "bg_mask");
+        expect_equal(outer.ba_mask, newton.ba_mask, "ba_mask");
+        expect_equal(outer.ro_mask, newton.ro_mask, "ro_mask");
+        expect_equal(outer.co_mask, newton.co_mask, "co_mask");
         std::cout << "  PASS: " << name << '\n';
     } catch (const std::exception& error) {
         ++failures;
@@ -55,14 +98,11 @@ void expect_valid(const std::filesystem::path& memory_config,
     }
 }
 
-void expect_invalid(const std::filesystem::path& memory_config,
-                    const std::filesystem::path& pim_config,
-                    const std::filesystem::path& output_dir,
-                    const std::string& message_fragment,
-                    const std::string& name) {
+void expect_invalid_call(const std::function<void()>& construct,
+                         const std::string& message_fragment,
+                         const std::string& name) {
     try {
-        MemConfig config(memory_config.string(), pim_config.string(),
-                         output_dir.string());
+        construct();
         ++failures;
         std::cerr << "  FAIL: " << name << " did not throw\n";
     } catch (const std::exception& error) {
@@ -75,6 +115,25 @@ void expect_invalid(const std::filesystem::path& memory_config,
                       << error.what() << '\n';
         }
     }
+}
+
+void expect_invalid(const std::filesystem::path& memory_config,
+                    const std::filesystem::path& pim_config,
+                    const std::filesystem::path& output_dir,
+                    const std::string& message_fragment,
+                    const std::string& name) {
+    expect_invalid_call(
+        [&] {
+            MemConfig config(memory_config.string(), pim_config.string(),
+                             output_dir.string());
+        },
+        message_fragment, name + " in MemConfig");
+    expect_invalid_call(
+        [&] {
+            dramsim3::Config config(memory_config.string(),
+                                    output_dir.string());
+        },
+        message_fragment, name + " in NewtonSim Config");
 }
 
 }  // namespace
@@ -92,6 +151,24 @@ int main() {
     try {
         expect_valid(smoke_memory, smoke_pim, temp_dir,
                      "smoke configuration has a valid DRAM layout");
+
+        const auto collapsed_memory =
+            source_dir / "configs/memory_config/GDDR6_8Gb_x16.ini";
+        const auto generic_pim =
+            source_dir / "configs/pim_config/pim_config.json";
+        expect_valid(collapsed_memory, generic_pim, temp_dir,
+                     "disabled bankgroups use the shared collapsed layout");
+        MemConfig collapsed(collapsed_memory.string(), generic_pim.string(),
+                            temp_dir.string());
+        if (collapsed.bankgroups != 1 || collapsed.banks_per_group != 16 ||
+            collapsed.banks != 16) {
+            ++failures;
+            std::cerr << "  FAIL: bankgroup_enable=false should produce "
+                         "1 group with 16 banks\n";
+        } else {
+            std::cout << "  PASS: bankgroup_enable=false collapses 4x4 "
+                         "banks to 1x16\n";
+        }
 
         const std::vector<std::string> case_names = {
             "Base", "Small", "Tiny", "Mobile", "Nano", "Server"};

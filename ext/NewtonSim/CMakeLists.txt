@@ -42,6 +42,7 @@ add_library(dramsim3 SHARED
     src/memory_system.cc
     src/newton_command_queue.cc
     src/newton_controller.cc
+    ../../src/dram_geometry.hpp
     ../../src/common_function.hpp
     ../../src/common_function.cpp
 )

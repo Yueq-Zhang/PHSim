@@ -6,6 +6,7 @@
 
 #include "INIReader.h"
 #include "common.h"
+#include "../../../src/dram_geometry.hpp"
 
 namespace dramsim3 {
 
@@ -188,6 +189,9 @@ class Config {
 
   private:
     INIReader *reader_;
+    std::string config_file_;
+    bool bankgroup_enable_;
+    phsim::DramGeometryResult geometry_;
     void CalculateSize();
     DRAMProtocol GetDRAMProtocol(std::string protocol_str);
     MemoryType GetMemoryType(std::string mem_type);

@@ -284,7 +284,7 @@ request_size_bytes = bus_width / 8 × BL
 | `hbm_dual_cmd` | 布尔 | `true` | 仅HBM协议实际启用双命令。 |
 | `pim_type` | 字符串 | `SINGLE` | NewtonSim的PIM内存类型；常用 `SINGLE`，dual-bank配置按后端支持值设置。 |
 
-总bank数为 `bankgroups × banks_per_group`；每rank器件数为 `bus_width / device_width`。通道容量会从 `rows × columns × device_width × banks × devices_per_rank` 推导rank数量。上述容量中间量使用64位无符号整数计算；若乘法溢出、单rank不是整MiB，或总地址布局超过64位，仿真器会在启动时报错。
+总bank数为 `bankgroups × banks_per_group`；每rank器件数为 `bus_width / device_width`。通道容量会从 `rows × columns × device_width × banks × devices_per_rank` 推导rank数量。上述容量中间量使用64位无符号整数计算；若乘法溢出、单rank不是整MiB，或总地址布局超过64位，仿真器会在启动时报错。外层 `MemConfig` 与Cycle Accurate后端的 `dramsim3::Config` 共用同一几何计算实现，不再分别推导容量和地址位宽。
 
 ### 4.3 `[timing]`
 
