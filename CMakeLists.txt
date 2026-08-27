@@ -97,6 +97,14 @@ target_link_libraries(NMC_Simulator dramsim3 booksim2)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_test(
+        NAME dramsim3_build_output_location_test
+        COMMAND ${CMAKE_COMMAND}
+            -DDRAMSIM3_LIBRARY=$<TARGET_FILE:dramsim3>
+            -DNEWTONSIM_SOURCE_DIR=${PROJECT_SOURCE_DIR}/ext/NewtonSim
+            -P ${PROJECT_SOURCE_DIR}/tests/dramsim3_output_location_test.cmake
+    )
+
     add_executable(
         data_container_test
         tests/data_container_test.cpp
