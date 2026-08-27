@@ -801,7 +801,7 @@ namespace MyAddressAllocator {
     std::map<std::string, int> field_widths;
     std::map<std::string, int> field_pos;
 
-    std::map<std::string, int> mask;
+    std::map<std::string, uint64_t> mask;
     int ch_pos, ra_pos, bg_pos, ba_pos, ro_pos, co_pos;
 
     uint32_t precision_weight;
@@ -899,7 +899,7 @@ bool MyAddressAllocator::init(const SysConfig& config) {
     page_table.clear();
     bank_alloc_ptr.clear();
     */
-    dram_channels = config.dram_channels;
+    dram_channels = config.mem_config.channels;
     ranks = config.mem_config.ranks;
     devices_per_rank = config.mem_config.devices_per_rank;
     bankgroups = config.mem_config.bankgroups;
@@ -931,17 +931,17 @@ bool MyAddressAllocator::init(const SysConfig& config) {
     precision_cache = config.precision_cache;
     precision_psum = config.precision_psum;
 
-    // Address mapping
-    channel_bits = LogBase2(dram_channels);
-    rank_bits = LogBase2(ranks);
-    bankgroup_bits = LogBase2(bankgroups);
-    bank_bits = LogBase2(banks);
-    row_bits = LogBase2(rows);
+    // Address widths, positions, and masks are calculated once by MemConfig.
+    const phsim::DramAddressLayout& layout =
+        config.mem_config.address_layout();
+    channel_bits = layout.channel_width;
+    rank_bits = layout.rank_width;
+    bankgroup_bits = layout.bankgroup_width;
+    bank_bits = layout.bank_width;
+    row_bits = layout.row_width;
     col_bits = LogBase2(columns);
     offset = LogBase2(burst_length);
-    shift_bits = LogBase2(dram_burst_size);
-
-    std::string address_mapping = config.mem_config.address_mapping;
+    shift_bits = config.mem_config.shift_bits;
 
     virtual_mem_hash_enable = config.virtual_mem_hash_enable;
 
@@ -951,55 +951,36 @@ bool MyAddressAllocator::init(const SysConfig& config) {
         spdlog::info("");
     }
 
-    field_widths["ch"] = channel_bits;
-    field_widths["ra"] = rank_bits;
-    field_widths["bg"] = bankgroup_bits;
-    field_widths["ba"] = bank_bits;
-    field_widths["ro"] = row_bits;
-    field_widths["co"] = col_bits - offset;
-
-    mask["ch"] = (1 << field_widths.at("ch")) - 1;
-    mask["ra"] = (1 << field_widths.at("ra")) - 1;
-    mask["bg"] = (1 << field_widths.at("bg")) - 1;
-    mask["ba"] = (1 << field_widths.at("ba")) - 1;
-    mask["ro"] = (1 << field_widths.at("ro")) - 1;
-    mask["co"] = (1 << field_widths.at("co")) - 1;
-
-
-    for (size_t i = 0; i < address_mapping.size(); i += 2) {
-        std::string token = address_mapping.substr(i, 2);
-        fields.push_back(token);
-    }
+    fields.clear();
+    field_widths.clear();
+    field_pos.clear();
+    mask.clear();
+    row_loop_size.clear();
+    field_widths = {{"ch", static_cast<int>(layout.channel_width)},
+                    {"ra", static_cast<int>(layout.rank_width)},
+                    {"bg", static_cast<int>(layout.bankgroup_width)},
+                    {"ba", static_cast<int>(layout.bank_width)},
+                    {"ro", static_cast<int>(layout.row_width)},
+                    {"co", static_cast<int>(layout.column_width)}};
+    field_pos = {{"ch", layout.channel_pos},
+                 {"ra", layout.rank_pos},
+                 {"bg", layout.bankgroup_pos},
+                 {"ba", layout.bank_pos},
+                 {"ro", layout.row_pos},
+                 {"co", layout.column_pos}};
+    mask = {{"ch", layout.channel_mask},
+            {"ra", layout.rank_mask},
+            {"bg", layout.bankgroup_mask},
+            {"ba", layout.bank_mask},
+            {"ro", layout.row_mask},
+            {"co", layout.column_mask}};
 
     _base_addr = 0;
     _top_addr = 0;
 
-    int pos = 0;
-    int loop_prior = 0;
-    while (!fields.empty()) {
-        auto token = fields.back();
-        fields.pop_back();
-        if (field_widths.find(token) == field_widths.end()) {
-            throw std::runtime_error("Unrecognized field: " + token);
-        }
-        field_pos[token] = pos;
-        pos += field_widths[token];
-
-        if (token == "ra" or token == "bg" or token == "ba") {
-            loop_prior++;
-            if (loop_prior == 1) {
-                inner_row_loop = token;
-            }
-            else if (loop_prior == 2) {
-                middle_row_loop = token;
-            }
-            else if (loop_prior == 3) {
-                outer_row_loop = token;
-            }
-        }
-    }
-
-
+    inner_row_loop = layout.row_loop_order[0];
+    middle_row_loop = layout.row_loop_order[1];
+    outer_row_loop = layout.row_loop_order[2];
 
     // spdlog::info("************************************************************************************************************************************");
     // spdlog::info("The Bank Iteration: Outer Row Loop: {}, Middle Row Loop: {}, Inner_Row_Loop: {}", outer_row_loop, middle_row_loop, inner_row_loop );
@@ -1011,6 +992,30 @@ bool MyAddressAllocator::init(const SysConfig& config) {
     ba_pos = field_pos.at("ba");
     ro_pos = field_pos.at("ro");
     co_pos = field_pos.at("co");
+
+#ifndef NDEBUG
+    // Keep independent calculations only in Debug builds so configuration
+    // drift is caught without adding comparison overhead to Release runs.
+    assert(config.dram_channels == dram_channels);
+    assert(LogBase2(dram_channels) == static_cast<int>(layout.channel_width));
+    assert(LogBase2(ranks) == static_cast<int>(layout.rank_width));
+    assert(LogBase2(bankgroups) == static_cast<int>(layout.bankgroup_width));
+    assert(LogBase2(banks) == static_cast<int>(layout.bank_width));
+    assert(LogBase2(rows) == static_cast<int>(layout.row_width));
+    assert(col_bits - offset == static_cast<int>(layout.column_width));
+    assert(ch_pos == config.mem_config.ch_pos);
+    assert(ra_pos == config.mem_config.ra_pos);
+    assert(bg_pos == config.mem_config.bg_pos);
+    assert(ba_pos == config.mem_config.ba_pos);
+    assert(ro_pos == config.mem_config.ro_pos);
+    assert(co_pos == config.mem_config.co_pos);
+    assert(mask.at("ch") == config.mem_config.ch_mask);
+    assert(mask.at("ra") == config.mem_config.ra_mask);
+    assert(mask.at("bg") == config.mem_config.bg_mask);
+    assert(mask.at("ba") == config.mem_config.ba_mask);
+    assert(mask.at("ro") == config.mem_config.ro_mask);
+    assert(mask.at("co") == config.mem_config.co_mask);
+#endif
 
     activation_buf_size = config.DRAM_act_buf_size;
 
@@ -1281,7 +1286,7 @@ void MyAddressAllocator::cleanup() {
     std::vector<std::string>().swap(fields);
     std::map<std::string, int>().swap(field_widths);
     std::map<std::string, int>().swap(field_pos);
-    std::map<std::string, int>().swap(mask);
+    std::map<std::string, uint64_t>().swap(mask);
     std::map<std::string, uint32_t>().swap( row_loop_size);
     std::vector<std::vector<uint32_t>>().swap(rababg_bank_index);
     std::vector<std::vector<std::vector<uint32_t>>>().swap(interleaved_bank_index);
@@ -1947,6 +1952,12 @@ addr_type MyAddressAllocator::kvcache_address_allocate(uint32_t size) {
 
 addr_type MyAddressAllocator::make_address(uint32_t row_loop_outer, uint32_t row_loop_middle, uint32_t row_loop_inner, uint32_t row, uint32_t column, uint32_t channel) {
     // make a address based on the row loon rank indexes
+    assert(channel < dram_channels);
+    assert(column < BL_num_per_row);
+    assert(row < rows);
+    assert(row_loop_inner < row_loop_size.at(inner_row_loop));
+    assert(row_loop_middle < row_loop_size.at(middle_row_loop));
+    assert(row_loop_outer < row_loop_size.at(outer_row_loop));
     addr_type address = 0;
     address |= (channel & mask["ch"]) << field_pos["ch"];
     address |= (column & mask["co"]) << field_pos["co"];
@@ -1961,6 +1972,11 @@ addr_type MyAddressAllocator::make_address(uint32_t row_loop_outer, uint32_t row
 
 addr_type MyAddressAllocator::make_address() {
     // make a address based on the current based indexes
+    assert(base_column < BL_num_per_row);
+    assert(base_row < rows);
+    assert(base_inner_row_loop < row_loop_size.at(inner_row_loop));
+    assert(base_middle_row_loop < row_loop_size.at(middle_row_loop));
+    assert(base_outer_row_loop < row_loop_size.at(outer_row_loop));
     addr_type address = 0;
     uint32_t channel = 0;
     address |= (channel & mask["ch"]) << field_pos["ch"];
@@ -1976,6 +1992,12 @@ addr_type MyAddressAllocator::make_address() {
 
 addr_type MyAddressAllocator::make_address_by_index(uint32_t rank_index, uint32_t bankgroup_index, uint32_t bank_index, uint32_t row_index, uint32_t column_index, uint32_t channel_index) {
     // make a address based on the specific indexes
+    assert(channel_index < dram_channels);
+    assert(rank_index < ranks);
+    assert(bankgroup_index < bankgroups);
+    assert(bank_index < banks);
+    assert(row_index < rows);
+    assert(column_index < BL_num_per_row);
     addr_type addr = 0;
     addr |= (channel_index & mask["ch"]) << field_pos["ch"];
     addr |= (rank_index & mask["ra"]) << field_pos["ra"];
@@ -1989,6 +2011,12 @@ addr_type MyAddressAllocator::make_address_by_index(uint32_t rank_index, uint32_
 
 addr_type MyAddressAllocator::make_address_by_index_with_shift(uint32_t rank_index, uint32_t bankgroup_index, uint32_t bank_index, uint32_t row_index, uint32_t column_index, uint32_t channel_index) {
     // make address based on the specific indexes with shift
+    assert(channel_index < dram_channels);
+    assert(rank_index < ranks);
+    assert(bankgroup_index < bankgroups);
+    assert(bank_index < banks);
+    assert(row_index < rows);
+    assert(column_index < BL_num_per_row);
     addr_type addr = 0;
     addr |= (channel_index & mask["ch"]) << field_pos["ch"];
     addr |= (rank_index & mask["ra"]) << field_pos["ra"];
@@ -2002,6 +2030,7 @@ addr_type MyAddressAllocator::make_address_by_index_with_shift(uint32_t rank_ind
 
 
 addr_type MyAddressAllocator::add_channel_index(addr_type addr, uint32_t channel_index) {
+    assert(channel_index < dram_channels);
     addr |= (channel_index & mask["ch"]) << field_pos["ch"];
     return addr;
 }
@@ -2081,6 +2110,12 @@ PIMHashAddressing::group_comp_addresses(
 
 
 addr_type MyAddressAllocator::make_address_with_channel(uint32_t inner_row_loop_index, uint32_t middle_row_loop_index, uint32_t outer_row_loop_index, uint32_t row, uint32_t col, uint32_t channel) {
+    assert(channel < dram_channels);
+    assert(col < BL_num_per_row);
+    assert(row < rows);
+    assert(inner_row_loop_index < row_loop_size.at(inner_row_loop));
+    assert(middle_row_loop_index < row_loop_size.at(middle_row_loop));
+    assert(outer_row_loop_index < row_loop_size.at(outer_row_loop));
     addr_type addr = 0;
 
     addr |= (channel & mask["ch"]) << field_pos["ch"];

@@ -1,6 +1,7 @@
 #ifndef PHSIM_DRAM_GEOMETRY_HPP
 #define PHSIM_DRAM_GEOMETRY_HPP
 
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -39,6 +40,32 @@ struct DramGeometryResult {
     uint32_t address_bits;
     uint64_t rank_size_mib;
     bool channel_size_increased;
+};
+
+struct DramAddressLayout {
+    uint32_t channel_width;
+    uint32_t rank_width;
+    uint32_t bankgroup_width;
+    uint32_t bank_width;
+    uint32_t row_width;
+    uint32_t column_width;
+
+    int channel_pos;
+    int rank_pos;
+    int bankgroup_pos;
+    int bank_pos;
+    int row_pos;
+    int column_pos;
+
+    uint64_t channel_mask;
+    uint64_t rank_mask;
+    uint64_t bankgroup_mask;
+    uint64_t bank_mask;
+    uint64_t row_mask;
+    uint64_t column_mask;
+
+    // Inner, middle, and outer iteration order for rank/bankgroup/bank.
+    std::array<std::string, 3> row_loop_order;
 };
 
 inline bool IsPositivePowerOfTwo(uint64_t value) {
@@ -229,6 +256,94 @@ inline DramGeometryResult CalculateDramGeometry(
     result.rank_size_mib = rank_size_mib;
     result.channel_size_increased = channel_size_increased;
     return result;
+}
+
+inline DramAddressLayout CalculateDramAddressLayout(
+    const DramGeometryResult& geometry, const std::string& address_mapping,
+    const std::string& config_path) {
+    const std::string prefix =
+        "Invalid DRAM address mapping in '" + config_path + "': ";
+    if (address_mapping.size() != 12) {
+        throw std::invalid_argument(
+            prefix + "exactly 6 two-character fields are required");
+    }
+
+    DramAddressLayout layout = {};
+    layout.channel_width = geometry.channel_bits;
+    layout.rank_width = geometry.rank_bits;
+    layout.bankgroup_width = geometry.bankgroup_bits;
+    layout.bank_width = geometry.bank_bits;
+    layout.row_width = geometry.row_bits;
+    layout.column_width = geometry.column_bits;
+
+    std::array<std::string, 6> tokens;
+    std::array<bool, 6> seen = {};
+    const auto field_index = [&](const std::string& token) -> std::size_t {
+        if (token == "ch") return 0;
+        if (token == "ra") return 1;
+        if (token == "bg") return 2;
+        if (token == "ba") return 3;
+        if (token == "ro") return 4;
+        if (token == "co") return 5;
+        throw std::invalid_argument(prefix + "unknown address field '" +
+                                    token + "'");
+    };
+    const auto field_width = [&](std::size_t index) -> uint32_t {
+        switch (index) {
+            case 0: return layout.channel_width;
+            case 1: return layout.rank_width;
+            case 2: return layout.bankgroup_width;
+            case 3: return layout.bank_width;
+            case 4: return layout.row_width;
+            case 5: return layout.column_width;
+            default: throw std::logic_error("Invalid DRAM address field index");
+        }
+    };
+    const auto set_position = [&](std::size_t index, int position) {
+        switch (index) {
+            case 0: layout.channel_pos = position; break;
+            case 1: layout.rank_pos = position; break;
+            case 2: layout.bankgroup_pos = position; break;
+            case 3: layout.bank_pos = position; break;
+            case 4: layout.row_pos = position; break;
+            case 5: layout.column_pos = position; break;
+            default: throw std::logic_error("Invalid DRAM address field index");
+        }
+    };
+
+    for (std::size_t index = 0; index < tokens.size(); ++index) {
+        tokens[index] = address_mapping.substr(index * 2, 2);
+        const std::size_t index_value = field_index(tokens[index]);
+        if (seen[index_value]) {
+            throw std::invalid_argument(prefix + "duplicate address field '" +
+                                        tokens[index] + "'");
+        }
+        seen[index_value] = true;
+    }
+
+    int position = 0;
+    std::size_t row_loop_index = 0;
+    for (auto token = tokens.rbegin(); token != tokens.rend(); ++token) {
+        const std::size_t index = field_index(*token);
+        set_position(index, position);
+        position += static_cast<int>(field_width(index));
+        if (*token == "ra" || *token == "bg" || *token == "ba") {
+            layout.row_loop_order.at(row_loop_index++) = *token;
+        }
+    }
+    if (static_cast<uint32_t>(position) + geometry.shift_bits !=
+        geometry.address_bits) {
+        throw std::logic_error(
+            prefix + "field widths do not match the calculated geometry");
+    }
+
+    layout.channel_mask = MaskForWidth(layout.channel_width);
+    layout.rank_mask = MaskForWidth(layout.rank_width);
+    layout.bankgroup_mask = MaskForWidth(layout.bankgroup_width);
+    layout.bank_mask = MaskForWidth(layout.bank_width);
+    layout.row_mask = MaskForWidth(layout.row_width);
+    layout.column_mask = MaskForWidth(layout.column_width);
+    return layout;
 }
 
 }  // namespace phsim

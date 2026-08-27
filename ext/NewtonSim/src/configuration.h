@@ -192,6 +192,7 @@ class Config {
     std::string config_file_;
     bool bankgroup_enable_;
     phsim::DramGeometryResult geometry_;
+    phsim::DramAddressLayout address_layout_;
     void CalculateSize();
     DRAMProtocol GetDRAMProtocol(std::string protocol_str);
     MemoryType GetMemoryType(std::string mem_type);

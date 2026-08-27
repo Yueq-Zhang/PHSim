@@ -399,83 +399,21 @@ void Config::InitTimingParams() {
 }
 
 void Config::SetAddressMapping() {
-    // memory addresses are byte addressable, but each request comes with
-    // multiple bytes because of bus width, and burst length
     PrintInfo("Columns: " + std::to_string(columns));
-
-    // has to strictly follow the order of chan, rank, bg, bank, row, col
-    std::map<std::string, int> field_widths;
-    field_widths["ch"] = static_cast<int>(geometry_.channel_bits);
-    field_widths["ra"] = static_cast<int>(geometry_.rank_bits);
-    field_widths["bg"] = static_cast<int>(geometry_.bankgroup_bits);
-    field_widths["ba"] = static_cast<int>(geometry_.bank_bits);
-    field_widths["ro"] = static_cast<int>(geometry_.row_bits);
-    field_widths["co"] = static_cast<int>(geometry_.column_bits);
-
-    /*
-    // 检测构建的DRAM和Address Allocator是否相同
-    if (channels != MyAddressAllocator::dram_channels or
-        ranks != MyAddressAllocator::ranks or
-        bankgroups != MyAddressAllocator::bankgroups or
-        banks_per_group != MyAddressAllocator::banks or
-        rows != MyAddressAllocator::rows or
-        columns != MyAddressAllocator::columns or
-        BL != MyAddressAllocator::burst_length or
-        actual_col_bits != MyAddressAllocator::field_widths["co"]
-        ) {
-        throw std::runtime_error("Dram has a different from Address allocator");
-    }
-    */
-
-    if (address_mapping.size() != 12) {
-        std::cerr << "Unknown address mapping (6 fields each 2 chars required)" << std::endl;
-        AbruptExit(__FILE__, __LINE__);
-    }
-
-    // // get address mapping position fields from config
-    // // each field must be 2 chars
-    std::vector<std::string> fields;
-    for (size_t i = 0; i < address_mapping.size(); i += 2) {
-        std::string token = address_mapping.substr(i, 2);
-        fields.push_back(token);
-    }
-
-    std::map<std::string, int> field_pos;
-    int pos = 0;
-    while (!fields.empty()) {
-        auto token = fields.back();
-        fields.pop_back();
-        if (field_widths.find(token) == field_widths.end()) {
-            std::cerr << "Unrecognized field: " << token << std::endl;
-            AbruptExit(__FILE__, __LINE__);
-        }
-        field_pos[token] = pos;
-        pos += field_widths[token];
-    }
-
-    ch_pos = field_pos.at("ch");
-    ra_pos = field_pos.at("ra");
-    bg_pos = field_pos.at("bg");
-    ba_pos = field_pos.at("ba");
-    ro_pos = field_pos.at("ro");
-    co_pos = field_pos.at("co");
-
-    ch_mask = phsim::MaskForWidth(geometry_.channel_bits);
-    ra_mask = phsim::MaskForWidth(geometry_.rank_bits);
-    bg_mask = phsim::MaskForWidth(geometry_.bankgroup_bits);
-    ba_mask = phsim::MaskForWidth(geometry_.bank_bits);
-    ro_mask = phsim::MaskForWidth(geometry_.row_bits);
-    co_mask = phsim::MaskForWidth(geometry_.column_bits);
-    /*
-    if (ch_pos != MyAddressAllocator::field_pos["ch"] or
-        ra_pos != MyAddressAllocator::field_pos["ra"] or
-        bg_pos != MyAddressAllocator::field_pos["bg"] or
-        ba_pos != MyAddressAllocator::field_pos["ba"] or
-        ro_pos != MyAddressAllocator::field_pos["ro"] or
-        co_pos != MyAddressAllocator::field_pos["co"]) {
-        throw std::runtime_error("Dram has a different from Address allocator");
-    }
-    */
+    address_layout_ = phsim::CalculateDramAddressLayout(
+        geometry_, address_mapping, config_file_);
+    ch_pos = address_layout_.channel_pos;
+    ra_pos = address_layout_.rank_pos;
+    bg_pos = address_layout_.bankgroup_pos;
+    ba_pos = address_layout_.bank_pos;
+    ro_pos = address_layout_.row_pos;
+    co_pos = address_layout_.column_pos;
+    ch_mask = address_layout_.channel_mask;
+    ra_mask = address_layout_.rank_mask;
+    bg_mask = address_layout_.bankgroup_mask;
+    ba_mask = address_layout_.bank_mask;
+    ro_mask = address_layout_.row_mask;
+    co_mask = address_layout_.column_mask;
 }
 
 } // namespace dramsim3

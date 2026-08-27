@@ -485,6 +485,10 @@ public:
     // Computed parameters
     int request_size_bytes;
 
+    const phsim::DramAddressLayout& address_layout() const {
+        return address_layout_;
+    }
+
     bool IsGDDR() const {
         return (protocol == DRAMProtocol::GDDR5 || protocol == DRAMProtocol::GDDR5X || protocol == DRAMProtocol::GDDR6);
     }
@@ -502,6 +506,7 @@ private:
     std::string memory_config_path_;
     bool bankgroup_enable_;
     phsim::DramGeometryResult geometry_;
+    phsim::DramAddressLayout address_layout_;
     int GetInteger(const std::string& sec, const std::string& opt, int default_val) const;  //
     static DRAMProtocol GetDRAMProtocol(std::string protocol_str);
 
@@ -741,53 +746,20 @@ inline void MemConfig::InitOtherParams() {
 
 
 inline void MemConfig::SetAddressMapping() {
-    // memory addresses are byte-addressable, but each request comes with multiple bytes because of bus width, and burst length
-    // has to strictly follow the order of chan, rank, bg, bank, row, col
-    std::map<std::string, int> field_widths;
-    field_widths["ch"] = static_cast<int>(geometry_.channel_bits);
-    field_widths["ra"] = static_cast<int>(geometry_.rank_bits);
-    field_widths["bg"] = static_cast<int>(geometry_.bankgroup_bits);
-    field_widths["ba"] = static_cast<int>(geometry_.bank_bits);
-    field_widths["ro"] = static_cast<int>(geometry_.row_bits);
-    field_widths["co"] = static_cast<int>(geometry_.column_bits);
-
-    if (address_mapping.size() != 12) {
-        throw std::runtime_error("Unknown address mapping (6 fields each 2 chars required) ");
-    }
-
-    // // get address mapping position fields from memory_config
-    // // each field must be 2 chars
-    std::vector<std::string> fields;
-    for (size_t i = 0; i < address_mapping.size(); i += 2) {
-        std::string token = address_mapping.substr(i, 2);
-        fields.push_back(token);
-    }
-
-    std::map<std::string, int> field_pos;
-    int pos = 0;
-    while (!fields.empty()) {
-        auto token = fields.back();
-        fields.pop_back();
-        if (field_widths.find(token) == field_widths.end()) {
-            throw std::runtime_error("Unrecognized field: " + token);
-        }
-        field_pos[token] = pos;
-        pos += field_widths[token];
-    }
-
-    ch_pos = field_pos.at("ch");
-    ra_pos = field_pos.at("ra");
-    bg_pos = field_pos.at("bg");
-    ba_pos = field_pos.at("ba");
-    ro_pos = field_pos.at("ro");
-    co_pos = field_pos.at("co");
-
-    ch_mask = phsim::MaskForWidth(geometry_.channel_bits);
-    ra_mask = phsim::MaskForWidth(geometry_.rank_bits);
-    bg_mask = phsim::MaskForWidth(geometry_.bankgroup_bits);
-    ba_mask = phsim::MaskForWidth(geometry_.bank_bits);
-    ro_mask = phsim::MaskForWidth(geometry_.row_bits);
-    co_mask = phsim::MaskForWidth(geometry_.column_bits);
+    address_layout_ = phsim::CalculateDramAddressLayout(
+        geometry_, address_mapping, memory_config_path_);
+    ch_pos = address_layout_.channel_pos;
+    ra_pos = address_layout_.rank_pos;
+    bg_pos = address_layout_.bankgroup_pos;
+    ba_pos = address_layout_.bank_pos;
+    ro_pos = address_layout_.row_pos;
+    co_pos = address_layout_.column_pos;
+    ch_mask = address_layout_.channel_mask;
+    ra_mask = address_layout_.rank_mask;
+    bg_mask = address_layout_.bankgroup_mask;
+    ba_mask = address_layout_.bank_mask;
+    ro_mask = address_layout_.row_mask;
+    co_mask = address_layout_.column_mask;
 }
 
 inline void MemConfig::InitTimingParams() {
@@ -1827,7 +1799,7 @@ namespace MyAddressAllocator {
     extern std::map<std::string, int> field_widths;
     extern std::map<std::string, int> field_pos;
 
-    extern std::map<std::string, int> mask;
+    extern std::map<std::string, uint64_t> mask;
     extern int ch_pos, ra_pos, bg_pos, ba_pos, ro_pos, co_pos;
 
     extern uint32_t precision_weight;

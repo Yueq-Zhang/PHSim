@@ -22,6 +22,7 @@ std::string source_path(const std::string& relative) {
 }
 
 void configure_address_decoder(const MemConfig& mem) {
+    const auto& layout = mem.address_layout();
     MyAddressAllocator::dram_channels = mem.channels;
     MyAddressAllocator::ranks = mem.ranks;
     MyAddressAllocator::bankgroups = mem.bankgroups;
@@ -34,18 +35,18 @@ void configure_address_decoder(const MemConfig& mem) {
 
     MyAddressAllocator::field_pos.clear();
     MyAddressAllocator::mask.clear();
-    MyAddressAllocator::field_pos["ch"] = mem.ch_pos;
-    MyAddressAllocator::field_pos["ra"] = mem.ra_pos;
-    MyAddressAllocator::field_pos["bg"] = mem.bg_pos;
-    MyAddressAllocator::field_pos["ba"] = mem.ba_pos;
-    MyAddressAllocator::field_pos["ro"] = mem.ro_pos;
-    MyAddressAllocator::field_pos["co"] = mem.co_pos;
-    MyAddressAllocator::mask["ch"] = static_cast<int>(mem.ch_mask);
-    MyAddressAllocator::mask["ra"] = static_cast<int>(mem.ra_mask);
-    MyAddressAllocator::mask["bg"] = static_cast<int>(mem.bg_mask);
-    MyAddressAllocator::mask["ba"] = static_cast<int>(mem.ba_mask);
-    MyAddressAllocator::mask["ro"] = static_cast<int>(mem.ro_mask);
-    MyAddressAllocator::mask["co"] = static_cast<int>(mem.co_mask);
+    MyAddressAllocator::field_pos["ch"] = layout.channel_pos;
+    MyAddressAllocator::field_pos["ra"] = layout.rank_pos;
+    MyAddressAllocator::field_pos["bg"] = layout.bankgroup_pos;
+    MyAddressAllocator::field_pos["ba"] = layout.bank_pos;
+    MyAddressAllocator::field_pos["ro"] = layout.row_pos;
+    MyAddressAllocator::field_pos["co"] = layout.column_pos;
+    MyAddressAllocator::mask["ch"] = layout.channel_mask;
+    MyAddressAllocator::mask["ra"] = layout.rank_mask;
+    MyAddressAllocator::mask["bg"] = layout.bankgroup_mask;
+    MyAddressAllocator::mask["ba"] = layout.bank_mask;
+    MyAddressAllocator::mask["ro"] = layout.row_mask;
+    MyAddressAllocator::mask["co"] = layout.column_mask;
 }
 
 RuntimeTuple runtime_tuple(addr_type address) {

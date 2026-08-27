@@ -194,7 +194,19 @@ int main() {
             {"columns.ini", replace_once(fixture_text, "columns = 1024",
                                           "columns = 1000")},
             {"ranks.ini", replace_once(fixture_text, "channel_size = 1024",
-                                        "channel_size = 3072")}};
+                                        "channel_size = 3072")},
+            {"mapping-duplicate.ini",
+             replace_once(fixture_text,
+                          "address_mapping = rorababgchco",
+                          "address_mapping = rorabachchco")},
+            {"mapping-unknown.ini",
+             replace_once(fixture_text,
+                          "address_mapping = rorababgchco",
+                          "address_mapping = rorabaxxchco")},
+            {"mapping-short.ini",
+             replace_once(fixture_text,
+                          "address_mapping = rorababgchco",
+                          "address_mapping = rorababgch")}};
         for (const auto& [filename, contents] : variants) {
             write_text(temp_dir / filename, contents);
         }
@@ -227,6 +239,15 @@ int main() {
         expect_invalid(temp_dir / "capacity-overflow.ini", smoke_pim,
                        temp_dir, "overflows uint64_t",
                        "reject capacity multiplication overflow");
+        expect_invalid(temp_dir / "mapping-duplicate.ini", smoke_pim,
+                       temp_dir, "duplicate address field 'ch'",
+                       "reject duplicate address fields");
+        expect_invalid(temp_dir / "mapping-unknown.ini", smoke_pim,
+                       temp_dir, "unknown address field 'xx'",
+                       "reject unknown address fields");
+        expect_invalid(temp_dir / "mapping-short.ini", smoke_pim,
+                       temp_dir, "exactly 6 two-character fields",
+                       "reject incomplete address mappings");
     } catch (const std::exception& error) {
         ++failures;
         std::cerr << "  FAIL: unexpected exception: " << error.what() << '\n';
