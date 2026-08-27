@@ -69,6 +69,7 @@ void configure_address_decoder(const MemConfig& mem) {
     MyAddressAllocator::rows = mem.rows;
     MyAddressAllocator::columns = mem.columns;
     MyAddressAllocator::burst_length = mem.BL;
+    MyAddressAllocator::BL_num_per_row = mem.columns / mem.BL;
     MyAddressAllocator::channel_width = mem.bus_width;
     MyAddressAllocator::dram_burst_size = mem.BL * mem.bus_width / 8;
 

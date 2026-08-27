@@ -1784,9 +1784,16 @@ std::vector<std::vector<uint32_t>> MyAddressAllocator::vcache_allocate(std::vect
         _rows[ch]->pop_front();
     }
     else if (allocation_scheme == AllocationScheme::NPU) {
-        uint32_t VCache_entry_size = columns * DQ_width / (d_k * precision);  // V cache token num in one DRAM Page
-        kv_cache_entry_size = VCache_entry_size;
-        uint32_t entry_num_per_head = std::ceil(static_cast<double>(Lin)/VCache_entry_size);
+        const uint32_t vcache_entry_size =
+            columns * DQ_width / 8 / (d_k * precision);
+        if (vcache_entry_size != kv_cache_entry_size) {
+            throw std::runtime_error(fmt::format(
+                "NPU K/V cache entry-size mismatch: initialized {}, "
+                "VCache requires {}",
+                kv_cache_entry_size, vcache_entry_size));
+        }
+        uint32_t entry_num_per_head =
+            std::ceil(static_cast<double>(Lin) / vcache_entry_size);
         uint32_t allocated_page_num = entry_num_per_head * h_kv;
         std::vector<uint32_t> allocate_row_indexes;
         for (uint32_t row_offset=0; row_offset< std::ceil(static_cast<double>(allocated_page_num) / total_banks); row_offset++) {

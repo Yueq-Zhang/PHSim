@@ -1051,7 +1051,10 @@ void DRAMChannel::IssueExecuteEvent(std::shared_ptr<Event> event, cycle_type iss
 
     // process the pending precharge event
     auto operation_bank = dram_ranks[event->rank_index]->dram_bankgroups[event->bankgroup_index]->dram_banks[event->bank_index];
-    if (operation_bank->open_row_exec_event_count == 0 && !operation_bank->pending_precharge_order_queue.empty()) {
+    if (operation_bank->open_row_exec_event_count == 0 &&
+        !operation_bank->pending_precharge &&
+        !operation_bank->pending_activate &&
+        !operation_bank->pending_precharge_order_queue.empty()) {
         auto operation_row = operation_bank->pending_precharge_order_queue.front();
         auto it = operation_bank->pending_precharge_event.find(operation_row);
         if (it != operation_bank->pending_precharge_event.end() && !it->second.empty()) {
