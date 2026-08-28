@@ -353,6 +353,23 @@ if(BUILD_TESTING)
     target_link_libraries(runtime_guard_test PRIVATE dramsim3 format)
     add_test(NAME runtime_guard_test COMMAND runtime_guard_test)
 
+    add_executable(
+        request_generator_test
+        tests/request_generator_test.cpp
+        src/Client/RequestGenerator.cc
+    )
+    target_include_directories(
+        request_generator_test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/ext"
+    )
+    target_link_libraries(request_generator_test PRIVATE dramsim3 format)
+    add_test(
+        NAME request_generator_test
+        COMMAND request_generator_test
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/smoke/request_trace.csv"
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/smoke/request_trace_invalid.csv"
+    )
+
     add_test(
         NAME dram_request_size_mismatch_test
         COMMAND ${CMAKE_COMMAND}
@@ -382,6 +399,36 @@ if(BUILD_TESTING)
             -P ${PROJECT_SOURCE_DIR}/tests/dram_frequency_mismatch_test.cmake
     )
     set_tests_properties(dram_frequency_mismatch_test PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME pim_bank_organization_mismatch_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -P ${PROJECT_SOURCE_DIR}/tests/pim_bank_organization_mismatch_test.cmake
+    )
+    set_tests_properties(pim_bank_organization_mismatch_test PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME trace_request_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -P ${PROJECT_SOURCE_DIR}/tests/trace_request_test.cmake
+    )
+    set_tests_properties(trace_request_test PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME max_active_requests_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -P ${PROJECT_SOURCE_DIR}/tests/max_active_requests_test.cmake
+    )
+    set_tests_properties(max_active_requests_test PROPERTIES TIMEOUT 30)
 
     add_test(
         NAME full_simulation_smoke_test

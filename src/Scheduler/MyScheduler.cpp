@@ -14,7 +14,7 @@ MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
     : _config(config), _core_cycle(core_cycle), _cycles(0),
       _data_container(data_container) {
     _max_batch_size = config.max_batch_size;   // 256;   // config.max_batch_size;
-    _max_active_reqs = 1024;  // 256;  // 70;
+    _max_active_reqs = config.max_active_reqs;
 
     _init_stage = Stage::Prefill;
     _model_program = nullptr;
@@ -60,9 +60,25 @@ void MyScheduler::launch(Ptr<Model> model) {  // Register the model on memory
     spdlog::info("MODEL {} Launched in Scheduler", model->get_name());
 }
 
+bool MyScheduler::can_accept_request() const {
+    return _request_queue.size() < _max_active_reqs;
+}
+
 void MyScheduler::add_request(std::shared_ptr<InferRequest> request) {
+    if (!can_accept_request()) {
+        throw std::runtime_error(fmt::format(
+            "Scheduler cannot admit request {}: max_active_reqs={} has been "
+            "reached",
+            request->id, _max_active_reqs));
+    }
     _request_queue.push_back(request);
-    spdlog::info("A request push into Scheduler, {} requests in the queue", _request_queue.size());
+    if (_stage == Stage::Finish && _model_program == nullptr &&
+        _breq.empty()) {
+        _stage = _init_stage;
+    }
+    spdlog::info(
+        "Scheduler admitted request {}: {}/{} resident requests",
+        request->id, _request_queue.size(), _max_active_reqs);
     _last_request_cycle = _cycles;
 }
 
@@ -89,8 +105,10 @@ void MyScheduler::init_batches() {
     uint32_t batch_size = 0;
 
     // add the active requests from request queue to _breq for batch inference
+    const uint32_t batch_capacity =
+        std::min(_max_batch_size, _max_active_reqs);
     for (auto request : _request_queue) {
-        if (batch_size >= _max_batch_size) {  // if _max_batch_size = 1 for single batch inference
+        if (batch_size >= batch_capacity) {  // if _max_batch_size = 1 for single batch inference
             break;
         }
         if (!request->is_initiated) {
@@ -215,7 +233,11 @@ void MyScheduler::cycle() {
         if (_stage == Stage::Finish) { // Current request finished
             cleanup_batch(_breq);
             _breq.clear();
-            return;
+            // The Client may still hold requests that were back-pressured by
+            // max_active_reqs. Return to the initial stage so the next
+            // admitted batch can start instead of leaving the scheduler
+            // permanently parked at Finish.
+            _stage = _init_stage;
         }
         else {
             std::string red = "\033[1;31m";

@@ -80,7 +80,7 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | 字段 | 类型/单位 | 默认值 | 说明与约束 |
 | --- | --- | --- | --- |
 | `num_cores` | 无符号整数/个 | 必填 | 核心数，必须大于0。 |
-| `core_type` | 字符串 | 必填 | 仅支持 `systolic_ws`、`systolic_os`。 |
+| `core_type` | 字符串 | 必填 | 当前执行核心仅实现 `systolic_ws`；其他值会在启动校验时拒绝，避免配置看似生效但仍构造WS核心。 |
 | `core_freq` | 无符号整数/MHz | 必填 | 核心频率，必须大于0；用于与DRAM、互连时钟换算。 |
 | `core_width` | 无符号整数/PE列 | 必填 | 脉动阵列宽度；当前地址分配要求偶数。 |
 | `core_height` | 无符号整数/PE行 | 必填 | 脉动阵列高度。 |
@@ -92,7 +92,7 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | `gelu_latency` | 无符号整数/核心周期 | 必填 | GELU运算延迟。 |
 | `add_tree_latency` | 无符号整数/核心周期 | 必填 | 归约加法树延迟。 |
 | `scalar_sqrt_latency` | 无符号整数/核心周期 | 必填 | 标量平方根延迟。 |
-| `scalar_add_latency` | 无符号整数/核心周期 | 必填 | 标量加法延迟。 |
+| `scalar_add_latency` | 无符号整数/核心周期 | `1`（兼容值） | 当前算子时序没有消费该字段；为避免静默无效，仅接受历史值 `1`，其他值会在启动时拒绝。 |
 | `scalar_mul_latency` | 无符号整数/核心周期 | 必填 | 标量乘法延迟。 |
 
 #### 片上存储、互连与数据格式
@@ -101,7 +101,7 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | --- | --- | --- | --- |
 | `spad_size` | 无符号整数/KiB | 必填 | 主scratchpad容量；多数算子按一半容量预留双缓冲。 |
 | `accum_spad_size` | 无符号整数/KiB | 必填 | 累加scratchpad容量。 |
-| `sram_width` | 无符号整数/bit | 必填 | SRAM接口宽度。 |
+| `sram_width` | 无符号整数/bit | `128`（兼容值） | 当前SRAM时序没有消费该字段；为避免静默无效，仅接受历史值 `128`。 |
 | `icnt_type` | 字符串 | 必填 | `simple` 或 `booksim2`。 |
 | `icnt_latency` | 无符号整数/互连周期 | 条件必填 | `simple`互连延迟。代码允许字段缺失，但没有可靠的显式默认值，建议始终填写。 |
 | `icnt_freq` | 无符号整数/MHz | 必填 | 互连频率，必须大于0。 |
@@ -112,8 +112,8 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | `precision_cache` | 无符号整数/byte/element | 必填 | KV Cache元素字节数，必须大于0。 |
 | `precision_psum` | 无符号整数/byte/element | 必填 | 部分和元素字节数，必须大于0。 |
 | `layout` | 字符串 | 必填 | 当前样例使用 `NHWC`；主要作为布局标签传递。 |
-| `scheduler` | 字符串 | 必填 | 当前样例使用 `simple`。 |
-| `operation_log_output_path` | 字符串/路径 | 必填字段 | 兼容字段；主输出仍由命令行 `--output_path` 和内部 `log_dir` 决定。 |
+| `scheduler` | 字符串 | 必填 | 当前仅实现 `simple`；其他值会在启动时拒绝。 |
+| `operation_log_output_path` | 字符串/路径 | 空字符串（兼容值） | 不再覆盖命令行输出目录；仅接受空字符串，所有输出统一由 `--output_path` 决定。 |
 
 以下字段出现在部分样例中，但当前初始化代码不读取：
 
@@ -132,7 +132,7 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | 字段 | 类型/单位 | 默认值 | 说明与约束 |
 | --- | --- | --- | --- |
 | `max_batch_size` | 无符号整数/请求 | 必填 | 调度批次上限，必须大于0。 |
-| `max_active_reqs` | 无符号整数/请求 | 必填 | 同时驻留的最大请求数；参与KV Cache容量预留。 |
+| `max_active_reqs` | 无符号整数/请求 | 必填 | 调度器中同时驻留（等待或运行）的最大请求数；Client 超出部分暂缓提交，同时用于KV Cache容量预留。必须大于0。 |
 | `max_seq_len` | 无符号整数/token | 必填 | 最大序列长度；参与KV Cache容量预留。 |
 | `kv_cache_entry_size` | 无符号整数/token | 必填 | IANUS/DASH中每个Cache entry覆盖的token数；NPU布局会根据DRAM页宽重新推导。 |
 | `allocation_scheme` | 字符串 | 必填 | 支持 `NPU`、`NeuPIM`、`IANUS`、`DASH`，区分大小写。 |
@@ -184,9 +184,9 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | 字段 | 类型/单位 | 默认值 | 说明与约束 |
 | --- | --- | --- | --- |
 | `gen_request` | 布尔 | 必填 | `true`使用合成请求；`false`读取顶层 `request_file_path`。 |
-| `gen_request_count` | 无符号整数/请求 | 必填 | 合成请求数量。当前部分地址交织表针对1、2、4请求做了预设，其他值会回退。 |
+| `gen_request_count` | 无符号整数/请求 | 必填 | 仅在 `gen_request=true` 时决定合成请求总数；Trace 模式忽略该值并采用CSV实际数据行数。地址交织使用实际请求数、`max_batch_size` 与 `max_active_reqs` 的最小值作为有效批大小。 |
 | `gen_request_input_size` | 无符号整数/token | 必填 | 固定合成输入长度。 |
-| `gen_request_output_size` | 无符号整数/token | `0` | 固定请求的目标输出token数。`gen_random_request=true`时由代码内随机输出范围覆盖；开启输出token迭代时，每个请求会以其实际 `output_size` 作为终止条件。 |
+| `gen_request_output_size` | 无符号整数/token | `0` | `gen_request=true` 时是固定请求的目标输出token数；`gen_random_request=true`时由代码内随机输出范围覆盖。`gen_request=false` 时输入和输出长度都来自CSV，不读取本字段。开启输出token迭代时，每个请求以其实际 `output_size` 作为终止条件。 |
 | `output_token_iteration_enable` | 布尔 | `false` | `false`保留原有固定stage序列；`true`时仅在完整模型模式下执行一次Prefill，再重复所选Decode后端，直到 `generated == output_size`。单算子/多层测试会忽略该选项并打印警告。 |
 | `gen_random_request` | 布尔 | 必填 | `true`时使用代码内固定随机范围：输入 `[128,256)`、输出 `[256,512)`。 |
 | `request_interval` | 无符号整数/核心周期 | 必填 | 请求到达间隔参数；必须大于0。 |
@@ -217,12 +217,12 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 
 | 字段 | 类型/单位 | 默认值 | 说明与约束 |
 | --- | --- | --- | --- |
-| `dram_type` | 字符串 | 必填 | `newton`或`dram`；当前公开Case使用 `newton`。 |
+| `dram_type` | 字符串 | 必填 | 当前主路径只实现 `newton`；事件驱动与Cycle Accurate的选择由 `dram_trace_simulation_mode` 控制。其他值会在启动时拒绝。 |
 | `dram_freq` | 无符号整数/MHz | 必填 | DRAM时钟域频率，必须大于0，并与INI `tCK`满足 `dram_freq × tCK ≈ 1000`；启动时按0.1%相对误差强制检查。 |
 | `DRAM_act_buf_size_MB` | 无符号整数/MiB | 必填 | 激活数据地址空间预留大小。 |
 | `dram_channels` | 无符号整数/通道 | 必填 | 必须大于0、为2的幂，并与INI `[system] channels`一致；启动时会强制检查。 |
 | `dram_req_size` | 无符号整数/byte | 必填 | 必须与INI推导的 `bus_width / 8 × BL` 完全一致；启动时会检查，不一致则报错终止。实际DRAM布局仍以INI为权威来源。 |
-| `PU_location` | 字符串 | 必填 | 当前样例使用 `bank`；PIM单元按bank组织。 |
+| `PU_location` | 字符串 | 必填 | 当前只实现 `bank`，其他值会在启动时拒绝。 |
 | `dual_bank` | 布尔 | 必填 | `true`表示一个PU跨两个bank，要求每通道bank总数为偶数。 |
 | `pim_PE_num` | 无符号整数/MAC单元/PU | 必填 | 每个PU内的PE数量，必须大于0。 |
 | `pim_input_buffer_size` | 无符号整数/byte | 必填 | 每通道PIM全局输入缓冲大小。 |
@@ -282,7 +282,7 @@ request_size_bytes = bus_width / 8 × BL
 | `BL` | 整数/传输拍 | `8` | Burst length。有效BL必须是正的2的幂。`BL=0`表示理想带宽，内部会按协议默认BL进行容量和地址计算。 |
 | `num_dies` | 整数/die | `1` | 堆叠die数量。 |
 | `hbm_dual_cmd` | 布尔 | `true` | 仅HBM协议实际启用双命令。 |
-| `pim_type` | 字符串 | `SINGLE` | NewtonSim的PIM内存类型；常用 `SINGLE`，dual-bank配置按后端支持值设置。 |
+| `pim_type` | 字符串 | `SINGLE` | NewtonSim的PIM bank组织，仅允许 `SINGLE`/`DUAL`，并强制与PIM JSON的 `dual_bank=false/true` 一一对应。 |
 
 总bank数为 `bankgroups × banks_per_group`；每rank器件数为 `bus_width / device_width`。通道容量会从 `rows × columns × device_width × banks × devices_per_rank` 推导rank数量。上述容量中间量使用64位无符号整数计算；若乘法溢出、单rank不是整MiB，或总地址布局超过64位，仿真器会在启动时报错。外层 `MemConfig` 与Cycle Accurate后端的 `dramsim3::Config` 共用同一几何计算实现，不再分别推导容量和地址位宽。
 
@@ -412,7 +412,7 @@ DRAM命令能耗按 `V × mA × ns` 计算，因此JSON/TXT中的DRAM能耗数�
 | `Stage` | 枚举名称 | `Prefill`、`Decode`、`Single_test`、`Multi_test`等完成stage。 |
 | `total_cycles` | 核心周期 | 当前stage完成核心周期减去上一stage完成核心周期。 |
 | `pim_cycles` | DRAM周期/通道平均 | 当前stage中PIM命令占用周期的每通道平均值；采样开启时包含逻辑补偿。 |
-| `mem_bw_util` | 百分数值 | 后端报告的平均DRAM带宽利用率，例如 `42.5` 表示约42.5%。 |
+| `mem_bw_util` | 百分数值 | 后端本地时间窗内报告的平均DRAM带宽利用率，例如 `42.5` 表示约42.5%。CA和ED的内部推进时间窗不同，因此该字段用于各后端内部比较，不要求跨后端数值相等。 |
 
 `total_cycles` 是仿真时间轴上的核心周期，不是主机真实运行时间。主机组件耗时只打印在终端的 `Component Real Time Breakdown` 中。
 
@@ -721,7 +721,8 @@ mkdir -p output/vm-dc-ca output/vm-dc-ed
 ## 8. 已知配置兼容性提示
 
 - `gen_request_output_size` 已用于固定请求的输出目标，但只有 `output_token_iteration_enable=true` 才按该目标重复Decode；默认关闭时仍执行原有固定stage序列。
-- `gen_request=false` 时，当前Client仍用 `gen_request_output_size` 作为输出目标；请求trace解析得到的答案长度尚未传入请求对象。
+- `gen_request=false` 时，Client读取CSV第1列作为输入长度、第2列作为输出长度；文件缺失、列数错误、非法数值或空数据都会在启动时给出明确错误。仓库Case默认路径指向 `sample_trace/request-traces/`。
+- `core_type`、`scheduler`、`dram_type`、`PU_location` 只允许当前实际实现的值；`sram_width=128`、`scalar_add_latency=1` 和空的 `operation_log_output_path` 作为历史兼容值保留，修改为其他值会被拒绝而不是静默忽略。
 - PIM Decode的维度必须满足当前bank/column交织粒度；过小的隐藏维度或过小的 `pim_input_buffer_size` 可能产生零长度分块，优先从已验证的迭代smoke配置缩放。
 - `dram_req_size`不是DRAM布局的权威控制量，但必须与INI的 `bus_width / 8 × BL` 一致；`sram_size`、`process_bit`、`n_pp`等样例字段不是当前对应子系统的权威控制量。
 - 旧字段 `tCKSRE` 仅用于兼容：单独出现时作为 `tCKESR` 读取并警告；两者同时出现但数值冲突时终止；均缺失时使用12周期默认值。

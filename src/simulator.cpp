@@ -257,7 +257,8 @@ void Simulator::cycle() {
             const double deferred_compile_before_scheduler =
                 _scheduler->deferred_compile_time_sec();
             auto t_sc_begin = std::chrono::high_resolution_clock::now(); // Record the start time of the scheduler + client
-            while (_client->has_request()) {
+            while (_client->has_request() &&
+                   _scheduler->can_accept_request()) {
                 std::shared_ptr<InferRequest> infer_request = _client->pop_request();
                 _scheduler->add_request(infer_request);
             }

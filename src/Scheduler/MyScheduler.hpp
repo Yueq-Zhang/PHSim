@@ -17,6 +17,7 @@ public:
                 DramDataContainer* data_container = nullptr);
     ~MyScheduler() = default;
     void launch(Ptr<Model> model);
+    bool can_accept_request() const;
     void add_request(std::shared_ptr<InferRequest> request);
     bool empty();
     bool running();
@@ -92,7 +93,7 @@ public:
     uint32_t _max_batch_size;
     uint32_t _max_active_reqs;
 
-    uint32_t _last_request_cycle;
+    cycle_type _last_request_cycle;
 
     std::vector<Ptr<InferRequest>> _breq;
 

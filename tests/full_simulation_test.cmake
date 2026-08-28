@@ -209,9 +209,26 @@ function(read_summary output_dir prefix)
     list(GET summary_lines 1 summary_row)
     string(REPLACE "\t" ";" summary_fields "${summary_row}")
     list(GET summary_fields 1 total_cycles)
+    list(GET summary_fields 2 pim_cycles)
     list(GET summary_fields 3 memory_bandwidth)
     set(${prefix}_TOTAL_CYCLES "${total_cycles}" PARENT_SCOPE)
+    set(${prefix}_PIM_CYCLES "${pim_cycles}" PARENT_SCOPE)
     set(${prefix}_MEMORY_BANDWIDTH "${memory_bandwidth}" PARENT_SCOPE)
+endfunction()
+
+function(require_identical_file left_dir right_dir file_name description)
+    foreach(directory IN ITEMS "${left_dir}" "${right_dir}")
+        if(NOT EXISTS "${directory}/${file_name}")
+            message(FATAL_ERROR
+                "Missing ${file_name} while checking ${description}: ${directory}")
+        endif()
+    endforeach()
+    file(SHA256 "${left_dir}/${file_name}" left_hash)
+    file(SHA256 "${right_dir}/${file_name}" right_hash)
+    if(NOT left_hash STREQUAL right_hash)
+        message(FATAL_ERROR
+            "${description} differs for ${file_name}: ${left_hash} vs ${right_hash}")
+    endif()
 endfunction()
 
 function(read_traffic output_dir prefix)
@@ -321,6 +338,8 @@ elseif(TEST_MODE STREQUAL "ca-ed-consistency")
     run_backend(cycle-accurate simulation_cycle_accurate.json ca_output)
     run_backend(event-driven simulation_event_driven.json event_output)
 
+    read_summary("${ca_output}" CA)
+    read_summary("${event_output}" EVENT)
     read_traffic("${ca_output}" CA)
     read_traffic("${event_output}" EVENT)
     read_backend_counters(
@@ -335,7 +354,8 @@ elseif(TEST_MODE STREQUAL "ca-ed-consistency")
     require_smoke_workload(EVENT)
 
     foreach(metric IN ITEMS
-            READ_BYTES WRITE_BYTES PIM_REQUESTS READS_DONE WRITES_DONE)
+            TOTAL_CYCLES PIM_CYCLES READ_BYTES WRITE_BYTES PIM_REQUESTS
+            READS_DONE WRITES_DONE)
         if(NOT CA_${metric} EQUAL EVENT_${metric})
             message(FATAL_ERROR
                 "CA/ED ${metric} mismatch: ${CA_${metric}} vs ${EVENT_${metric}}")
@@ -348,10 +368,27 @@ elseif(TEST_MODE STREQUAL "ca-ed-consistency")
             "${CA_READ_COMMANDS} vs ${EVENT_READ_COMMANDS}")
     endif()
 
+    if(NOT CA_TOTAL_CYCLES EQUAL 205 OR NOT CA_PIM_CYCLES EQUAL 0)
+        message(FATAL_ERROR
+            "CA/ED Add timing baseline changed: cycles/PIM cycles "
+            "${CA_TOTAL_CYCLES}/${CA_PIM_CYCLES}")
+    endif()
+    require_identical_file(
+        "${ca_output}" "${event_output}" core_timing.tsv
+        "CA/ED per-core timing and operator counters")
+    require_identical_file(
+        "${ca_output}" "${event_output}" icnt_traffic.json
+        "CA/ED logical interconnect traffic")
+
     # CycleAccurate response_only mode may make writes visible to the core
     # before NewtonSim issues the corresponding physical write commands.
     # Completion and traffic counts must agree; write-command counts are
     # reported below but intentionally are not required to be identical.
+    if(NOT CA_WRITE_COMMANDS EQUAL 0 OR NOT EVENT_WRITE_COMMANDS EQUAL 16)
+        message(FATAL_ERROR
+            "CA/ED physical write-command semantics changed: "
+            "${CA_WRITE_COMMANDS} vs ${EVENT_WRITE_COMMANDS}")
+    endif()
 
     message(STATUS
         "CA/ED consistency passed: logical reads/writes "
@@ -418,6 +455,25 @@ elseif(TEST_MODE STREQUAL "memory-access-gemm")
             "${CA_WRITE_COMMANDS}/${EVENT_WRITE_COMMANDS} and "
             "${DC_CA_WRITE_COMMANDS}/${DC_EVENT_WRITE_COMMANDS}")
     endif()
+
+    require_identical_file(
+        "${ca_output}" "${event_output}" core_timing.tsv
+        "CA/ED GEMM per-core timing and operator counters")
+    require_identical_file(
+        "${ca_output}" "${event_output}" icnt_traffic.json
+        "CA/ED GEMM logical interconnect traffic")
+    require_identical_file(
+        "${ca_output}" "${dc_ca_output}" core_timing.tsv
+        "DataContainer-disabled/enabled CycleAccurate GEMM timing")
+    require_identical_file(
+        "${event_output}" "${dc_event_output}" core_timing.tsv
+        "DataContainer-disabled/enabled EventDriven GEMM timing")
+    require_identical_file(
+        "${ca_output}" "${dc_ca_output}" icnt_traffic.json
+        "DataContainer-disabled/enabled CycleAccurate GEMM traffic")
+    require_identical_file(
+        "${event_output}" "${dc_event_output}" icnt_traffic.json
+        "DataContainer-disabled/enabled EventDriven GEMM traffic")
 
     message(STATUS
         "MemoryAccess GEMM lifecycle passed: cycles ${CA_TOTAL_CYCLES}, "

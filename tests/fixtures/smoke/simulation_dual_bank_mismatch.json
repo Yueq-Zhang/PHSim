@@ -1,0 +1,8 @@
+{
+    "compute_die_config_file_path": "tests/fixtures/smoke/compute_config.json",
+    "DRAM_config_file_path": "tests/fixtures/smoke/memory_config.ini",
+    "PIM_config_file_path": "tests/fixtures/smoke/pim_config_dual_bank_mismatch.json",
+    "model_config_file_path": "tests/fixtures/smoke/model_config.json",
+    "inference_config_file_path": "tests/fixtures/smoke/inference_event_driven.json",
+    "request_file_path": "tests/fixtures/smoke/request_trace.csv"
+}

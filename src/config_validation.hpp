@@ -1,0 +1,237 @@
+#pragma once
+
+#include <algorithm>
+#include <cmath>
+#include <cctype>
+#include <cstdint>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+
+namespace phsim {
+
+// Configuration contracts shared by the JSON front end, the DRAM INI parser,
+// and tests. Keeping cross-file checks here prevents one backend from silently
+// interpreting a duplicated setting differently from another backend.
+class ConfigValidator {
+public:
+    static void ValidateBackendCapabilities(bool event_driven,
+                                            bool enable_self_refresh) {
+        if (event_driven && enable_self_refresh) {
+            throw std::invalid_argument(
+                "EventDriven DRAM does not model self-refresh timing; disable "
+                "enable_self_refresh or use the CycleAccurate backend");
+        }
+    }
+
+    static uint32_t ValidateRequestSize(
+        uint32_t configured_request_size_bytes, uint32_t burst_length,
+        uint32_t bus_width_bits, const std::string& pim_config_path = {},
+        const std::string& memory_config_path = {}) {
+        if (burst_length == 0) {
+            throw std::invalid_argument(
+                "DRAM burst length must be greater than zero");
+        }
+        if (bus_width_bits == 0 || bus_width_bits % 8 != 0) {
+            throw std::invalid_argument(
+                "DRAM bus_width must be a positive multiple of 8 bits");
+        }
+
+        const uint64_t derived_request_size_bytes =
+            static_cast<uint64_t>(burst_length) * bus_width_bits / 8;
+        if (derived_request_size_bytes >
+            std::numeric_limits<uint32_t>::max()) {
+            throw std::overflow_error(
+                "Derived DRAM burst size does not fit in uint32_t");
+        }
+        if (configured_request_size_bytes == 0) {
+            throw std::invalid_argument(
+                "PIM config dram_req_size must be greater than zero");
+        }
+        if (configured_request_size_bytes != derived_request_size_bytes) {
+            std::ostringstream message;
+            message << "DRAM request-size mismatch";
+            AppendConfigPath(message, "PIM config", pim_config_path);
+            message << " sets dram_req_size=" << configured_request_size_bytes
+                    << " bytes";
+            AppendComparedConfig(message, memory_config_path);
+            message << " implies BL(" << burst_length << ") * bus_width("
+                    << bus_width_bits << " bits) / 8 = "
+                    << derived_request_size_bytes << " bytes";
+            throw std::invalid_argument(message.str());
+        }
+        return static_cast<uint32_t>(derived_request_size_bytes);
+    }
+
+    static uint32_t ValidateChannels(
+        uint32_t configured_channels, int memory_channels,
+        const std::string& pim_config_path = {},
+        const std::string& memory_config_path = {}) {
+        if (configured_channels == 0) {
+            throw std::invalid_argument(
+                "PIM config dram_channels must be greater than zero");
+        }
+        if (memory_channels <= 0) {
+            throw std::invalid_argument(
+                "Memory config channels must be greater than zero");
+        }
+
+        const auto memory_channels_unsigned =
+            static_cast<uint32_t>(memory_channels);
+        if (!IsPowerOfTwo(configured_channels)) {
+            throw std::invalid_argument(
+                "PIM config dram_channels must be a power of two");
+        }
+        if (!IsPowerOfTwo(memory_channels_unsigned)) {
+            throw std::invalid_argument(
+                "Memory config channels must be a power of two");
+        }
+        if (configured_channels != memory_channels_unsigned) {
+            std::ostringstream message;
+            message << "DRAM channel-count mismatch";
+            AppendConfigPath(message, "PIM config", pim_config_path);
+            message << " sets dram_channels=" << configured_channels;
+            AppendComparedConfig(message, memory_config_path);
+            message << " sets channels=" << memory_channels_unsigned;
+            throw std::invalid_argument(message.str());
+        }
+        return configured_channels;
+    }
+
+    static double ValidateFrequency(
+        uint32_t configured_frequency_mhz, double tck_ns,
+        const std::string& pim_config_path = {},
+        const std::string& memory_config_path = {}) {
+        constexpr double relative_tolerance = 1.0e-3;
+        if (configured_frequency_mhz == 0) {
+            throw std::invalid_argument(
+                "PIM config dram_freq must be greater than zero");
+        }
+        if (!std::isfinite(tck_ns) || tck_ns <= 0.0) {
+            throw std::invalid_argument(
+                "Memory config tCK must be a finite value greater than zero");
+        }
+
+        const double derived_frequency_mhz = 1000.0 / tck_ns;
+        const double relative_error =
+            std::abs(static_cast<double>(configured_frequency_mhz) -
+                     derived_frequency_mhz) /
+            derived_frequency_mhz;
+        if (relative_error > relative_tolerance) {
+            std::ostringstream message;
+            message << "DRAM frequency mismatch";
+            AppendConfigPath(message, "PIM config", pim_config_path);
+            message << " sets dram_freq=" << configured_frequency_mhz
+                    << " MHz";
+            AppendComparedConfig(message, memory_config_path);
+            message << " sets tCK=" << tck_ns << " ns, which implies "
+                    << derived_frequency_mhz
+                    << " MHz (allowed relative error 0.1%)";
+            throw std::invalid_argument(message.str());
+        }
+        return derived_frequency_mhz;
+    }
+
+    static std::string NormalizePimType(std::string pim_type) {
+        pim_type.erase(pim_type.begin(),
+                       std::find_if(pim_type.begin(), pim_type.end(),
+                                    [](unsigned char value) {
+                                        return !std::isspace(value);
+                                    }));
+        pim_type.erase(
+            std::find_if(pim_type.rbegin(), pim_type.rend(),
+                         [](unsigned char value) {
+                             return !std::isspace(value);
+                         })
+                .base(),
+            pim_type.end());
+        std::transform(pim_type.begin(), pim_type.end(), pim_type.begin(),
+                       [](unsigned char value) {
+                           return static_cast<char>(std::toupper(value));
+                       });
+        return pim_type.empty() ? "SINGLE" : pim_type;
+    }
+
+    static void ValidatePimBankOrganization(
+        bool dual_bank, const std::string& raw_pim_type,
+        const std::string& pim_config_path = {},
+        const std::string& memory_config_path = {}) {
+        const std::string pim_type = NormalizePimType(raw_pim_type);
+        if (pim_type != "SINGLE" && pim_type != "DUAL") {
+            throw std::invalid_argument(
+                "Unsupported memory-config pim_type='" + pim_type +
+                "'; PIM simulation requires SINGLE or DUAL");
+        }
+        const bool ini_dual_bank = pim_type == "DUAL";
+        if (dual_bank != ini_dual_bank) {
+            std::ostringstream message;
+            message << "PIM bank-organization mismatch";
+            AppendConfigPath(message, "PIM config", pim_config_path);
+            message << " sets dual_bank=" << (dual_bank ? "true" : "false");
+            AppendComparedConfig(message, memory_config_path);
+            message << " sets pim_type=" << pim_type
+                    << " (expected " << (dual_bank ? "DUAL" : "SINGLE")
+                    << ")";
+            throw std::invalid_argument(message.str());
+        }
+    }
+
+    static void ValidateSupportedValue(const std::string& field,
+                                       const std::string& actual,
+                                       const std::string& supported,
+                                       const std::string& config_path = {}) {
+        if (actual == supported) {
+            return;
+        }
+        std::ostringstream message;
+        message << "Unsupported " << field << "='" << actual << "'";
+        if (!config_path.empty()) {
+            message << " in '" << config_path << "'";
+        }
+        message << "; this build implements only '" << supported << "'";
+        throw std::invalid_argument(message.str());
+    }
+
+    template <typename T>
+    static void ValidateLegacyNoOpValue(const std::string& field,
+                                        const T& actual,
+                                        const T& legacy_value,
+                                        const std::string& config_path = {}) {
+        if (actual == legacy_value) {
+            return;
+        }
+        std::ostringstream message;
+        message << "Configuration field " << field << "=" << actual;
+        if (!config_path.empty()) {
+            message << " in '" << config_path << "'";
+        }
+        message << " is not implemented; only the legacy compatibility value "
+                << legacy_value << " is accepted";
+        throw std::invalid_argument(message.str());
+    }
+
+private:
+    static bool IsPowerOfTwo(uint32_t value) {
+        return value != 0 && (value & (value - 1)) == 0;
+    }
+
+    static void AppendConfigPath(std::ostringstream& message,
+                                 const char* label,
+                                 const std::string& path) {
+        if (!path.empty()) {
+            message << ": " << label << " '" << path << "'";
+        }
+    }
+
+    static void AppendComparedConfig(std::ostringstream& message,
+                                     const std::string& path) {
+        if (!path.empty()) {
+            message << ", but memory config '" << path << "'";
+        } else {
+            message << ", but the memory config";
+        }
+    }
+};
+
+}  // namespace phsim

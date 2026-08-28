@@ -21,34 +21,6 @@ std::string source_path(const std::string& relative) {
     return std::string(PH_SIM_SOURCE_DIR) + "/" + relative;
 }
 
-void configure_address_decoder(const MemConfig& mem) {
-    const auto& layout = mem.address_layout();
-    MyAddressAllocator::dram_channels = mem.channels;
-    MyAddressAllocator::ranks = mem.ranks;
-    MyAddressAllocator::bankgroups = mem.bankgroups;
-    MyAddressAllocator::banks = mem.banks_per_group;
-    MyAddressAllocator::rows = mem.rows;
-    MyAddressAllocator::columns = mem.columns;
-    MyAddressAllocator::burst_length = mem.BL;
-    MyAddressAllocator::channel_width = mem.bus_width;
-    MyAddressAllocator::dram_burst_size = mem.BL * mem.bus_width / 8;
-
-    MyAddressAllocator::field_pos.clear();
-    MyAddressAllocator::mask.clear();
-    MyAddressAllocator::field_pos["ch"] = layout.channel_pos;
-    MyAddressAllocator::field_pos["ra"] = layout.rank_pos;
-    MyAddressAllocator::field_pos["bg"] = layout.bankgroup_pos;
-    MyAddressAllocator::field_pos["ba"] = layout.bank_pos;
-    MyAddressAllocator::field_pos["ro"] = layout.row_pos;
-    MyAddressAllocator::field_pos["co"] = layout.column_pos;
-    MyAddressAllocator::mask["ch"] = layout.channel_mask;
-    MyAddressAllocator::mask["ra"] = layout.rank_mask;
-    MyAddressAllocator::mask["bg"] = layout.bankgroup_mask;
-    MyAddressAllocator::mask["ba"] = layout.bank_mask;
-    MyAddressAllocator::mask["ro"] = layout.row_mask;
-    MyAddressAllocator::mask["co"] = layout.column_mask;
-}
-
 RuntimeTuple runtime_tuple(addr_type address) {
     return {
         MyAddressAllocator::get_channel_index(address),
@@ -85,7 +57,7 @@ struct ConfigCase {
 bool verify_config_layout(const ConfigCase& config_case) {
     const MemConfig mem(source_path(config_case.memory_config),
                         source_path(config_case.pim_config), "/tmp");
-    configure_address_decoder(mem);
+    MyAddressAllocator::configure_address_decoder(mem);
 
     const uint64_t total_bytes =
         static_cast<uint64_t>(mem.channels) * mem.channel_size * 1024 * 1024;
@@ -177,7 +149,7 @@ int main() {
     const std::string pim_config =
         source_path("configs/Cases/Nano/Nano_pim_config.json");
     const MemConfig mem(memory_config, pim_config, "/tmp");
-    configure_address_decoder(mem);
+    MyAddressAllocator::configure_address_decoder(mem);
 
     const uint64_t total_bytes =
         static_cast<uint64_t>(mem.channels) * mem.channel_size * 1024 * 1024;

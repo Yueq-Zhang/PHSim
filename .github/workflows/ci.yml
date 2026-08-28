@@ -14,9 +14,15 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Release build and CTest
+    name: ${{ matrix.build_type }} build and CTest
     runs-on: ubuntu-22.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type:
+          - Release
+          - Debug
 
     steps:
       - name: Check out source
@@ -31,14 +37,16 @@ jobs:
             libblas-dev \
             libboost-dev
 
-      - name: Configure Release build
+      - name: Configure ${{ matrix.build_type }} build
         run: >-
-          cmake -S . -B build
-          -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build-${{ matrix.build_type }}
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBUILD_TESTING=ON
 
       - name: Build
-        run: cmake --build build --parallel 2
+        run: cmake --build build-${{ matrix.build_type }} --parallel 2
 
       - name: Run tests
-        run: ctest --test-dir build --output-on-failure
+        run: >-
+          ctest --test-dir build-${{ matrix.build_type }}
+          --output-on-failure

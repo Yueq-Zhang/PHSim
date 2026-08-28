@@ -28,6 +28,8 @@ void SysConfig::initialize_from_config_path(std::string const sys_config_path, s
     model_config_path_ = model_config_path;
     output_path_ = output_path;
     request_dataset_path_ = request_dataset_path;
+    this->request_dataset_path = request_dataset_path;
+    this->pim_config_path = pim_config_path;
     operation_log_output_path = output_path;
     log_dir = output_path;
 
@@ -37,6 +39,7 @@ void SysConfig::initialize_from_config_path(std::string const sys_config_path, s
     initialize_compute_die_system_config(sys_config_path);
     initialize_inference_config(inference_config_path_);
     initialize_model_config(model_config_path_);
+    validate_configuration_contracts();
 }
 
 
@@ -76,7 +79,8 @@ void SysConfig::initialize_compute_die_system_config(std::string sys_config_path
     accum_spad_size = config["accum_spad_size"];
 
     /* log config*/
-    operation_log_output_path = config["operation_log_output_path"];
+    // The command-line output path is authoritative.  The legacy JSON field is
+    // checked centrally but must not redirect only a subset of simulator logs.
 
     /* Icnt config */
     if ((std::string)config["icnt_type"] == "simple")
@@ -164,6 +168,7 @@ void SysConfig::initialize_inference_config(std::string inference_config_path) {
     // Preset Request Scale
     gen_request = inference_config["gen_request"];
     gen_request_count = inference_config["gen_request_count"];
+    effective_request_count = gen_request ? gen_request_count : 0;
     gen_request_input_size = inference_config["gen_request_input_size"];
     gen_request_output_size =
         inference_config.value("gen_request_output_size", 0U);
@@ -209,17 +214,9 @@ void SysConfig::initialize_PIM_config(std::string pim_config) {
         throw std::runtime_error(
             fmt::format("Not implemented dram type {} ", (std::string)mem_config["dram_type"]));
     dram_freq = mem_config["dram_freq"];
-    ValidateDramFrequencyConsistency(
-        dram_freq, this->mem_config.tCK, pim_config, memory_config_path_);
     DRAM_act_buf_size = (uint64_t)(mem_config["DRAM_act_buf_size_MB"])MB;
     dram_channels = mem_config["dram_channels"];
-    ValidateDramChannelConsistency(
-        dram_channels, this->mem_config.channels, pim_config,
-        memory_config_path_);
     dram_req_size = mem_config.value("dram_req_size", 0U);
-    ValidateDramRequestSizeConsistency(
-        dram_req_size, this->mem_config.BL, this->mem_config.bus_width,
-        pim_config, memory_config_path_);
     // PIM config
     pim_PE_num = mem_config["pim_PE_num"]; // PE_num in each PIM PU
     pim_input_buffer_size = mem_config["pim_input_buffer_size"];  // PIM Input Buffer size, Global Input Buffer(Byte)
@@ -236,6 +233,50 @@ void SysConfig::initialize_PIM_config(std::string pim_config) {
     pim_buffer_dynamic_power_per_bit = mem_config["pim_buffer_dynamic_power_per_bit"];
 
     pim_parallel_bank_accesses = mem_config.value("pim_parallel_bank_accesses", 0);
+}
+
+void SysConfig::validate_configuration_contracts() {
+    using phsim::ConfigValidator;
+
+    ConfigValidator::ValidateFrequency(
+        dram_freq, mem_config.tCK, pim_config_path, memory_config_path_);
+    ConfigValidator::ValidateChannels(
+        dram_channels, mem_config.channels, pim_config_path,
+        memory_config_path_);
+    ConfigValidator::ValidateRequestSize(
+        dram_req_size, mem_config.BL, mem_config.bus_width, pim_config_path,
+        memory_config_path_);
+    ConfigValidator::ValidatePimBankOrganization(
+        mem_config.dual_bank, mem_config.pim_type, pim_config_path,
+        memory_config_path_);
+    ConfigValidator::ValidateBackendCapabilities(
+        dram_trace_simulation_mode, mem_config.enable_self_refresh);
+
+    ConfigValidator::ValidateSupportedValue(
+        "core_type",
+        core_type == CoreType::SYSTOLIC_WS ? "systolic_ws" : "systolic_os",
+        "systolic_ws", system_config_path_);
+    ConfigValidator::ValidateSupportedValue(
+        "scheduler", scheduler_type, "simple", system_config_path_);
+    ConfigValidator::ValidateSupportedValue(
+        "dram_type", dram_type == DramType::NEWTON ? "newton" : "dram",
+        "newton", pim_config_path);
+    ConfigValidator::ValidateSupportedValue(
+        "PU_location", mem_config.PU_location, "bank", pim_config_path);
+
+    // These fields were historically parsed but never reached a timing or
+    // structure model. Preserve existing configurations without pretending a
+    // changed value has an effect.
+    ConfigValidator::ValidateLegacyNoOpValue(
+        "sram_width", sram_width, uint32_t{128}, system_config_path_);
+    ConfigValidator::ValidateLegacyNoOpValue(
+        "scalar_add_latency", scalar_add_latency, cycle_type{1},
+        system_config_path_);
+    const nlohmann::json compute_config = load_config(system_config_path_);
+    ConfigValidator::ValidateLegacyNoOpValue(
+        "operation_log_output_path",
+        compute_config.value("operation_log_output_path", std::string{}),
+        std::string{}, system_config_path_);
 }
 
 
@@ -893,21 +934,16 @@ namespace MyAddressAllocator {
     std::vector<std::vector<std::vector<uint32_t>>> VCache_interleaved_bank_index; // Index of Mapping bank index of each VCache head (Ra, BG, Ba)
 }
 
-bool MyAddressAllocator::init(const SysConfig& config) {
-    /*
-    virtual_alloc_ptr = 0;
-    page_table.clear();
-    bank_alloc_ptr.clear();
-    */
-    dram_channels = config.mem_config.channels;
-    ranks = config.mem_config.ranks;
-    devices_per_rank = config.mem_config.devices_per_rank;
-    bankgroups = config.mem_config.bankgroups;
-    banks = config.mem_config.banks_per_group;
-    rows = config.mem_config.rows;
-    columns = config.mem_config.columns;
-    DQ_width = config.mem_config.device_width;  // DQ of each device = DQ of each banks
-    burst_length = config.mem_config.BL;
+void MyAddressAllocator::configure_address_decoder(const MemConfig& mem_config) {
+    dram_channels = mem_config.channels;
+    ranks = mem_config.ranks;
+    devices_per_rank = mem_config.devices_per_rank;
+    bankgroups = mem_config.bankgroups;
+    banks = mem_config.banks_per_group;
+    rows = mem_config.rows;
+    columns = mem_config.columns;
+    DQ_width = mem_config.device_width;  // DQ of each device = DQ of each banks
+    burst_length = mem_config.BL;
     BL_num_per_row = columns / burst_length;   // the contains operation for each row
 
     page_size_bytes =  DQ_width * columns / 8;
@@ -915,25 +951,12 @@ bool MyAddressAllocator::init(const SysConfig& config) {
     total_banks = dram_channels * ranks * bankgroups * banks;
     banks_per_channel = ranks * bankgroups * banks;
 
-    channel_width = config.mem_config.bus_width;
+    channel_width = mem_config.bus_width;
     dram_burst_size = burst_length * channel_width / 8;  // Byte
     memory_burst_size = dram_burst_size * dram_channels;
 
-    spdlog::critical("Initializing MyAddressAllocator of DRAM system with "
-                     "{} channels, {} ranks, {} devices, {} bankgroups, {} banks, {} rows, {} columns",
-                     dram_channels, ranks, devices_per_rank, bankgroups, banks, rows, columns);
-
-    spdlog::critical("DQ = {}, burst_length = {}, Channel_Burst_size = {}, DRAM_Burst_size = {}, Each Bank Row Contains {} Bytes, the supported BL time of one row is {}",
-        DQ_width, burst_length, dram_burst_size, memory_burst_size, columns * DQ_width / 8, BL_num_per_row);
-
-    precision_weight = config.precision_weight;
-    precision_activation = config.precision_activation;
-    precision_cache = config.precision_cache;
-    precision_psum = config.precision_psum;
-
     // Address widths, positions, and masks are calculated once by MemConfig.
-    const phsim::DramAddressLayout& layout =
-        config.mem_config.address_layout();
+    const phsim::DramAddressLayout& layout = mem_config.address_layout();
     channel_bits = layout.channel_width;
     rank_bits = layout.rank_width;
     bankgroup_bits = layout.bankgroup_width;
@@ -941,15 +964,7 @@ bool MyAddressAllocator::init(const SysConfig& config) {
     row_bits = layout.row_width;
     col_bits = LogBase2(columns);
     offset = LogBase2(burst_length);
-    shift_bits = config.mem_config.shift_bits;
-
-    virtual_mem_hash_enable = config.virtual_mem_hash_enable;
-
-    AddrGranularity_Hash_Bytes = 1024;
-
-    if (virtual_mem_hash_enable) {
-        spdlog::info("");
-    }
+    shift_bits = mem_config.shift_bits;
 
     fields.clear();
     field_widths.clear();
@@ -993,35 +1008,67 @@ bool MyAddressAllocator::init(const SysConfig& config) {
     ro_pos = field_pos.at("ro");
     co_pos = field_pos.at("co");
 
+    row_loop_size["ra"] = ranks;
+    row_loop_size["bg"] = bankgroups;
+    row_loop_size["ba"] = banks;
+
 #ifndef NDEBUG
     // Keep independent calculations only in Debug builds so configuration
     // drift is caught without adding comparison overhead to Release runs.
-    assert(config.dram_channels == dram_channels);
     assert(LogBase2(dram_channels) == static_cast<int>(layout.channel_width));
     assert(LogBase2(ranks) == static_cast<int>(layout.rank_width));
     assert(LogBase2(bankgroups) == static_cast<int>(layout.bankgroup_width));
     assert(LogBase2(banks) == static_cast<int>(layout.bank_width));
     assert(LogBase2(rows) == static_cast<int>(layout.row_width));
     assert(col_bits - offset == static_cast<int>(layout.column_width));
-    assert(ch_pos == config.mem_config.ch_pos);
-    assert(ra_pos == config.mem_config.ra_pos);
-    assert(bg_pos == config.mem_config.bg_pos);
-    assert(ba_pos == config.mem_config.ba_pos);
-    assert(ro_pos == config.mem_config.ro_pos);
-    assert(co_pos == config.mem_config.co_pos);
-    assert(mask.at("ch") == config.mem_config.ch_mask);
-    assert(mask.at("ra") == config.mem_config.ra_mask);
-    assert(mask.at("bg") == config.mem_config.bg_mask);
-    assert(mask.at("ba") == config.mem_config.ba_mask);
-    assert(mask.at("ro") == config.mem_config.ro_mask);
-    assert(mask.at("co") == config.mem_config.co_mask);
+    assert(ch_pos == mem_config.ch_pos);
+    assert(ra_pos == mem_config.ra_pos);
+    assert(bg_pos == mem_config.bg_pos);
+    assert(ba_pos == mem_config.ba_pos);
+    assert(ro_pos == mem_config.ro_pos);
+    assert(co_pos == mem_config.co_pos);
+    assert(mask.at("ch") == mem_config.ch_mask);
+    assert(mask.at("ra") == mem_config.ra_mask);
+    assert(mask.at("bg") == mem_config.bg_mask);
+    assert(mask.at("ba") == mem_config.ba_mask);
+    assert(mask.at("ro") == mem_config.ro_mask);
+    assert(mask.at("co") == mem_config.co_mask);
+#endif
+}
+
+bool MyAddressAllocator::init(const SysConfig& config) {
+    /*
+    virtual_alloc_ptr = 0;
+    page_table.clear();
+    bank_alloc_ptr.clear();
+    */
+    configure_address_decoder(config.mem_config);
+
+    spdlog::critical("Initializing MyAddressAllocator of DRAM system with "
+                     "{} channels, {} ranks, {} devices, {} bankgroups, {} banks, {} rows, {} columns",
+                     dram_channels, ranks, devices_per_rank, bankgroups, banks, rows, columns);
+
+    spdlog::critical("DQ = {}, burst_length = {}, Channel_Burst_size = {}, DRAM_Burst_size = {}, Each Bank Row Contains {} Bytes, the supported BL time of one row is {}",
+        DQ_width, burst_length, dram_burst_size, memory_burst_size, columns * DQ_width / 8, BL_num_per_row);
+
+    precision_weight = config.precision_weight;
+    precision_activation = config.precision_activation;
+    precision_cache = config.precision_cache;
+    precision_psum = config.precision_psum;
+
+    virtual_mem_hash_enable = config.virtual_mem_hash_enable;
+
+    AddrGranularity_Hash_Bytes = 1024;
+
+    if (virtual_mem_hash_enable) {
+        spdlog::info("");
+    }
+
+#ifndef NDEBUG
+    assert(config.dram_channels == dram_channels);
 #endif
 
     activation_buf_size = config.DRAM_act_buf_size;
-
-    row_loop_size["ra"] = ranks;
-    row_loop_size["bg"] = bankgroups;
-    row_loop_size["ba"] = banks;
 
 
     if (config.allocation_scheme == "NPU") {
@@ -1095,7 +1142,14 @@ bool MyAddressAllocator::init(const SysConfig& config) {
     // *******************************************************************************************
     // The following settings are used to set the interlove_manks_per_tile to determine the acceleration effect of FFN in the decode stage
     std::string buffer_key = std::to_string(config.pim_input_buffer_size) + "_" + std::to_string(config.pim_output_buffer_size);
-    int batch_size = config.gen_request_count;
+    const uint32_t batch_size = std::min(
+        {config.effective_request_count, config.max_batch_size,
+         config.max_active_reqs});
+    if (batch_size == 0) {
+        throw std::invalid_argument(
+            "Effective request batch size must be greater than zero before "
+            "address allocation");
+    }
 
     // Construct Lookup Table
     std::map<std::string, std::map<int, int>> weight_interleave_map = {
@@ -1611,6 +1665,13 @@ addr_type MyAddressAllocator::get_sequence_address_pim(uint64_t burst_offset, st
 
 // reserve the activation space after weight allocation
 bool MyAddressAllocator::activation_malloc() {
+    if (activation_space_malloced) {
+        // The activation buffer is a run-wide reservation. A later request
+        // batch reuses that reservation and only rewinds its allocation
+        // cursor; reserving it again would make Release and Debug behave
+        // differently and duplicate activation_space metadata.
+        return activation_refresh();
+    }
     assert(activation_space_malloced == false);
     activation_space_malloced = true;
 

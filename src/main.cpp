@@ -11,6 +11,7 @@
 
 #include "simulator.hpp"
 #include "common_function.hpp"
+#include "Client/RequestGenerator.h"
 
 
 int finish_trans;
@@ -74,6 +75,19 @@ int main(int argc, char *argv[]) {
         throw std::runtime_error("Log init failed: " + std::string(ex.what()));
     }
     Config::system_config.initialize_from_config_path(compute_die_config_path, memory_config_path, pim_config_path, inference_config_path, model_config_path, request_trace_file_path, output_path);
+
+    if (!Config::system_config.gen_request) {
+        constexpr uint32_t answer_index = 1;
+        RequestGenerator::init(
+            Config::system_config.request_dataset_path, answer_index);
+        Config::system_config.effective_request_count =
+            static_cast<uint32_t>(RequestGenerator::get_total_req_cnt());
+        spdlog::info(
+            "Trace mode effective request count: {} (gen_request_count={} "
+            "is ignored)",
+            Config::system_config.effective_request_count,
+            Config::system_config.gen_request_count);
+    }
 
     PIM_Parameters::init(Config::system_config);  // Initial global PIM configuration
     MyAddressAllocator::init(Config::system_config); // MyAddress Allocator

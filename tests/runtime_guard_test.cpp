@@ -1,14 +1,21 @@
 #include "common_function.hpp"
+#include "Client/Client.h"
 
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace {
 
 int failures = 0;
+
+static_assert(std::is_same_v<decltype(InferRequest::arrival_cycle), cycle_type>);
+static_assert(std::is_same_v<decltype(InferRequest::completed_cycle), cycle_type>);
+static_assert(std::is_same_v<decltype(std::declval<const Client&>().current_cycle()),
+                             cycle_type>);
 
 void expect_equal(const std::string& actual, const std::string& expected,
                   const std::string& name) {
@@ -175,6 +182,100 @@ void test_dram_frequency_consistency() {
     }
 }
 
+void test_pim_bank_organization_consistency() {
+    try {
+        phsim::ConfigValidator::ValidatePimBankOrganization(
+            false, "SINGLE", "pim.json", "memory.ini");
+        phsim::ConfigValidator::ValidatePimBankOrganization(
+            true, " dual ", "pim.json", "memory.ini");
+        phsim::ConfigValidator::ValidatePimBankOrganization(
+            false, "", "pim.json", "memory.ini");
+        std::cout << "  PASS: matching SINGLE/DUAL and legacy default are accepted\n";
+    } catch (const std::exception& error) {
+        ++failures;
+        std::cerr << "  FAIL: valid PIM organization rejected: "
+                  << error.what() << '\n';
+    }
+
+    try {
+        phsim::ConfigValidator::ValidatePimBankOrganization(
+            true, "SINGLE", "pim.json", "memory.ini");
+        ++failures;
+        std::cerr << "  FAIL: mismatching PIM organization did not throw\n";
+    } catch (const std::invalid_argument& error) {
+        const std::string message = error.what();
+        if (message.find("dual_bank=true") != std::string::npos &&
+            message.find("pim_type=SINGLE") != std::string::npos) {
+            std::cout << "  PASS: PIM organization mismatch reports both values\n";
+        } else {
+            ++failures;
+            std::cerr << "  FAIL: PIM organization diagnostic omitted values: "
+                      << message << '\n';
+        }
+    }
+}
+
+void test_implemented_configuration_capabilities() {
+    try {
+        phsim::ConfigValidator::ValidateSupportedValue(
+            "scheduler", "simple", "simple", "compute.json");
+        phsim::ConfigValidator::ValidateLegacyNoOpValue(
+            "sram_width", uint32_t{128}, uint32_t{128}, "compute.json");
+        std::cout << "  PASS: implemented and legacy-compatible values are accepted\n";
+    } catch (const std::exception& error) {
+        ++failures;
+        std::cerr << "  FAIL: supported configuration rejected: "
+                  << error.what() << '\n';
+    }
+
+    try {
+        phsim::ConfigValidator::ValidateSupportedValue(
+            "scheduler", "experimental", "simple", "compute.json");
+        ++failures;
+        std::cerr << "  FAIL: unsupported scheduler did not throw\n";
+    } catch (const std::invalid_argument& error) {
+        if (std::string(error.what()).find("implements only 'simple'") !=
+            std::string::npos) {
+            std::cout << "  PASS: unsupported capability is rejected explicitly\n";
+        } else {
+            ++failures;
+            std::cerr << "  FAIL: unsupported capability diagnostic unclear: "
+                      << error.what() << '\n';
+        }
+    }
+
+    try {
+        phsim::ConfigValidator::ValidateLegacyNoOpValue(
+            "scalar_add_latency", cycle_type{2}, cycle_type{1},
+            "compute.json");
+        ++failures;
+        std::cerr << "  FAIL: changed no-op field did not throw\n";
+    } catch (const std::invalid_argument& error) {
+        if (std::string(error.what()).find("not implemented") !=
+            std::string::npos) {
+            std::cout << "  PASS: changed no-op field cannot silently affect a run\n";
+        } else {
+            ++failures;
+            std::cerr << "  FAIL: no-op field diagnostic unclear: "
+                      << error.what() << '\n';
+        }
+    }
+}
+
+void test_client_cycle_width() {
+    InferRequest request{};
+    request.arrival_cycle =
+        static_cast<cycle_type>(std::numeric_limits<uint32_t>::max()) + 17;
+    request.completed_cycle = request.arrival_cycle + 29;
+    if (request.completed_cycle - request.arrival_cycle == 29 &&
+        request.arrival_cycle > std::numeric_limits<uint32_t>::max()) {
+        std::cout << "  PASS: Client request timestamps preserve 64-bit cycles\n";
+    } else {
+        ++failures;
+        std::cerr << "  FAIL: Client request timestamps truncated above uint32\n";
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -183,6 +284,9 @@ int main() {
     test_dram_request_size_consistency();
     test_dram_channel_consistency();
     test_dram_frequency_consistency();
+    test_pim_bank_organization_consistency();
+    test_implemented_configuration_capabilities();
+    test_client_cycle_width();
 
     if (failures == 0) {
         std::cout << "RESULT PASS: runtime guard checks\n";

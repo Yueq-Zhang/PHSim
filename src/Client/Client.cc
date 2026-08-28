@@ -25,9 +25,21 @@ Client::Client(const SysConfig& config)
         _total_cnt = _config.gen_request_count;  // config by json file
     }
     else {
-        uint32_t answer_index = 1;
-        RequestGenerator::init(config.request_dataset_path, answer_index);
+        // main() preflights trace mode before address allocation so the same
+        // effective count is available to every subsystem. Keep this fallback
+        // for direct Client construction in focused tests or embedding code.
+        if (_config.effective_request_count == 0) {
+            constexpr uint32_t answer_index = 1;
+            RequestGenerator::init(config.request_dataset_path, answer_index);
+        }
         _total_cnt = RequestGenerator::get_total_req_cnt();
+        if (_config.effective_request_count != 0 &&
+            _config.effective_request_count != _total_cnt) {
+            throw std::runtime_error(fmt::format(
+                "Request trace count changed between configuration preflight "
+                "and Client initialization: expected {}, found {}",
+                _config.effective_request_count, _total_cnt));
+        }
         spdlog::info("Client total request cnt: {}", _total_cnt);
     }
 
@@ -47,8 +59,6 @@ int Client::rand_input_size() { return rand() % (_imax - _imin) + _imin; }
 int Client::rand_output_size() { return rand() % (_omax - _omin) + _omin; }
 
 void Client::cycle() {
-    uint32_t idle_cycles = _cycles - _valid_request_cycle;
-
     uint32_t input_size;
     uint32_t output_size;
 
@@ -56,16 +66,14 @@ void Client::cycle() {
     if (request_id < _total_cnt and _cycles >= _valid_request_cycle) {
         if (!gen_request) {
             // from RequestGenerator
-            std::pair<uint32_t, uint32_t> input_output_size;
-            if (RequestGenerator::has_data()) {
-                input_output_size = RequestGenerator::get_qa_length();  // 当前RequestGenerator
+            if (!RequestGenerator::has_data()) {
+                throw std::runtime_error(
+                    "Request trace ended before the configured request count");
             }
-            else {
-                spdlog::info("RequestGenerator has no data!");
-                // exit(-1);
-            }
+            const std::pair<uint32_t, uint32_t> input_output_size =
+                RequestGenerator::get_qa_length();
             input_size = input_output_size.first;
-            output_size = gen_request_output_size;  // generate a random output size ;
+            output_size = input_output_size.second;
         }
         else {
             if (gen_random_request) {
@@ -116,8 +124,7 @@ void Client::cycle() {
 }
 
 bool Client::running() {
-    return _completed_cnt < _total_cnt;  // FIXME: comment
-    return false;
+    return _completed_cnt < _total_cnt;
 }
 
 bool Client::has_request() { return !_waiting_queue.empty();}  // has request, has no new trace input

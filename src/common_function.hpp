@@ -70,6 +70,8 @@ enum class DramMode {
     EVENT_DRIVEN     // simulation based on event driven simulator
 };
 
+#include "config_validation.hpp"
+
 typedef uint64_t cycle_type;
 
 inline int ReadTCKESRWithLegacyFallback(const INIReader& reader) {
@@ -118,144 +120,35 @@ inline int ReadTCKESRWithLegacyFallback(const INIReader& reader) {
 
 inline void ValidateDramBackendCapabilities(DramMode mode,
                                             bool enable_self_refresh) {
-    if (mode == DramMode::EVENT_DRIVEN && enable_self_refresh) {
-        throw std::invalid_argument(
-            "EventDriven DRAM does not model self-refresh timing; disable "
-            "enable_self_refresh or use the CycleAccurate backend");
-    }
+    phsim::ConfigValidator::ValidateBackendCapabilities(
+        mode == DramMode::EVENT_DRIVEN, enable_self_refresh);
 }
 
 inline uint32_t ValidateDramRequestSizeConsistency(
     uint32_t configured_request_size_bytes, uint32_t burst_length,
     uint32_t bus_width_bits, const std::string& pim_config_path = {},
     const std::string& memory_config_path = {}) {
-    if (burst_length == 0) {
-        throw std::invalid_argument(
-            "DRAM burst length must be greater than zero");
-    }
-    if (bus_width_bits == 0 || bus_width_bits % 8 != 0) {
-        throw std::invalid_argument(
-            "DRAM bus_width must be a positive multiple of 8 bits");
-    }
-
-    const uint64_t derived_request_size_bytes =
-        static_cast<uint64_t>(burst_length) * bus_width_bits / 8;
-    if (derived_request_size_bytes > std::numeric_limits<uint32_t>::max()) {
-        throw std::overflow_error(
-            "Derived DRAM burst size does not fit in uint32_t");
-    }
-    if (configured_request_size_bytes == 0) {
-        throw std::invalid_argument(
-            "PIM config dram_req_size must be greater than zero");
-    }
-    if (configured_request_size_bytes != derived_request_size_bytes) {
-        std::ostringstream message;
-        message << "DRAM request-size mismatch";
-        if (!pim_config_path.empty()) {
-            message << ": PIM config '" << pim_config_path << "'";
-        }
-        message << " sets dram_req_size=" << configured_request_size_bytes
-                << " bytes";
-        if (!memory_config_path.empty()) {
-            message << ", but memory config '" << memory_config_path << "'";
-        } else {
-            message << ", but the memory config";
-        }
-        message << " implies BL(" << burst_length << ") * bus_width("
-                << bus_width_bits << " bits) / 8 = "
-                << derived_request_size_bytes << " bytes";
-        throw std::invalid_argument(message.str());
-    }
-
-    return static_cast<uint32_t>(derived_request_size_bytes);
+    return phsim::ConfigValidator::ValidateRequestSize(
+        configured_request_size_bytes, burst_length, bus_width_bits,
+        pim_config_path, memory_config_path);
 }
 
 inline uint32_t ValidateDramChannelConsistency(
     uint32_t configured_channels, int memory_channels,
     const std::string& pim_config_path = {},
     const std::string& memory_config_path = {}) {
-    const auto is_power_of_two = [](uint32_t value) {
-        return value != 0 && (value & (value - 1)) == 0;
-    };
-
-    if (configured_channels == 0) {
-        throw std::invalid_argument(
-            "PIM config dram_channels must be greater than zero");
-    }
-    if (memory_channels <= 0) {
-        throw std::invalid_argument(
-            "Memory config channels must be greater than zero");
-    }
-
-    const auto memory_channels_unsigned =
-        static_cast<uint32_t>(memory_channels);
-    if (!is_power_of_two(configured_channels)) {
-        throw std::invalid_argument(
-            "PIM config dram_channels must be a power of two");
-    }
-    if (!is_power_of_two(memory_channels_unsigned)) {
-        throw std::invalid_argument(
-            "Memory config channels must be a power of two");
-    }
-
-    if (configured_channels != memory_channels_unsigned) {
-        std::ostringstream message;
-        message << "DRAM channel-count mismatch";
-        if (!pim_config_path.empty()) {
-            message << ": PIM config '" << pim_config_path << "'";
-        }
-        message << " sets dram_channels=" << configured_channels;
-        if (!memory_config_path.empty()) {
-            message << ", but memory config '" << memory_config_path << "'";
-        } else {
-            message << ", but the memory config";
-        }
-        message << " sets channels=" << memory_channels_unsigned;
-        throw std::invalid_argument(message.str());
-    }
-
-    return configured_channels;
+    return phsim::ConfigValidator::ValidateChannels(
+        configured_channels, memory_channels, pim_config_path,
+        memory_config_path);
 }
 
 inline double ValidateDramFrequencyConsistency(
     uint32_t configured_frequency_mhz, double tck_ns,
     const std::string& pim_config_path = {},
     const std::string& memory_config_path = {}) {
-    constexpr double relative_tolerance = 1.0e-3;
-
-    if (configured_frequency_mhz == 0) {
-        throw std::invalid_argument(
-            "PIM config dram_freq must be greater than zero");
-    }
-    if (!std::isfinite(tck_ns) || tck_ns <= 0.0) {
-        throw std::invalid_argument(
-            "Memory config tCK must be a finite value greater than zero");
-    }
-
-    const double derived_frequency_mhz = 1000.0 / tck_ns;
-    const double relative_error =
-        std::abs(static_cast<double>(configured_frequency_mhz) -
-                 derived_frequency_mhz) /
-        derived_frequency_mhz;
-    if (relative_error > relative_tolerance) {
-        std::ostringstream message;
-        message << "DRAM frequency mismatch";
-        if (!pim_config_path.empty()) {
-            message << ": PIM config '" << pim_config_path << "'";
-        }
-        message << " sets dram_freq=" << configured_frequency_mhz << " MHz";
-        if (!memory_config_path.empty()) {
-            message << ", but memory config '" << memory_config_path << "'";
-        } else {
-            message << ", but the memory config";
-        }
-        message << " sets tCK=" << tck_ns << " ns, which implies "
-                << derived_frequency_mhz
-                << " MHz (allowed relative error 0.1%)";
-        throw std::invalid_argument(message.str());
-    }
-
-    return derived_frequency_mhz;
+    return phsim::ConfigValidator::ValidateFrequency(
+        configured_frequency_mhz, tck_ns, pim_config_path,
+        memory_config_path);
 }
 
 
@@ -451,6 +344,7 @@ public:
 
     // PIM PU Parameter
     std::string PU_location;
+    std::string pim_type;  // NewtonSim organization from the memory INI.
     bool dual_bank;  // Whether one PIM unit spans two banks.
 
 
@@ -642,6 +536,7 @@ inline void MemConfig::InitDRAMParams() {
     device_width = GetInteger("dram_structure", "device_width", 8);
     BL = GetInteger("dram_structure", "BL", 8);
     num_dies = GetInteger("dram_structure", "num_dies", 1);
+    pim_type = reader.Get("dram_structure", "pim_type", "SINGLE");
 
     // HBM specific parameters
     enable_hbm_dual_cmd = reader.GetBoolean("dram_structure", "hbm_dual_cmd", true);
@@ -929,6 +824,7 @@ public:
     void initialize_compute_die_system_config(std::string sys_config_path);
     void initialize_inference_config(std::string inference_config_path);
     void initialize_model_config(std::string model_config_path);
+    void validate_configuration_contracts();
     // void initialize_pim_config(std::string pim_config);
 
     void initialize_PIM_config(std::string pim_config);
@@ -994,6 +890,10 @@ public:
     /* Client SysConfig for Request */
     bool gen_request;
     u_int32_t gen_request_count;
+    // Actual number of requests that this run will issue. For generated
+    // workloads this equals gen_request_count; trace-driven workloads fill it
+    // from the parsed CSV before address allocation starts.
+    uint32_t effective_request_count = 0;
     u_int32_t gen_request_input_size;
     u_int32_t gen_request_output_size = 0;
     // Legacy mode (false) executes the existing fixed stage sequence once.
@@ -1831,6 +1731,10 @@ namespace MyAddressAllocator {
     extern uint32_t weight_column_slice_size;  // Weight slice size along the X dimension.
     extern bool IANUS_channel_parallel;
 
+    // Initialize only the DRAM geometry and address-decoder state.  This is
+    // shared by the full simulator initialization and focused backend tests.
+    void configure_address_decoder(const MemConfig& mem_config);
+
     // 当前地址分配器的地址生成方法
     bool init(const SysConfig& config);
 
@@ -2419,8 +2323,8 @@ class BTensor;
 typedef struct {
     // client to scheduler.
     uint32_t id;
-    uint32_t arrival_cycle;    // time spend on client == arrival time to scheduler
-    uint32_t completed_cycle;  // return time to client
+    cycle_type arrival_cycle;    // time spent on client == arrival time to scheduler
+    cycle_type completed_cycle;  // return time to client
 
     // request demand
     uint32_t input_size;   // input sequence length

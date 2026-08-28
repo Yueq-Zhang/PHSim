@@ -4,5 +4,5 @@
     "PIM_config_file_path": "../configs/Cases/Nano/Nano_pim_config.json",
     "model_config_file_path": "../configs/model_config/OPT-350M.json",
     "inference_config_file_path": "../configs/Cases/inference_config.json",
-    "request_file_path": "../tests/request-traces/clb/share-gpt2-bs512-ms7B-tp4-clb-0.csv"
+    "request_file_path": "../sample_trace/request-traces/clb/share-gpt2-bs512-ms7B-tp4-clb-0.csv"
 }
