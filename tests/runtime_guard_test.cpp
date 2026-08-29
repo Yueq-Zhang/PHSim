@@ -213,6 +213,36 @@ void test_pim_bank_organization_consistency() {
                       << message << '\n';
         }
     }
+
+    try {
+        const uint32_t single_pus =
+            phsim::ConfigValidator::ValidatePimBankGeometry(
+                false, 1, 4, 4, "memory.ini");
+        const uint32_t dual_pus =
+            phsim::ConfigValidator::ValidatePimBankGeometry(
+                true, 1, 4, 4, "memory.ini");
+        if (single_pus != 16 || dual_pus != 8) {
+            throw std::runtime_error("unexpected PU count");
+        }
+        std::cout << "  PASS: single/dual PIM geometry derives 16/8 PUs\n";
+    } catch (const std::exception& error) {
+        ++failures;
+        std::cerr << "  FAIL: valid PIM geometry rejected: "
+                  << error.what() << '\n';
+    }
+
+    for (const uint32_t banks_per_group : {1U, 3U}) {
+        try {
+            (void)phsim::ConfigValidator::ValidatePimBankGeometry(
+                true, 1, 1, banks_per_group, "memory.ini");
+            ++failures;
+            std::cerr << "  FAIL: dual-bank geometry accepted "
+                      << banks_per_group << " bank(s)\n";
+        } catch (const std::invalid_argument&) {
+            std::cout << "  PASS: dual-bank geometry rejects "
+                      << banks_per_group << " unpairable bank(s)\n";
+        }
+    }
 }
 
 void test_implemented_configuration_capabilities() {
@@ -221,6 +251,13 @@ void test_implemented_configuration_capabilities() {
             "scheduler", "simple", "simple", "compute.json");
         phsim::ConfigValidator::ValidateLegacyNoOpValue(
             "sram_width", uint32_t{128}, uint32_t{128}, "compute.json");
+        phsim::ConfigValidator::ValidateLegacyNoOpValue(
+            "layout", std::string{"NHWC"}, std::string{"NHWC"},
+            "compute.json");
+        phsim::ConfigValidator::ValidateRequiredField(
+            true, "icnt_latency", "compute.json");
+        phsim::ConfigValidator::ValidatePositiveValue(
+            "icnt_latency", uint32_t{1}, "compute.json");
         std::cout << "  PASS: implemented and legacy-compatible values are accepted\n";
     } catch (const std::exception& error) {
         ++failures;
@@ -259,6 +296,34 @@ void test_implemented_configuration_capabilities() {
             std::cerr << "  FAIL: no-op field diagnostic unclear: "
                       << error.what() << '\n';
         }
+    }
+
+    try {
+        phsim::ConfigValidator::ValidateRequiredField(
+            false, "icnt_latency", "compute.json");
+        ++failures;
+        std::cerr << "  FAIL: missing icnt_latency was accepted\n";
+    } catch (const std::invalid_argument&) {
+        std::cout << "  PASS: missing icnt_latency is rejected\n";
+    }
+
+    try {
+        phsim::ConfigValidator::ValidatePositiveValue(
+            "icnt_latency", uint32_t{0}, "compute.json");
+        ++failures;
+        std::cerr << "  FAIL: zero icnt_latency was accepted\n";
+    } catch (const std::invalid_argument&) {
+        std::cout << "  PASS: zero icnt_latency is rejected\n";
+    }
+
+    try {
+        phsim::ConfigValidator::ValidateLegacyNoOpValue(
+            "layout", std::string{"NCHW"}, std::string{"NHWC"},
+            "compute.json");
+        ++failures;
+        std::cerr << "  FAIL: inactive NCHW layout was accepted\n";
+    } catch (const std::invalid_argument&) {
+        std::cout << "  PASS: inactive NCHW layout cannot silently alter a run\n";
     }
 }
 

@@ -382,6 +382,9 @@ public:
     const phsim::DramAddressLayout& address_layout() const {
         return address_layout_;
     }
+    const std::string& memory_config_path() const {
+        return memory_config_path_;
+    }
 
     bool IsGDDR() const {
         return (protocol == DRAMProtocol::GDDR5 || protocol == DRAMProtocol::GDDR5X || protocol == DRAMProtocol::GDDR6);
@@ -536,7 +539,8 @@ inline void MemConfig::InitDRAMParams() {
     device_width = GetInteger("dram_structure", "device_width", 8);
     BL = GetInteger("dram_structure", "BL", 8);
     num_dies = GetInteger("dram_structure", "num_dies", 1);
-    pim_type = reader.Get("dram_structure", "pim_type", "SINGLE");
+    pim_type = phsim::ConfigValidator::NormalizePimType(
+        reader.Get("dram_structure", "pim_type", "SINGLE"));
 
     // HBM specific parameters
     enable_hbm_dual_cmd = reader.GetBoolean("dram_structure", "hbm_dual_cmd", true);
@@ -791,12 +795,10 @@ inline void MemConfig::InitPIMParams(std::string pim_config_path) {
     PU_location = pim_config["PU_location"];
     dual_bank = pim_config["dual_bank"];
 
-    if (dual_bank) {
-        PU_num = ranks * banks / 2;
-    }
-    else {
-        PU_num = ranks * banks;
-    }
+    PU_num = static_cast<int>(
+        phsim::ConfigValidator::ValidatePimBankGeometry(
+            dual_bank, ranks, bankgroups, banks_per_group,
+            memory_config_path_));
 
     // area config
     hybrid_bonding_bw_area_ratio = pim_config["hybrid_bonding_bw_area_ratio"];
@@ -978,7 +980,7 @@ public:
     IcntType icnt_type;
     std::string icnt_config_path;
     uint32_t icnt_freq;
-    uint32_t icnt_latency;
+    uint32_t icnt_latency = 0;
 
     /* Sheduler SysConfig */
     std::string scheduler_type;

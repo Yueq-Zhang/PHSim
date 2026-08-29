@@ -175,7 +175,8 @@ void Config::InitDRAMParams() {
     num_dies = GetInteger("dram_structure", "num_dies", 1);
     // HBM specific parameters
     enable_hbm_dual_cmd = reader.GetBoolean("dram_structure", "hbm_dual_cmd", true);
-    memory_type = GetMemoryType(reader.Get("dram_structure", "pim_type", "SINGLE"));
+    memory_type = GetMemoryType(phsim::ConfigValidator::NormalizePimType(
+        reader.Get("dram_structure", "pim_type", "SINGLE")));
     enable_dual_buffer = memory_type == MemoryType::NEUPIMS;
     enable_hbm_dual_cmd &= IsHBM(); // Make sure only HBM enables this
 

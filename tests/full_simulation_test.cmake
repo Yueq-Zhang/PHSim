@@ -78,7 +78,7 @@ function(run_backend backend config_name output_variable)
     set(${output_variable} "${output_dir}" PARENT_SCOPE)
 endfunction()
 
-function(run_iterative_decode_backend backend config_name)
+function(run_iterative_decode_backend backend config_name output_variable)
     set(output_dir
         "${BINARY_DIR}/test-output/${TEST_MODE}/${backend}")
     file(REMOVE_RECURSE "${output_dir}")
@@ -149,6 +149,7 @@ function(run_iterative_decode_backend backend config_name)
         message(FATAL_ERROR
             "${backend} iterative stage order is not Prefill/Decode/Decode")
     endif()
+    set(${output_variable} "${output_dir}" PARENT_SCOPE)
 endfunction()
 
 function(run_legacy_stage_backend backend config_name)
@@ -229,6 +230,68 @@ function(require_identical_file left_dir right_dir file_name description)
         message(FATAL_ERROR
             "${description} differs for ${file_name}: ${left_hash} vs ${right_hash}")
     endif()
+endfunction()
+
+function(require_pim_logical_parity ca_dir event_dir)
+    require_identical_file(
+        "${ca_dir}" "${event_dir}" icnt_traffic.json
+        "iterative PIM logical request and byte traffic")
+
+    set(ca_stats_file "${ca_dir}/dramsim3.json")
+    set(event_stats_file "${event_dir}/eventdrivendram.json")
+    foreach(stats_file IN ITEMS "${ca_stats_file}" "${event_stats_file}")
+        if(NOT EXISTS "${stats_file}")
+            message(FATAL_ERROR "Missing PIM backend statistics: ${stats_file}")
+        endif()
+    endforeach()
+    file(READ "${ca_stats_file}" ca_stats)
+    file(READ "${event_stats_file}" event_stats)
+    string(JSON ca_channels LENGTH "${ca_stats}")
+    string(JSON event_channels LENGTH "${event_stats}")
+    if(NOT ca_channels EQUAL event_channels OR ca_channels LESS_EQUAL 0)
+        message(FATAL_ERROR
+            "CA/ED PIM statistics channel mismatch: "
+            "${ca_channels} vs ${event_channels}")
+    endif()
+
+    math(EXPR last_channel "${ca_channels} - 1")
+    set(total_pim_requests 0)
+    foreach(channel RANGE 0 ${last_channel})
+        foreach(metric IN ITEMS pheader gwrite comp readres pim)
+            set(ca_key "num_${metric}_cmds")
+            set(event_key "logical_${metric}_cmds")
+            string(JSON ca_value GET "${ca_stats}" "${channel}" "${ca_key}")
+            string(JSON event_value GET
+                "${event_stats}" "${channel}" "${event_key}")
+            if(NOT ca_value EQUAL event_value)
+                message(FATAL_ERROR
+                    "CA/ED logical PIM ${metric} mismatch on channel "
+                    "${channel}: ${ca_value} vs ${event_value}")
+            endif()
+        endforeach()
+
+        string(JSON ca_pim_done GET
+            "${ca_stats}" "${channel}" "num_pim_cmds")
+        string(JSON event_pim_requests GET
+            "${event_stats}" "${channel}" "logical_pim_requests")
+        string(JSON event_pim_done GET
+            "${event_stats}" "${channel}" "logical_num_pim_done")
+        if(NOT ca_pim_done EQUAL event_pim_requests OR
+           NOT ca_pim_done EQUAL event_pim_done)
+            message(FATAL_ERROR
+                "CA/ED PIM request/completion mismatch on channel ${channel}: "
+                "CA executed ${ca_pim_done}, ED requested/completed "
+                "${event_pim_requests}/${event_pim_done}")
+        endif()
+        math(EXPR total_pim_requests
+            "${total_pim_requests} + ${ca_pim_done}")
+    endforeach()
+    if(total_pim_requests LESS_EQUAL 0)
+        message(FATAL_ERROR
+            "Iterative Decode parity test generated no logical PIM traffic")
+    endif()
+    message(STATUS
+        "CA/ED logical PIM parity passed for ${total_pim_requests} requests")
 endfunction()
 
 function(read_traffic output_dir prefix)
@@ -488,9 +551,13 @@ elseif(TEST_MODE STREQUAL "iterative-decode")
     run_legacy_stage_backend(
         event-driven simulation_legacy_stage_sequence_event_driven.json)
     run_iterative_decode_backend(
-        cycle-accurate simulation_iterative_decode_cycle_accurate.json)
+        cycle-accurate simulation_iterative_decode_cycle_accurate.json
+        iterative_ca_output)
     run_iterative_decode_backend(
-        event-driven simulation_iterative_decode_event_driven.json)
+        event-driven simulation_iterative_decode_event_driven.json
+        iterative_event_output)
+    require_pim_logical_parity(
+        "${iterative_ca_output}" "${iterative_event_output}")
     message(STATUS
         "Legacy and iterative Decode passed in CycleAccurate and "
         "EventDriven modes")

@@ -177,6 +177,63 @@ public:
         }
     }
 
+    static uint32_t ValidatePimBankGeometry(
+        bool dual_bank, uint32_t ranks, uint32_t bankgroups,
+        uint32_t banks_per_group,
+        const std::string& memory_config_path = {}) {
+        if (ranks == 0 || bankgroups == 0 || banks_per_group == 0) {
+            throw std::invalid_argument(
+                "PIM bank geometry requires positive ranks, bankgroups, and "
+                "banks_per_group");
+        }
+        const uint64_t banks_per_channel =
+            static_cast<uint64_t>(ranks) * bankgroups * banks_per_group;
+        if (banks_per_channel > std::numeric_limits<uint32_t>::max()) {
+            throw std::overflow_error(
+                "PIM banks per channel do not fit in uint32_t");
+        }
+        if (dual_bank &&
+            (banks_per_channel < 2 || banks_per_channel % 2 != 0)) {
+            std::ostringstream message;
+            message << "Invalid dual-bank PIM geometry";
+            AppendConfigPath(message, "memory config", memory_config_path);
+            message << ": " << banks_per_channel
+                    << " banks per channel cannot form complete bank pairs";
+            throw std::invalid_argument(message.str());
+        }
+        return static_cast<uint32_t>(
+            dual_bank ? banks_per_channel / 2 : banks_per_channel);
+    }
+
+    static void ValidateRequiredField(bool present, const std::string& field,
+                                      const std::string& config_path = {}) {
+        if (present) {
+            return;
+        }
+        std::ostringstream message;
+        message << "Missing required configuration field '" << field << "'";
+        if (!config_path.empty()) {
+            message << " in '" << config_path << "'";
+        }
+        throw std::invalid_argument(message.str());
+    }
+
+    template <typename T>
+    static void ValidatePositiveValue(const std::string& field,
+                                      const T& value,
+                                      const std::string& config_path = {}) {
+        if (value > T{0}) {
+            return;
+        }
+        std::ostringstream message;
+        message << "Configuration field " << field
+                << " must be greater than zero";
+        if (!config_path.empty()) {
+            message << " in '" << config_path << "'";
+        }
+        throw std::invalid_argument(message.str());
+    }
+
     static void ValidateSupportedValue(const std::string& field,
                                        const std::string& actual,
                                        const std::string& supported,

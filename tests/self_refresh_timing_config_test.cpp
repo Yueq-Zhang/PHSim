@@ -86,6 +86,11 @@ void check_parsers_and_timing(const std::filesystem::path& memory_config,
     expect_true(newton_config.tCKESR == expected_tckesr,
                 "NewtonSim Config reads tCKESR=" +
                     std::to_string(expected_tckesr));
+    const auto expected_memory_type =
+        mem_config.pim_type == "DUAL" ? dramsim3::MemoryType::NEUPIMS
+                                      : dramsim3::MemoryType::NEWTON;
+    expect_true(newton_config.memory_type == expected_memory_type,
+                "MemConfig and NewtonSim normalize the same pim_type");
 
     // Timing currently also derives PIM constraints from address-layout globals
     // that the full simulator initializes before constructing NewtonSim.
@@ -182,6 +187,8 @@ int main() {
             canonical_text, "tCKESR = 7", "");
         const std::string dual_buffer_text = replace_once(
             canonical_text, "pim_type = SINGLE", "pim_type = DUAL");
+        const std::string normalized_dual_buffer_text = replace_once(
+            canonical_text, "pim_type = SINGLE", "pim_type = dual");
 
         const auto canonical_path = temp_dir / "canonical.ini";
         const auto legacy_path = temp_dir / "legacy.ini";
@@ -189,18 +196,23 @@ int main() {
         const auto conflict_path = temp_dir / "conflict.ini";
         const auto default_path = temp_dir / "default.ini";
         const auto dual_buffer_path = temp_dir / "dual-buffer.ini";
+        const auto normalized_dual_buffer_path =
+            temp_dir / "normalized-dual-buffer.ini";
         write_text(canonical_path, canonical_text);
         write_text(legacy_path, legacy_text);
         write_text(duplicate_path, duplicate_text);
         write_text(conflict_path, conflict_text);
         write_text(default_path, default_text);
         write_text(dual_buffer_path, dual_buffer_text);
+        write_text(normalized_dual_buffer_path, normalized_dual_buffer_text);
 
         check_parsers_and_timing(canonical_path, pim_config, temp_dir, 7);
         check_parsers_and_timing(legacy_path, pim_config, temp_dir, 7);
         check_parsers_and_timing(duplicate_path, pim_config, temp_dir, 7);
         check_parsers_and_timing(default_path, pim_config, temp_dir, 12);
         check_parsers_and_timing(dual_buffer_path, pim_config, temp_dir, 7);
+        check_parsers_and_timing(
+            normalized_dual_buffer_path, pim_config, temp_dir, 7);
 
         expect_throws(
             [&] {

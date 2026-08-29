@@ -91,12 +91,16 @@ void SysConfig::initialize_compute_die_system_config(std::string sys_config_path
         throw std::runtime_error(
             fmt::format("Not implemented icnt type {} ", (std::string)config["icnt_type"]));
     icnt_freq = config["icnt_freq"];
-    if (config.contains("icnt_latency")) icnt_latency = config["icnt_latency"];
+    phsim::ConfigValidator::ValidateRequiredField(
+        config.contains("icnt_latency"), "icnt_latency", sys_config_path);
+    icnt_latency = config["icnt_latency"];
+    phsim::ConfigValidator::ValidatePositiveValue(
+        "icnt_latency", icnt_latency, sys_config_path);
     if (config.contains("icnt_config_path"))
         icnt_config_path = config["icnt_config_path"];
 
     precision = config["precision"];
-    layout = config["layout"];
+    layout = config.value("layout", std::string{"NHWC"});
     scheduler_type = config["scheduler"];
 
     precision_weight= config["precision_weight"];
@@ -249,6 +253,14 @@ void SysConfig::validate_configuration_contracts() {
     ConfigValidator::ValidatePimBankOrganization(
         mem_config.dual_bank, mem_config.pim_type, pim_config_path,
         memory_config_path_);
+    const uint32_t validated_pu_count =
+        ConfigValidator::ValidatePimBankGeometry(
+            mem_config.dual_bank, mem_config.ranks, mem_config.bankgroups,
+            mem_config.banks_per_group, memory_config_path_);
+    if (mem_config.PU_num != static_cast<int>(validated_pu_count)) {
+        throw std::logic_error(
+            "MemConfig PU count diverged from validated PIM bank geometry");
+    }
     ConfigValidator::ValidateBackendCapabilities(
         dram_trace_simulation_mode, mem_config.enable_self_refresh);
 
@@ -258,6 +270,9 @@ void SysConfig::validate_configuration_contracts() {
         "systolic_ws", system_config_path_);
     ConfigValidator::ValidateSupportedValue(
         "scheduler", scheduler_type, "simple", system_config_path_);
+    ConfigValidator::ValidateSupportedValue(
+        "icnt_type", icnt_type == IcntType::SIMPLE ? "simple" : "booksim2",
+        "simple", system_config_path_);
     ConfigValidator::ValidateSupportedValue(
         "dram_type", dram_type == DramType::NEWTON ? "newton" : "dram",
         "newton", pim_config_path);
@@ -272,11 +287,18 @@ void SysConfig::validate_configuration_contracts() {
     ConfigValidator::ValidateLegacyNoOpValue(
         "scalar_add_latency", scalar_add_latency, cycle_type{1},
         system_config_path_);
+    ConfigValidator::ValidateLegacyNoOpValue(
+        "layout", layout, std::string{"NHWC"}, system_config_path_);
     const nlohmann::json compute_config = load_config(system_config_path_);
     ConfigValidator::ValidateLegacyNoOpValue(
         "operation_log_output_path",
         compute_config.value("operation_log_output_path", std::string{}),
         std::string{}, system_config_path_);
+
+    spdlog::info(
+        "Reserved metadata fields (no timing/capacity effect in this build): "
+        "num_dies={}, model_vocab_size={}",
+        mem_config.num_dies, model_vocab_size);
 }
 
 
@@ -783,12 +805,10 @@ namespace PIM_Parameters {
 
 bool PIM_Parameters::init(const SysConfig& config) {
     dual_bank = config.mem_config.dual_bank;
-    if (dual_bank) {
-        PU_num_per_channel = config.mem_config.ranks * config.mem_config.bankgroups * config.mem_config.banks_per_group / 2;
-    }
-    else {
-        PU_num_per_channel = config.mem_config.ranks * config.mem_config.bankgroups * config.mem_config.banks_per_group;
-    }
+    PU_num_per_channel = phsim::ConfigValidator::ValidatePimBankGeometry(
+        dual_bank, config.mem_config.ranks, config.mem_config.bankgroups,
+        config.mem_config.banks_per_group,
+        config.mem_config.memory_config_path());
 
     global_input_buffer_size = config.pim_input_buffer_size;
     output_buffer_size = config.pim_output_buffer_size;

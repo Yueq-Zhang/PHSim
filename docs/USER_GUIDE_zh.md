@@ -102,16 +102,16 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | `spad_size` | 无符号整数/KiB | 必填 | 主scratchpad容量；多数算子按一半容量预留双缓冲。 |
 | `accum_spad_size` | 无符号整数/KiB | 必填 | 累加scratchpad容量。 |
 | `sram_width` | 无符号整数/bit | `128`（兼容值） | 当前SRAM时序没有消费该字段；为避免静默无效，仅接受历史值 `128`。 |
-| `icnt_type` | 字符串 | 必填 | `simple` 或 `booksim2`。 |
-| `icnt_latency` | 无符号整数/互连周期 | 条件必填 | `simple`互连延迟。代码允许字段缺失，但没有可靠的显式默认值，建议始终填写。 |
+| `icnt_type` | 字符串 | 必填 | 当前主仿真路径仅实现 `simple`；`booksim2` 会在启动时明确拒绝，避免配置与实际构造的互连不一致。 |
+| `icnt_latency` | 无符号整数/互连周期 | 必填 | `simple`互连延迟，必须显式提供且大于0；不再允许缺失后读取未初始化值。 |
 | `icnt_freq` | 无符号整数/MHz | 必填 | 互连频率，必须大于0。 |
-| `icnt_config_path` | 字符串/路径 | 条件必填 | `booksim2`配置路径；`simple`模式不使用。 |
+| `icnt_config_path` | 字符串/路径 | 保留字段 | 历史上用于 `booksim2`；当前仅支持 `simple`，因此不会读取该路径。 |
 | `precision` | 无符号整数/byte/element | 必填 | 旧的统一数据宽度，仍被部分算子和SRAM使用；例如FP16填`2`。 |
 | `precision_weight` | 无符号整数/byte/element | 必填 | 权重元素字节数，必须大于0。 |
 | `precision_activation` | 无符号整数/byte/element | 必填 | 激活元素字节数，必须大于0。 |
 | `precision_cache` | 无符号整数/byte/element | 必填 | KV Cache元素字节数，必须大于0。 |
 | `precision_psum` | 无符号整数/byte/element | 必填 | 部分和元素字节数，必须大于0。 |
-| `layout` | 字符串 | 必填 | 当前样例使用 `NHWC`；主要作为布局标签传递。 |
+| `layout` | 字符串 | `NHWC`（兼容值） | 当前算子中的NCHW/NHWC维度切换代码未启用，因此该字段属于兼容保留项；仅接受 `NHWC`，避免其他值静默无效。 |
 | `scheduler` | 字符串 | 必填 | 当前仅实现 `simple`；其他值会在启动时拒绝。 |
 | `operation_log_output_path` | 字符串/路径 | 空字符串（兼容值） | 不再覆盖命令行输出目录；仅接受空字符串，所有输出统一由 `--output_path` 决定。 |
 
@@ -203,7 +203,7 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | --- | --- | --- | --- |
 | `model_name` | 字符串 | 必填 | 模型名称；名称包含 `llama`（大小写变体）时选择Llama类算子图。 |
 | `model_params_b` | 浮点/十亿参数 | 必填 | 元数据/报告字段。 |
-| `model_vocab_size` | 无符号整数/token | 必填 | 词表大小。 |
+| `model_vocab_size` | 无符号整数/token | 必填（预留元数据） | 当前LMHead构造路径未启用，因此不参与算子图、时序或容量计算；启动日志会报告该值。 |
 | `model_n_layer` | 无符号整数/层 | 必填 | 构造的Transformer层数。大于1会显著增加运行时间和内存。 |
 | `model_n_head` | 无符号整数/头 | 必填 | Query head数，必须大于0。 |
 | `model_n_kv_head` | 无符号整数/头 | 默认 `model_n_head` | GQA/MQA的KV head数；必须大于0，且 `model_n_head % model_n_kv_head == 0`。 |
@@ -280,9 +280,9 @@ request_size_bytes = bus_width / 8 × BL
 | `columns` | 整数/物理列/行 | `1024` | 必须是正的2的幂，不小于BL且能被BL整除；启动时会强制检查。 |
 | `device_width` | 整数/bit/device | `8` | 必须大于0，且 `bus_width % device_width == 0`；启动时会强制检查。 |
 | `BL` | 整数/传输拍 | `8` | Burst length。有效BL必须是正的2的幂。`BL=0`表示理想带宽，内部会按协议默认BL进行容量和地址计算。 |
-| `num_dies` | 整数/die | `1` | 堆叠die数量。 |
+| `num_dies` | 整数/die | `1` | 预留元数据；当前容量、地址位布局和时序均不使用该字段，启动日志会明确报告但不会据此缩放容量。公开HBM配置中的 `4` 保留为器件描述。 |
 | `hbm_dual_cmd` | 布尔 | `true` | 仅HBM协议实际启用双命令。 |
-| `pim_type` | 字符串 | `SINGLE` | NewtonSim的PIM bank组织，仅允许 `SINGLE`/`DUAL`，并强制与PIM JSON的 `dual_bank=false/true` 一一对应。 |
+| `pim_type` | 字符串 | `SINGLE` | NewtonSim的PIM bank组织，仅允许 `SINGLE`/`DUAL`；读取时统一去除首尾空白并转为大写，再与PIM JSON的 `dual_bank=false/true` 强制对应。双bank模式要求每通道物理bank数不少于2且为偶数。 |
 
 总bank数为 `bankgroups × banks_per_group`；每rank器件数为 `bus_width / device_width`。通道容量会从 `rows × columns × device_width × banks × devices_per_rank` 推导rank数量。上述容量中间量使用64位无符号整数计算；若乘法溢出、单rank不是整MiB，或总地址布局超过64位，仿真器会在启动时报错。外层 `MemConfig` 与Cycle Accurate后端的 `dramsim3::Config` 共用同一几何计算实现，不再分别推导容量和地址位宽。
 
