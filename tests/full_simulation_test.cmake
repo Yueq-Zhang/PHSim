@@ -356,6 +356,75 @@ function(read_backend_counters stats_file prefix read_done_key write_done_key
     set(${prefix}_WRITE_COMMANDS "${write_commands}" PARENT_SCOPE)
 endfunction()
 
+function(require_data_container_stats output_dir expected_enabled)
+    set(stats_file "${output_dir}/data_container_stats.json")
+    if(NOT EXISTS "${stats_file}")
+        message(FATAL_ERROR
+            "Missing DataContainer statistics file: ${stats_file}")
+    endif()
+
+    file(READ "${stats_file}" stats_json)
+    string(JSON enabled GET "${stats_json}" enabled)
+    if(expected_enabled AND NOT enabled)
+        message(FATAL_ERROR "DataContainer statistics should be enabled")
+    elseif(NOT expected_enabled AND enabled)
+        message(FATAL_ERROR "DataContainer statistics should be disabled")
+    endif()
+
+    foreach(key IN ITEMS
+            stored_column_count peak_stored_column_count
+            dram_payload_bytes pim_payload_bytes resident_payload_bytes
+            peak_resident_payload_bytes payload_limit_bytes)
+        string(JSON ${key} GET "${stats_json}" "${key}")
+    endforeach()
+    math(EXPR accounted_payload
+        "${dram_payload_bytes} + ${pim_payload_bytes}")
+    if(NOT resident_payload_bytes EQUAL accounted_payload)
+        message(FATAL_ERROR
+            "DataContainer resident bytes do not equal DRAM plus PIM payload")
+    endif()
+    if(peak_stored_column_count LESS stored_column_count OR
+       peak_resident_payload_bytes LESS resident_payload_bytes)
+        message(FATAL_ERROR
+            "DataContainer peak statistics are below current occupancy")
+    endif()
+    if(NOT expected_enabled AND
+       (NOT stored_column_count EQUAL 0 OR
+        NOT peak_stored_column_count EQUAL 0 OR
+        NOT resident_payload_bytes EQUAL 0 OR
+        NOT peak_resident_payload_bytes EQUAL 0))
+        message(FATAL_ERROR
+            "Disabled DataContainer unexpectedly retained payload")
+    endif()
+
+    string(JSON channel_count LENGTH "${stats_json}" channels)
+    if(channel_count LESS_EQUAL 0)
+        message(FATAL_ERROR
+            "DataContainer statistics contain no channel records")
+    endif()
+    set(channel_pim_payload 0)
+    math(EXPR last_channel "${channel_count} - 1")
+    foreach(channel RANGE 0 ${last_channel})
+        foreach(key IN ITEMS
+                pim_input_payload_bytes peak_pim_input_payload_bytes
+                pim_output_payload_bytes peak_pim_output_payload_bytes)
+            string(JSON ${key} GET
+                "${stats_json}" channels ${channel} "${key}")
+        endforeach()
+        if(peak_pim_input_payload_bytes LESS pim_input_payload_bytes OR
+           peak_pim_output_payload_bytes LESS pim_output_payload_bytes)
+            message(FATAL_ERROR
+                "DataContainer channel ${channel} peak is below occupancy")
+        endif()
+        math(EXPR channel_pim_payload
+            "${channel_pim_payload} + ${pim_input_payload_bytes} + ${pim_output_payload_bytes}")
+    endforeach()
+    if(NOT channel_pim_payload EQUAL pim_payload_bytes)
+        message(FATAL_ERROR
+            "DataContainer per-channel PIM bytes do not match total")
+    endif()
+endfunction()
+
 function(require_smoke_workload prefix)
     if(NOT ${prefix}_READ_BYTES EQUAL 1024)
         message(FATAL_ERROR
@@ -492,6 +561,10 @@ elseif(TEST_MODE STREQUAL "memory-access-gemm")
     read_backend_counters(
         "${dc_event_output}/eventdrivendram.json"
         DC_EVENT num_reads_done num_writes_done num_read_cmds num_write_cmds)
+    require_data_container_stats("${ca_output}" FALSE)
+    require_data_container_stats("${event_output}" FALSE)
+    require_data_container_stats("${dc_ca_output}" TRUE)
+    require_data_container_stats("${dc_event_output}" TRUE)
 
     foreach(prefix IN ITEMS CA EVENT DC_CA DC_EVENT)
         if(NOT ${prefix}_TOTAL_CYCLES EQUAL 869 OR
@@ -537,6 +610,9 @@ elseif(TEST_MODE STREQUAL "memory-access-gemm")
     require_identical_file(
         "${event_output}" "${dc_event_output}" icnt_traffic.json
         "DataContainer-disabled/enabled EventDriven GEMM traffic")
+    require_identical_file(
+        "${dc_ca_output}" "${dc_event_output}" data_container_stats.json
+        "CycleAccurate/EventDriven DataContainer occupancy statistics")
 
     message(STATUS
         "MemoryAccess GEMM lifecycle passed: cycles ${CA_TOTAL_CYCLES}, "

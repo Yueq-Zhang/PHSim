@@ -390,6 +390,7 @@ DRAM命令能耗按 `V × mA × ns` 计算，因此JSON/TXT中的DRAM能耗数�
 | `_summary.tsv` | 所有正常结束的运行 | 按stage汇总的核心周期、PIM周期和DRAM带宽利用率。 |
 | `core_timing.tsv` | 所有正常结束的运行 | 每个核心的计算、访存停顿、空闲和算子级周期。 |
 | `icnt_traffic.json` | 所有正常结束的运行 | 每通道实测、估计和逻辑流量/PIM请求数。 |
+| `data_container_stats.json` | 所有正常结束的运行 | DataContainer当前/峰值payload、已物化DRAM列数，以及逐通道PIM输入/输出占用；关闭DataContainer时仍生成零值记录。 |
 | `dramsim3.json`、`dramsim3.txt` | CycleAccurate | NewtonSim逐通道命令、延迟、状态周期、带宽和能耗。前缀可由INI修改。 |
 | `eventdrivendram.json`、`eventdrivendram.txt` | EventDriven | ED逐通道请求、合并、命令、逻辑补偿、状态周期、带宽和能耗。 |
 | `proportional_command_compensation.json` | CycleAccurate | Proportional采样的CA命令补偿；关闭采样时可能为空。 |
@@ -507,7 +508,27 @@ CA和ED采用不同的调度抽象，命令发出时刻、write-buffer合并和�
 
 当前模型没有为PIM PRE单独增加动态能耗项；即使 `num_pim_precharge_cmds` 非零，也不应自行从命令数推断一个未实现的PIM PRE能耗。
 
-### 5.6 主机真实时间
+### 5.6 `data_container_stats.json`
+
+该文件只记录DataContainer实际维护的数据量，不计`unordered_map`、`vector`等容器元数据的主机内存开销，也不改变DRAM时序或命令统计。
+
+| 字段 | 单位 | 含义 |
+| --- | --- | --- |
+| `enabled` | 布尔 | 本次运行是否启用DataContainer。 |
+| `burst_length` | DRAM列/burst | 一个burst跨越的列数。 |
+| `dq_bytes` | byte/列 | 每个DRAM列的数据字节数，即`bus_width / 8`。 |
+| `burst_bytes` | byte/burst | `burst_length * dq_bytes`。 |
+| `stored_column_count` | DRAM列 | 结束时已物化的稀疏DRAM列数。 |
+| `peak_stored_column_count` | DRAM列 | 本次容器生命周期内已物化列数的峰值。 |
+| `dram_payload_bytes` | byte | 结束时普通DRAM列payload总量。 |
+| `pim_payload_bytes` | byte | 结束时所有通道PIM输入和输出payload总量。 |
+| `resident_payload_bytes` | byte | `dram_payload_bytes + pim_payload_bytes`。 |
+| `peak_resident_payload_bytes` | byte | 本次运行中上述驻留payload的峰值。 |
+| `payload_limit_bytes` | byte | `dram_data_container_max_payload_mb`换算后的上限；0表示不限制。 |
+| `payload_limit_enabled` | 布尔 | 是否设置了非零payload上限。 |
+| `channels[]` | 数组 | 每个DRAM通道的PIM输入/输出当前字节数和峰值字节数。P_HEADER会清空当前值，但不会清除生命周期峰值。 |
+
+### 5.7 主机真实时间
 
 终端的 `Component Real Time Breakdown` 统计的是仿真器在主机上消耗的wall-clock时间：
 
@@ -634,7 +655,11 @@ mkdir -p output/gemm-ca output/gemm-ed
 }
 ```
 
-DataContainer只为访问过的DRAM列物化存储；未写位置读为0。它在CA和ED的读完成、带数据写完成路径中维护burst payload。普通统计文件不会导出DataContainer内容，因此功能验证应运行专用测试：
+DataContainer只为访问过的DRAM列物化存储；未写位置读为0。CA和ED共用同一套完成语义：普通READ/WRITE维护DRAM burst，P_HEADER清空对应通道的PIM暂存状态，GWRITE按burst写入输入缓冲区，COMP/COMP_HASH发布结果，READRES按burst读回结果。COMPS_READRES执行后两步的组合语义。重复读取同一个已完成响应不会再次修改状态。
+
+这里的PIM payload是“透明字节流”，不是数值计算引擎。测试或上层功能模型可以在COMP请求中提供结果字节；若未提供，DataContainer只把当前输入缓冲区快照作为可追踪的占位结果，不执行矩阵乘加、量化或浮点运算。因此专用测试验证的是数据流、顺序、通道隔离和容量边界，不能替代算子数值正确性验证。
+
+正常结束的仿真会把占用量写入`data_container_stats.json`；它只能说明维护了多少payload，数据内容及完成语义仍应由专用测试验证：
 
 ```bash
 ctest --test-dir . --output-on-failure \

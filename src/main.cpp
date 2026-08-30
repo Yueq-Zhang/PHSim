@@ -112,6 +112,7 @@ int main(int argc, char *argv[]) {
 
     simulator.reset();
     model.reset();
+    TwoLevelPageMapper::cleanup_two_level_mapper();
     MyAddressAllocator::cleanup();
     file_logger->info("Finish the simulation");
     file_logger->flush();

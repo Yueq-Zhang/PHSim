@@ -37,6 +37,7 @@ public:
     uint32_t get_dest_node(MemoryAccess *access);
     void update_stage_stat();
     void log_stage_stat();
+    void log_data_container_stat() const;
 
     const SysConfig& _config;
 

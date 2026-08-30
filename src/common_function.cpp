@@ -401,24 +401,22 @@ void TwoLevelDeterministicMapper::configure(const MemConfig& mem_config) {
 }
 
 void TwoLevelDeterministicMapper::reset() {
-    logical_to_physical_.assign(logical_to_physical_.size(), INVALID_PAGE);
+    logical_to_physical_.clear();
     physical_used_.assign(physical_used_.size(), false);
     next_free_physical_page_ = 0;
 }
 
 void TwoLevelDeterministicMapper::free_page(addr_type logical_page) {
-    if (logical_page >= logical_to_physical_.size()) {
+    const auto entry = logical_to_physical_.find(logical_page);
+    if (entry == logical_to_physical_.end()) {
         return;
     }
-    addr_type phys = logical_to_physical_[logical_page];
-    if (phys == INVALID_PAGE) {
-        return;
-    }
+    const addr_type phys = entry->second;
     // release the physical page and remove mapping
     if (phys < physical_used_.size()) {
         physical_used_[phys] = false;
     }
-    logical_to_physical_[logical_page] = INVALID_PAGE;
+    logical_to_physical_.erase(entry);
     // Optional optimization: prioritize reallocating this physical page
     if (phys < next_free_physical_page_) {
         next_free_physical_page_ = phys;
@@ -438,14 +436,9 @@ uint32_t TwoLevelDeterministicMapper::log2_power_of_two(uint32_t x) {
 
 // Layer One: Page-level Mapping
 TwoLevelDeterministicMapper::addr_type TwoLevelDeterministicMapper::get_or_alloc_physical_page(addr_type logical_page) {
-    // If the logical page number exceeds the existing table size, expand the capacity
-    if (logical_page >= logical_to_physical_.size()) {
-        logical_to_physical_.resize(logical_page + 1, INVALID_PAGE);
-    }
-
-    addr_type &entry = logical_to_physical_[logical_page];
-    if (entry != INVALID_PAGE) {
-        return entry;  // return directly, if the mapping exist
+    const auto existing = logical_to_physical_.find(logical_page);
+    if (existing != logical_to_physical_.end()) {
+        return existing->second;
     }
 
     // Find the next available physical page
@@ -458,11 +451,12 @@ TwoLevelDeterministicMapper::addr_type TwoLevelDeterministicMapper::get_or_alloc
         throw std::runtime_error("No more physical pages available");
     }
 
-    entry = next_free_physical_page_;
+    const addr_type physical_page = next_free_physical_page_;
+    logical_to_physical_.emplace(logical_page, physical_page);
     physical_used_[next_free_physical_page_] = true;
     ++next_free_physical_page_;
 
-    return entry;
+    return physical_page;
 }
 
 // The main mapping function
@@ -582,10 +576,16 @@ uint32_t TwoLevelDeterministicMapper::extractBank(addr_type addr) const {
 // 页表调试输出
 void TwoLevelDeterministicMapper::dump_page_table(std::ostream &os) const {
     os << "==== Page Mapping Table (LogicalPage -> PhysicalPage) ====\n";
-    for (addr_type lp = 0; lp < logical_to_physical_.size(); ++lp) {
-        addr_type pp = logical_to_physical_[lp];
-        if (pp == INVALID_PAGE) continue; // 只打印有效映??
-        os << "  LPage " << lp << "  ->  PPage " << pp << "\n";
+    std::vector<std::pair<addr_type, addr_type>> entries(
+        logical_to_physical_.begin(), logical_to_physical_.end());
+    typedef std::pair<addr_type, addr_type> PageTableEntry;
+    std::sort(entries.begin(), entries.end(),
+              [](const PageTableEntry& lhs, const PageTableEntry& rhs) {
+                  return lhs.first < rhs.first;
+              });
+    for (const auto& entry : entries) {
+        os << "  LPage " << entry.first << "  ->  PPage "
+           << entry.second << "\n";
     }
     os << "=========================================================\n";
 }
@@ -683,8 +683,9 @@ static void init_from_mem_config(const MemConfig& mem_cfg) {
             "Configured DRAM capacity is smaller than one virtual-memory page");
     }
 
-    g_mapper.reset(new Mapper(num_pages));
-    g_mapper->configure(mem_cfg);
+    std::unique_ptr<Mapper> mapper(new Mapper(num_pages));
+    mapper->configure(mem_cfg);
+    g_mapper = std::move(mapper);
     g_enabled = true;
     spdlog::info(
         "Virtual memory initialized from MemConfig: {} physical pages, "
@@ -696,12 +697,31 @@ static void init_from_mem_config(const MemConfig& mem_cfg) {
 
 // The externally exposed initialization interface is called after being initialized by SysConfig
 void init_two_level_mapper() {
-    try {
-        init_from_mem_config(Config::system_config.mem_config);
-    } catch (const std::exception& e) {
-        spdlog::error("init_two_level_mapper failed: {}", e.what());
-        g_enabled = false;
+    // A requested VM configuration must not silently fall back to identity
+    // addressing. Clear previous state first and propagate configuration
+    // errors to the caller.
+    g_enabled = false;
+    g_mapper.reset();
+    init_from_mem_config(Config::system_config.mem_config);
+}
+
+void reset_two_level_mapper() {
+    if (g_mapper) {
+        g_mapper->reset();
     }
+}
+
+void cleanup_two_level_mapper() {
+    g_mapper.reset();
+    g_enabled = false;
+}
+
+bool is_enabled() {
+    return g_enabled && g_mapper != nullptr;
+}
+
+addr_type mapped_page_count() {
+    return is_enabled() ? g_mapper->mapped_page_count() : 0;
 }
 
 // if enabled, Logical addresses are mapped to physical addresses; else the original address is returned directly

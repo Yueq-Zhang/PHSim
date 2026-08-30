@@ -31,6 +31,26 @@ DramDataContainer::DramDataContainer(const SysConfig& config)
             "DRAM DataContainer bus width must be a non-zero byte multiple");
     }
     dq_bytes_ = config.mem_config.bus_width / 8;
+    burst_bytes_ = static_cast<uint64_t>(burst_length_) * dq_bytes_;
+
+    if (config.mem_config.input_buffer_size < 0 ||
+        config.mem_config.output_buffer_size < 0 ||
+        config.mem_config.PU_num < 0) {
+        throw std::invalid_argument(
+            "DRAM DataContainer PIM buffer geometry must be non-negative");
+    }
+    pim_input_capacity_bytes_ =
+        static_cast<uint64_t>(config.mem_config.input_buffer_size);
+    if (static_cast<uint64_t>(config.mem_config.output_buffer_size) >
+            std::numeric_limits<uint64_t>::max() /
+                static_cast<uint64_t>(std::max(config.mem_config.PU_num, 1))) {
+        throw std::overflow_error(
+            "DRAM DataContainer PIM output capacity overflows bytes");
+    }
+    pim_output_capacity_bytes_ =
+        static_cast<uint64_t>(config.mem_config.output_buffer_size) *
+        static_cast<uint64_t>(config.mem_config.PU_num);
+    pim_channels_.resize(channels_);
 
     if (config.dram_data_container_max_payload_mb >
         std::numeric_limits<uint64_t>::max() / (1024ULL * 1024ULL)) {
@@ -45,6 +65,60 @@ DramDataContainer::DramDataContainer(const SysConfig& config)
         burst_length_ == 0 || burst_length_ > columns_) {
         throw std::invalid_argument("Invalid DRAM DataContainer geometry");
     }
+}
+
+void DramDataContainer::clear() noexcept {
+    columns_data_.clear();
+    for (auto& state : pim_channels_) {
+        state.input.clear();
+        state.output.clear();
+        state.read_offset = 0;
+        state.peak_input_bytes = 0;
+        state.peak_output_bytes = 0;
+    }
+    peak_resident_payload_bytes_ = 0;
+    peak_stored_column_count_ = 0;
+}
+
+uint64_t DramDataContainer::resident_payload_bytes() const noexcept {
+    uint64_t bytes =
+        static_cast<uint64_t>(columns_data_.size()) * dq_bytes_;
+    for (const auto& state : pim_channels_) {
+        bytes += state.input.size();
+        bytes += state.output.size();
+    }
+    return bytes;
+}
+
+uint64_t DramDataContainer::pim_input_payload_bytes(uint32_t channel) const {
+    validate_channel(channel);
+    return pim_channels_[channel].input.size();
+}
+
+uint64_t DramDataContainer::pim_payload_bytes() const noexcept {
+    uint64_t bytes = 0;
+    for (const auto& state : pim_channels_) {
+        bytes += state.input.size();
+        bytes += state.output.size();
+    }
+    return bytes;
+}
+
+uint64_t DramDataContainer::pim_output_payload_bytes(uint32_t channel) const {
+    validate_channel(channel);
+    return pim_channels_[channel].output.size();
+}
+
+uint64_t DramDataContainer::peak_pim_input_payload_bytes(
+    uint32_t channel) const {
+    validate_channel(channel);
+    return pim_channels_[channel].peak_input_bytes;
+}
+
+uint64_t DramDataContainer::peak_pim_output_payload_bytes(
+    uint32_t channel) const {
+    validate_channel(channel);
+    return pim_channels_[channel].peak_output_bytes;
 }
 
 bool DramDataContainer::ColumnAddress::operator==(
@@ -78,6 +152,117 @@ void DramDataContainer::validate_location(
     }
 }
 
+void DramDataContainer::validate_channel(uint32_t channel) const {
+    if (channel >= channels_) {
+        throw std::out_of_range(
+            "DRAM DataContainer PIM channel index out of range");
+    }
+}
+
+void DramDataContainer::ensure_growth_fits(uint64_t additional_bytes) const {
+    const uint64_t resident_bytes = resident_payload_bytes();
+    if (max_resident_payload_bytes_ != 0 &&
+        (resident_bytes > max_resident_payload_bytes_ ||
+         additional_bytes > max_resident_payload_bytes_ - resident_bytes)) {
+        throw std::length_error(
+            "DRAM DataContainer resident payload limit exceeded");
+    }
+}
+
+void DramDataContainer::update_peak() noexcept {
+    peak_resident_payload_bytes_ =
+        std::max(peak_resident_payload_bytes_, resident_payload_bytes());
+}
+
+std::vector<uint8_t> DramDataContainer::normalized_burst(
+    const std::vector<uint8_t>& data) const {
+    std::vector<uint8_t> result(static_cast<std::size_t>(burst_bytes_), 0);
+    std::copy_n(data.begin(), std::min<uint64_t>(data.size(), burst_bytes_),
+                result.begin());
+    return result;
+}
+
+void DramDataContainer::reset_pim_state(uint32_t channel) noexcept {
+    auto& state = pim_channels_[channel];
+    state.input.clear();
+    state.output.clear();
+    state.read_offset = 0;
+}
+
+void DramDataContainer::append_pim_input(
+    uint32_t channel, const std::vector<uint8_t>& data) {
+    validate_channel(channel);
+    if (data.size() > burst_bytes_) {
+        throw std::invalid_argument(
+            "DRAM DataContainer GWRITE payload exceeds one burst");
+    }
+    auto& state = pim_channels_[channel];
+    if (burst_bytes_ > pim_input_capacity_bytes_ -
+                           std::min<uint64_t>(state.input.size(),
+                                              pim_input_capacity_bytes_)) {
+        throw std::length_error(
+            "DRAM DataContainer PIM input buffer capacity exceeded");
+    }
+    ensure_growth_fits(burst_bytes_);
+    const auto burst = normalized_burst(data);
+    state.input.insert(state.input.end(), burst.begin(), burst.end());
+    state.peak_input_bytes =
+        std::max<uint64_t>(state.peak_input_bytes, state.input.size());
+    update_peak();
+}
+
+void DramDataContainer::materialize_pim_output(
+    uint32_t channel, const std::vector<uint8_t>& supplied_result) {
+    validate_channel(channel);
+    auto& state = pim_channels_[channel];
+
+    std::vector<uint8_t> next_output;
+    if (!supplied_result.empty()) {
+        if (supplied_result.size() > pim_output_capacity_bytes_) {
+            throw std::length_error(
+                "DRAM DataContainer PIM output buffer capacity exceeded");
+        }
+        next_output = supplied_result;
+    } else if (state.output.empty()) {
+        const uint64_t bytes =
+            std::min<uint64_t>(state.input.size(),
+                               pim_output_capacity_bytes_);
+        next_output.assign(state.input.begin(), state.input.begin() + bytes);
+    } else {
+        return;
+    }
+
+    const uint64_t growth = next_output.size() > state.output.size()
+                                ? next_output.size() - state.output.size()
+                                : 0;
+    ensure_growth_fits(growth);
+    state.output = std::move(next_output);
+    state.read_offset = 0;
+    state.peak_output_bytes =
+        std::max<uint64_t>(state.peak_output_bytes, state.output.size());
+    update_peak();
+}
+
+std::vector<uint8_t> DramDataContainer::read_pim_output_burst(
+    uint32_t channel) {
+    validate_channel(channel);
+    auto& state = pim_channels_[channel];
+    std::vector<uint8_t> result(static_cast<std::size_t>(burst_bytes_), 0);
+    if (state.read_offset < state.output.size()) {
+        const uint64_t available = state.output.size() - state.read_offset;
+        const uint64_t count = std::min<uint64_t>(available, burst_bytes_);
+        std::copy_n(state.output.begin() + state.read_offset, count,
+                    result.begin());
+    }
+    if (state.read_offset >
+        std::numeric_limits<uint64_t>::max() - burst_bytes_) {
+        state.read_offset = std::numeric_limits<uint64_t>::max();
+    } else {
+        state.read_offset += burst_bytes_;
+    }
+    return result;
+}
+
 void DramDataContainer::write_burst(
     BurstData data, uint32_t channel, uint32_t rank, uint32_t bankgroup,
     uint32_t bank, uint32_t row, uint32_t column) {
@@ -99,14 +284,11 @@ void DramDataContainer::write_burst(
             ++new_columns;
         }
     }
-    const uint64_t resident_bytes = resident_payload_bytes();
-    if (max_resident_payload_bytes_ != 0 &&
-        (resident_bytes > max_resident_payload_bytes_ ||
-         new_columns >
-             (max_resident_payload_bytes_ - resident_bytes) / dq_bytes_)) {
-        throw std::length_error(
-            "DRAM DataContainer resident payload limit exceeded");
+    if (new_columns > std::numeric_limits<uint64_t>::max() / dq_bytes_) {
+        throw std::overflow_error(
+            "DRAM DataContainer write payload size overflows bytes");
     }
+    ensure_growth_fits(new_columns * dq_bytes_);
 
     for (uint32_t offset = 0; offset < data.size(); ++offset) {
         auto& bytes = data[offset];
@@ -118,8 +300,9 @@ void DramDataContainer::write_burst(
         columns_data_[ColumnAddress{channel, rank, bankgroup, bank, row,
                                     column + offset}] = std::move(bytes);
     }
-    peak_resident_payload_bytes_ =
-        std::max(peak_resident_payload_bytes_, resident_payload_bytes());
+    peak_stored_column_count_ =
+        std::max(peak_stored_column_count_, columns_data_.size());
+    update_peak();
 }
 
 DramDataContainer::BurstData DramDataContainer::read_burst(
@@ -170,24 +353,51 @@ void DramDataContainer::apply_response(MemoryAccess* response) {
     const uint32_t row = MyAddressAllocator::get_row_index(address);
     const uint32_t column = MyAddressAllocator::get_col_index(address);
 
-    if (response->req_type == MemoryAccessType::READ) {
-        response->data = flatten_burst(
-            read_burst(channel, rank, bankgroup, bank, row, column));
-    } else if (response->req_type == MemoryAccessType::WRITE &&
-               !response->data.empty()) {
-        BurstData burst(burst_length_, ColumnData(dq_bytes_, 0));
-        for (uint32_t column_offset = 0; column_offset < burst_length_;
-             ++column_offset) {
-            for (uint32_t byte = 0; byte < dq_bytes_; ++byte) {
-                const uint64_t source =
-                    static_cast<uint64_t>(column_offset) * dq_bytes_ + byte;
-                if (source < response->data.size()) {
-                    burst[column_offset][byte] = response->data[source];
+    switch (response->req_type) {
+        case MemoryAccessType::READ:
+            response->data = flatten_burst(
+                read_burst(channel, rank, bankgroup, bank, row, column));
+            break;
+        case MemoryAccessType::WRITE:
+            if (!response->data.empty()) {
+                BurstData burst(burst_length_, ColumnData(dq_bytes_, 0));
+                for (uint32_t column_offset = 0;
+                     column_offset < burst_length_; ++column_offset) {
+                    for (uint32_t byte = 0; byte < dq_bytes_; ++byte) {
+                        const uint64_t source =
+                            static_cast<uint64_t>(column_offset) * dq_bytes_ +
+                            byte;
+                        if (source < response->data.size()) {
+                            burst[column_offset][byte] =
+                                response->data[source];
+                        }
+                    }
                 }
+                write_burst(std::move(burst), channel, rank, bankgroup, bank,
+                            row, column);
             }
-        }
-        write_burst(std::move(burst), channel, rank, bankgroup, bank, row,
-                    column);
+            break;
+        case MemoryAccessType::P_HEADER:
+            reset_pim_state(channel);
+            response->data.clear();
+            break;
+        case MemoryAccessType::GWRITE:
+            append_pim_input(channel, response->data);
+            break;
+        case MemoryAccessType::COMP:
+        case MemoryAccessType::COMP_HASH:
+            materialize_pim_output(channel, response->data);
+            break;
+        case MemoryAccessType::READRES:
+            response->data = read_pim_output_burst(channel);
+            break;
+        case MemoryAccessType::COMPS_READRES:
+            materialize_pim_output(channel, response->data);
+            response->data = read_pim_output_burst(channel);
+            break;
+        case MemoryAccessType::SIZE:
+            throw std::invalid_argument(
+                "DRAM DataContainer cannot apply SIZE request type");
     }
 
     response->data_ready = true;

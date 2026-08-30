@@ -176,6 +176,9 @@ int main() {
     const addr_type wrapper_second =
         TwoLevelPageMapper::map_logical_address(probe_address);
     const bool wrapper_deterministic = wrapper_first == wrapper_second;
+    const bool wrapper_enabled = TwoLevelPageMapper::is_enabled();
+    const bool wrapper_tracks_sparse_pages =
+        TwoLevelPageMapper::mapped_page_count() == 1;
 
     std::ostringstream page_table;
     TwoLevelPageMapper::dump_page_table(page_table);
@@ -250,8 +253,61 @@ int main() {
     const bool mapping_is_idempotent = non_idempotent_remaps == 0;
     const bool pages_are_isolated = decoded_page_aliases == 0;
 
+    TwoLevelDeterministicMapper sparse_mapper(physical_pages);
+    sparse_mapper.configure(mem);
+    constexpr uint64_t kLargeLogicalPage = 1ULL << 32;
+    const addr_type large_logical_address =
+        kLargeLogicalPage * sparse_mapper.page_size_address_units();
+    const addr_type large_physical_address =
+        sparse_mapper.map(large_logical_address);
+    const bool large_virtual_address_is_sparse =
+        sparse_mapper.mapped_page_count() == 1 &&
+        sparse_mapper.map(large_logical_address) == large_physical_address;
+    sparse_mapper.free_page(kLargeLogicalPage);
+    const bool sparse_free_releases_entry =
+        sparse_mapper.mapped_page_count() == 0;
+    const addr_type reused_physical_address = sparse_mapper.map(
+        (kLargeLogicalPage + 1) * sparse_mapper.page_size_address_units());
+    const bool released_physical_page_is_reused =
+        reused_physical_address / sparse_mapper.page_size_address_units() == 0;
+    sparse_mapper.reset();
+    const bool sparse_reset_releases_all_pages =
+        sparse_mapper.mapped_page_count() == 0;
+
+    MemConfig limited_mem = mem;
+    limited_mem.channel_size = 4;
+    TwoLevelDeterministicMapper limited_mapper(2);
+    limited_mapper.configure(limited_mem);
+    (void)limited_mapper.map(0);
+    (void)limited_mapper.map(limited_mapper.page_size_address_units());
+    bool physical_page_exhaustion_rejected = false;
+    try {
+        (void)limited_mapper.map(2 * limited_mapper.page_size_address_units());
+    } catch (const std::runtime_error&) {
+        physical_page_exhaustion_rejected = true;
+    }
+
+    const uint32_t saved_channel_size =
+        Config::system_config.mem_config.channel_size;
+    Config::system_config.mem_config.channel_size = 0;
+    bool invalid_wrapper_init_rejected = false;
+    try {
+        TwoLevelPageMapper::init_two_level_mapper();
+    } catch (const std::runtime_error&) {
+        invalid_wrapper_init_rejected = true;
+    }
+    const bool failed_init_leaves_mapper_disabled =
+        !TwoLevelPageMapper::is_enabled() &&
+        TwoLevelPageMapper::map_logical_address(probe_address) ==
+            probe_address;
+    Config::system_config.mem_config.channel_size = saved_channel_size;
+    TwoLevelPageMapper::init_two_level_mapper();
+
     print_check("disabled_mapping_is_identity", disabled_pass_through);
     print_check("enabled_mapping_is_deterministic", wrapper_deterministic);
+    print_check("wrapper_reports_enabled", wrapper_enabled);
+    print_check("wrapper_tracks_only_mapped_pages",
+                wrapper_tracks_sparse_pages);
     print_check("page_table_records_first_touch", wrapper_page_allocated);
     print_check("address_units_match_mem_config", address_units_match_config);
     print_check("mapper_and_dram_decoders_agree", decoders_agree);
@@ -261,6 +317,20 @@ int main() {
                 row_is_preserved_within_page);
     print_check("first_17_pages_are_dram_isolated", pages_are_isolated);
     print_check("active_dram_config_matrix", config_matrix_healthy);
+    print_check("large_virtual_address_uses_sparse_page_table",
+                large_virtual_address_is_sparse);
+    print_check("free_page_releases_sparse_entry",
+                sparse_free_releases_entry);
+    print_check("released_physical_page_is_reused",
+                released_physical_page_is_reused);
+    print_check("reset_releases_all_sparse_pages",
+                sparse_reset_releases_all_pages);
+    print_check("physical_page_exhaustion_is_rejected",
+                physical_page_exhaustion_rejected);
+    print_check("invalid_vm_initialization_is_rejected",
+                invalid_wrapper_init_rejected);
+    print_check("failed_init_leaves_mapper_disabled",
+                failed_init_leaves_mapper_disabled);
     std::cout << "OBSERVATION mapping_is_idempotent_under_retry "
               << (mapping_is_idempotent ? "TRUE" : "FALSE") << '\n';
 
@@ -293,11 +363,19 @@ int main() {
     }
 
     const bool healthy = disabled_pass_through && wrapper_deterministic &&
+                         wrapper_enabled && wrapper_tracks_sparse_pages &&
                          wrapper_page_allocated && address_units_match_config &&
                          decoders_agree &&
                          hash_changes_runtime_bank && channel_is_preserved &&
                          row_is_preserved_within_page && pages_are_isolated &&
-                         config_matrix_healthy;
+                         config_matrix_healthy &&
+                         large_virtual_address_is_sparse &&
+                         sparse_free_releases_entry &&
+                         released_physical_page_is_reused &&
+                         sparse_reset_releases_all_pages &&
+                         physical_page_exhaustion_rejected &&
+                         invalid_wrapper_init_rejected &&
+                         failed_init_leaves_mapper_disabled;
     std::cout << "RESULT " << (healthy ? "PASS" : "FAIL") << '\n';
     return healthy ? 0 : 2;
 }

@@ -16,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -1577,6 +1578,9 @@ public:
         return physical_capacity_address_units_;
     }
     addr_type num_physical_pages() const { return num_physical_pages_; }
+    addr_type mapped_page_count() const {
+        return static_cast<addr_type>(logical_to_physical_.size());
+    }
 
     // Fixed virtual-memory page and hash-unit sizes in bytes.
     static constexpr addr_type PAGE_SIZE_BYTES = 4096ull * 1024;  // 4MB
@@ -1585,7 +1589,9 @@ public:
 private:
     // 第一层：页表相关
     addr_type num_physical_pages_;
-    std::vector<addr_type> logical_to_physical_;  // 逻辑页号 -> 物理页号
+    // Sparse logical-page table: host memory grows with mapped pages rather
+    // than with the largest virtual page number that was touched.
+    std::unordered_map<addr_type, addr_type> logical_to_physical_;
     std::vector<bool> physical_used_;            // 物理页是否已使用
     addr_type next_free_physical_page_ = 0;
     static constexpr addr_type INVALID_PAGE = ~0ull;
@@ -1660,6 +1666,15 @@ namespace TwoLevelPageMapper {
 
 // 使用当前 Config::system_config.mem_config 初始化两层映射器
 void init_two_level_mapper();
+
+// Reset all mappings while retaining the active MemConfig.
+void reset_two_level_mapper();
+
+// Release the global mapper. Subsequent map calls become identity mappings.
+void cleanup_two_level_mapper();
+
+bool is_enabled();
+addr_type mapped_page_count();
 
 // Map a logical address to a physical address; return it unchanged when disabled.
 addr_type map_logical_address(addr_type logical_addr);

@@ -150,6 +150,17 @@ addr_type make_active_path_address(uint32_t channel, uint32_t row) {
         0, 0, 0, row, 0, channel);
 }
 
+addr_type make_vm_mapped_address(const SysConfig& config,
+                                 addr_type logical_address) {
+    const uint64_t total_bytes =
+        static_cast<uint64_t>(config.mem_config.channels) *
+        config.mem_config.channel_size * 1024 * 1024;
+    TwoLevelDeterministicMapper mapper(
+        total_bytes / TwoLevelDeterministicMapper::PAGE_SIZE_BYTES);
+    mapper.configure(config.mem_config);
+    return mapper.map(logical_address);
+}
+
 void consume_response(PIM& dram, uint32_t channel,
                       MemoryAccess* response, MemoryAccess* expected) {
     expect(response == expected,
@@ -244,6 +255,119 @@ void test_empty_write_payload_is_ignored(PIM& dram, const SysConfig& config) {
            "WRITE without data should leave the DataContainer unchanged");
 }
 
+void test_pim_payload_sequence(PIM& dram, const SysConfig& config) {
+    begin_case("cycle_accurate_pim_payload_sequence");
+    const addr_type address = make_active_path_address(0, 5);
+    const std::vector<uint8_t> input = make_payload(0x21, config);
+    const std::vector<uint8_t> result_first = make_payload(0xB1, config);
+    const std::vector<uint8_t> result_second = make_payload(0xD1, config);
+    std::vector<uint8_t> result = result_first;
+    result.insert(result.end(), result_second.begin(), result_second.end());
+
+    MemoryAccess header =
+        make_request(address, MemoryAccessType::P_HEADER, config);
+    consume_response(dram, 0, submit_and_wait(dram, 0, header), &header);
+
+    MemoryAccess gwrite =
+        make_request(address, MemoryAccessType::GWRITE, config, input);
+    consume_response(dram, 0, submit_and_wait(dram, 0, gwrite), &gwrite);
+    expect(DRAMDataContainer::storage->pim_input_payload_bytes(0) ==
+               input.size(),
+           "CycleAccurate GWRITE should materialize one input burst");
+
+    MemoryAccess comp =
+        make_request(address, MemoryAccessType::COMP, config, result);
+    consume_response(dram, 0, submit_and_wait(dram, 0, comp), &comp);
+    expect(DRAMDataContainer::storage->pim_output_payload_bytes(0) ==
+               result.size(),
+           "CycleAccurate COMP should publish the supplied functional result");
+
+    MemoryAccess readres =
+        make_request(address, MemoryAccessType::READRES, config);
+    MemoryAccess* response = submit_and_wait(dram, 0, readres);
+    expect(response->data == result_first,
+           "CycleAccurate READRES should return the first PIM output burst");
+    consume_response(dram, 0, response, &readres);
+
+    MemoryAccess second_readres =
+        make_request(address, MemoryAccessType::READRES, config);
+    response = submit_and_wait(dram, 0, second_readres);
+    expect(response->data == result_second,
+           "CycleAccurate READRES should advance to the second output burst");
+    consume_response(dram, 0, response, &second_readres);
+
+    MemoryAccess reset =
+        make_request(address, MemoryAccessType::P_HEADER, config);
+    consume_response(dram, 0, submit_and_wait(dram, 0, reset), &reset);
+    expect(DRAMDataContainer::storage->pim_input_payload_bytes(0) == 0 &&
+               DRAMDataContainer::storage->pim_output_payload_bytes(0) == 0,
+           "a new CycleAccurate P_HEADER should clear prior PIM payloads");
+    expect(DRAMDataContainer::storage->peak_pim_input_payload_bytes(0) ==
+               input.size() &&
+               DRAMDataContainer::storage->peak_pim_output_payload_bytes(0) ==
+                   result.size(),
+           "CycleAccurate PIM peaks should survive a P_HEADER phase reset");
+
+    MemoryAccess fallback_gwrite =
+        make_request(address, MemoryAccessType::GWRITE, config, input);
+    consume_response(dram, 0,
+                     submit_and_wait(dram, 0, fallback_gwrite),
+                     &fallback_gwrite);
+    MemoryAccess fallback_comp =
+        make_request(address, MemoryAccessType::COMP, config);
+    consume_response(dram, 0, submit_and_wait(dram, 0, fallback_comp),
+                     &fallback_comp);
+    MemoryAccess fallback_readres =
+        make_request(address, MemoryAccessType::READRES, config);
+    response = submit_and_wait(dram, 0, fallback_readres);
+    expect(response->data == input,
+           "COMP without a functional result should preserve opaque input bytes");
+    consume_response(dram, 0, response, &fallback_readres);
+}
+
+void test_vm_mapped_pim_payload(PIM& dram, const SysConfig& config) {
+    begin_case("cycle_accurate_vm_mapped_pim_payload");
+    const uint64_t burst_bytes =
+        static_cast<uint64_t>(config.mem_config.BL) *
+        config.mem_config.bus_width / 8;
+    const addr_type logical =
+        TwoLevelDeterministicMapper::HASH_UNIT_BYTES / burst_bytes;
+    const addr_type physical = make_vm_mapped_address(config, logical);
+    const uint32_t channel =
+        MyAddressAllocator::get_channel_index(physical);
+    const std::vector<uint8_t> input = make_payload(0x32, config);
+    const std::vector<uint8_t> result = make_payload(0xC2, config);
+
+    expect(physical != logical,
+           "VM diagnostic address should be changed by the hash mapper");
+
+    MemoryAccess header =
+        make_request(physical, MemoryAccessType::P_HEADER, config);
+    header.logical_dram_address = logical;
+    consume_response(dram, channel,
+                     submit_and_wait(dram, channel, header), &header);
+    MemoryAccess gwrite =
+        make_request(physical, MemoryAccessType::GWRITE, config, input);
+    gwrite.logical_dram_address = logical;
+    consume_response(dram, channel,
+                     submit_and_wait(dram, channel, gwrite), &gwrite);
+    MemoryAccess comp =
+        make_request(physical, MemoryAccessType::COMP_HASH, config, result);
+    comp.logical_dram_address = logical;
+    consume_response(dram, channel,
+                     submit_and_wait(dram, channel, comp), &comp);
+    MemoryAccess readres =
+        make_request(physical, MemoryAccessType::READRES, config);
+    readres.logical_dram_address = logical;
+    MemoryAccess* response = submit_and_wait(dram, channel, readres);
+    expect(response->data == result,
+           "CycleAccurate READRES should follow the VM-mapped channel state");
+    expect(response->logical_dram_address == logical &&
+               response->dram_address == physical,
+           "DataContainer should preserve logical and mapped physical addresses");
+    consume_response(dram, channel, response, &readres);
+}
+
 }  // namespace
 
 int main() {
@@ -256,6 +380,8 @@ int main() {
         test_write_then_read(dram, config);
         test_channel_isolation(dram, config);
         test_empty_write_payload_is_ignored(dram, config);
+        test_pim_payload_sequence(dram, config);
+        test_vm_mapped_pim_payload(dram, config);
 
         DRAMDataContainer::cleanup();
     } catch (const std::exception& error) {
@@ -267,7 +393,7 @@ int main() {
     }
 
     if (failures == 0) {
-        std::cout << "RESULT PASS: 4 CycleAccurate DataContainer integration cases\n";
+        std::cout << "RESULT PASS: 6 CycleAccurate DataContainer integration cases\n";
         return 0;
     }
 

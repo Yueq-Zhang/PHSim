@@ -34,6 +34,11 @@ std::unique_ptr<SysConfig> tiny_config(bool enabled = true) {
     config->mem_config.columns = 16;
     config->mem_config.BL = 4;
     config->mem_config.bus_width = 16;
+    config->mem_config.PU_num = 2;
+    config->mem_config.input_buffer_size = 32;
+    config->mem_config.output_buffer_size = 16;
+    config->pim_input_buffer_size = 32;
+    config->pim_output_buffer_size = 16;
     config->dram_data_container_enable = enabled;
     return config;
 }
@@ -79,12 +84,22 @@ void test_full_and_partial_round_trip() {
                std::vector<uint8_t>({0x10, 0x11, 0x20, 0x21,
                                      0x30, 0x31, 0x40, 0x41}),
            "flattening should preserve DRAM column and byte order");
+    expect(container.dram_payload_bytes() == 8 &&
+               container.resident_payload_bytes() == 8,
+           "four 2-byte columns should report eight resident DRAM bytes");
+    expect(container.peak_stored_column_count() == 4 &&
+               container.peak_resident_payload_bytes() == 8,
+           "DRAM column and payload peaks should track the high-water mark");
 
     container.write_burst({{0xA5}, {0x5A, 0xC3}}, 0, 0, 0, 0, 5, 8);
     expect(container.read_burst(0, 0, 0, 0, 5, 8) ==
                Burst({{0xA5, 0x00}, {0x5A, 0xC3},
                       {0x00, 0x00}, {0x00, 0x00}}),
            "a short write should pad bytes and preserve untouched columns");
+    expect(container.stored_column_count() == 6 &&
+               container.peak_stored_column_count() == 6 &&
+               container.peak_resident_payload_bytes() == 12,
+           "statistics should include newly materialized partial columns");
 }
 
 void test_instance_and_coordinate_isolation() {
@@ -110,8 +125,11 @@ void test_disabled_and_clear() {
     DramDataContainer enabled(*tiny_config());
     enabled.write_burst({{1, 2}}, 0, 0, 0, 0, 1, 0);
     enabled.clear();
-    expect(enabled.stored_column_count() == 0,
-           "clear should release all sparse data");
+    expect(enabled.stored_column_count() == 0 &&
+               enabled.peak_stored_column_count() == 0 &&
+               enabled.resident_payload_bytes() == 0 &&
+               enabled.peak_resident_payload_bytes() == 0,
+           "clear should release sparse data and reset lifecycle peaks");
 }
 
 void test_invalid_coordinates() {
@@ -132,6 +150,9 @@ void test_payload_limit() {
     config->dram_data_container_max_payload_mb = 1;
     config->mem_config.bus_width = 8 * 1024 * 1024;
     DramDataContainer container(*config);
+
+    expect(container.max_resident_payload_bytes() == 1024 * 1024,
+           "the configured MiB limit should be exposed in bytes");
 
     container.write_burst({{1}}, 0, 0, 0, 0, 0, 0);
     expect(container.resident_payload_bytes() == 1024 * 1024,

@@ -131,6 +131,17 @@ addr_type make_active_path_address(uint32_t channel, uint32_t row) {
         0, 0, 0, row, 0, channel);
 }
 
+addr_type make_vm_mapped_address(const SysConfig& config,
+                                 addr_type logical_address) {
+    const uint64_t total_bytes =
+        static_cast<uint64_t>(config.mem_config.channels) *
+        config.mem_config.channel_size * 1024 * 1024;
+    TwoLevelDeterministicMapper mapper(
+        total_bytes / TwoLevelDeterministicMapper::PAGE_SIZE_BYTES);
+    mapper.configure(config.mem_config);
+    return mapper.map(logical_address);
+}
+
 class EventDrivenHarness {
 public:
     EventDrivenHarness(EventDrivenDram& dram, uint32_t channels)
@@ -390,24 +401,160 @@ void test_short_write_zero_fills_tail(EventDrivenHarness& harness,
            "short EventDriven WRITE should zero-fill the remaining burst bytes");
 }
 
+void test_pim_payload_sequence(EventDrivenHarness& harness,
+                               const SysConfig& config) {
+    begin_case("event_driven_pim_payload_sequence");
+    const addr_type address = make_active_path_address(0, 10);
+    const std::vector<uint8_t> input = make_payload(0x21, config);
+    const std::vector<uint8_t> result_first = make_payload(0xB1, config);
+    const std::vector<uint8_t> result_second = make_payload(0xD1, config);
+    std::vector<uint8_t> result = result_first;
+    result.insert(result.end(), result_second.begin(), result_second.end());
+
+    MemoryAccess header =
+        make_request(address, MemoryAccessType::P_HEADER, config);
+    harness.push(header);
+    consume_response(harness, 0, harness.wait_one(0), &header);
+
+    MemoryAccess gwrite =
+        make_request(address, MemoryAccessType::GWRITE, config, input);
+    harness.push(gwrite);
+    consume_response(harness, 0, harness.wait_one(0), &gwrite);
+    expect(DRAMDataContainer::storage->pim_input_payload_bytes(0) ==
+               input.size(),
+           "EventDriven GWRITE should materialize one input burst");
+
+    MemoryAccess comp =
+        make_request(address, MemoryAccessType::COMP, config, result);
+    harness.push(comp);
+    consume_response(harness, 0, harness.wait_one(0), &comp);
+    expect(DRAMDataContainer::storage->pim_output_payload_bytes(0) ==
+               result.size(),
+           "EventDriven COMP should publish the supplied functional result");
+
+    MemoryAccess readres =
+        make_request(address, MemoryAccessType::READRES, config);
+    harness.push(readres);
+    MemoryAccess* response = harness.wait_one(0);
+    expect(response->data == result_first,
+           "EventDriven READRES should return the first PIM output burst");
+    consume_response(harness, 0, response, &readres);
+
+    MemoryAccess second_readres =
+        make_request(address, MemoryAccessType::READRES, config);
+    harness.push(second_readres);
+    response = harness.wait_one(0);
+    expect(response->data == result_second,
+           "EventDriven READRES should advance to the second output burst");
+    consume_response(harness, 0, response, &second_readres);
+
+    MemoryAccess reset =
+        make_request(address, MemoryAccessType::P_HEADER, config);
+    harness.push(reset);
+    consume_response(harness, 0, harness.wait_one(0), &reset);
+    expect(DRAMDataContainer::storage->pim_input_payload_bytes(0) == 0 &&
+               DRAMDataContainer::storage->pim_output_payload_bytes(0) == 0,
+           "a new EventDriven P_HEADER should clear prior PIM payloads");
+    expect(DRAMDataContainer::storage->peak_pim_input_payload_bytes(0) ==
+               input.size() &&
+               DRAMDataContainer::storage->peak_pim_output_payload_bytes(0) ==
+                   result.size(),
+           "EventDriven PIM peaks should survive a P_HEADER phase reset");
+
+    MemoryAccess fallback_gwrite =
+        make_request(address, MemoryAccessType::GWRITE, config, input);
+    harness.push(fallback_gwrite);
+    consume_response(harness, 0, harness.wait_one(0), &fallback_gwrite);
+    MemoryAccess fallback_comp =
+        make_request(address, MemoryAccessType::COMP, config);
+    harness.push(fallback_comp);
+    consume_response(harness, 0, harness.wait_one(0), &fallback_comp);
+    MemoryAccess fallback_readres =
+        make_request(address, MemoryAccessType::READRES, config);
+    harness.push(fallback_readres);
+    response = harness.wait_one(0);
+    expect(response->data == input,
+           "COMP without a functional result should preserve opaque input bytes");
+    consume_response(harness, 0, response, &fallback_readres);
+}
+
+void test_vm_mapped_pim_payload(EventDrivenHarness& harness,
+                                const SysConfig& config) {
+    begin_case("event_driven_vm_mapped_pim_payload");
+    const uint64_t burst_bytes =
+        static_cast<uint64_t>(config.mem_config.BL) *
+        config.mem_config.bus_width / 8;
+    const addr_type logical =
+        TwoLevelDeterministicMapper::HASH_UNIT_BYTES / burst_bytes;
+    const addr_type physical = make_vm_mapped_address(config, logical);
+    const uint32_t channel =
+        MyAddressAllocator::get_channel_index(physical);
+    const std::vector<uint8_t> input = make_payload(0x32, config);
+    const std::vector<uint8_t> result = make_payload(0xC2, config);
+
+    expect(physical != logical,
+           "VM diagnostic address should be changed by the hash mapper");
+
+    MemoryAccess header =
+        make_request(physical, MemoryAccessType::P_HEADER, config);
+    header.logical_dram_address = logical;
+    harness.push(header);
+    consume_response(harness, channel, harness.wait_one(channel), &header);
+    MemoryAccess gwrite =
+        make_request(physical, MemoryAccessType::GWRITE, config, input);
+    gwrite.logical_dram_address = logical;
+    harness.push(gwrite);
+    consume_response(harness, channel, harness.wait_one(channel), &gwrite);
+    MemoryAccess comp =
+        make_request(physical, MemoryAccessType::COMP_HASH, config, result);
+    comp.logical_dram_address = logical;
+    harness.push(comp);
+    consume_response(harness, channel, harness.wait_one(channel), &comp);
+    MemoryAccess readres =
+        make_request(physical, MemoryAccessType::READRES, config);
+    readres.logical_dram_address = logical;
+    harness.push(readres);
+    MemoryAccess* response = harness.wait_one(channel);
+    expect(response->data == result,
+           "EventDriven READRES should follow the VM-mapped channel state");
+    expect(response->logical_dram_address == logical &&
+               response->dram_address == physical,
+           "DataContainer should preserve logical and mapped physical addresses");
+    consume_response(harness, channel, response, &readres);
+}
+
 }  // namespace
 
 int main() {
     try {
         SysConfig config;
         configure_system(config);
-        EventDrivenDram dram(config, DRAMDataContainer::storage.get());
-        EventDrivenHarness harness(dram, config.dram_channels);
+        {
+            EventDrivenDram dram(config, DRAMDataContainer::storage.get());
+            EventDrivenHarness harness(dram, config.dram_channels);
 
-        test_seeded_read(harness, config);
-        test_write_then_read(harness, config);
-        test_merged_reads(harness, config);
-        test_write_buffer_forwarding(harness, config);
-        test_merged_writes_last_writer_wins(harness, config);
-        test_empty_write_payload_is_ignored(harness, config);
-        test_channel_isolation(harness, config);
-        test_repeated_top_is_idempotent(harness, config);
-        test_short_write_zero_fills_tail(harness, config);
+            test_seeded_read(harness, config);
+            test_write_then_read(harness, config);
+            test_merged_reads(harness, config);
+            test_write_buffer_forwarding(harness, config);
+            test_merged_writes_last_writer_wins(harness, config);
+            test_empty_write_payload_is_ignored(harness, config);
+            test_channel_isolation(harness, config);
+            test_repeated_top_is_idempotent(harness, config);
+            test_short_write_zero_fills_tail(harness, config);
+        }
+
+        // Logical WRITE responses can precede the final physical write-buffer
+        // drain. Use a fresh backend so those intentionally outstanding
+        // normal events cannot contaminate the PIM row-state checks.
+        DRAMDataContainer::cleanup();
+        DRAMDataContainer::init(config);
+        {
+            EventDrivenDram dram(config, DRAMDataContainer::storage.get());
+            EventDrivenHarness harness(dram, config.dram_channels);
+            test_pim_payload_sequence(harness, config);
+            test_vm_mapped_pim_payload(harness, config);
+        }
 
         DRAMDataContainer::cleanup();
     } catch (const std::exception& error) {
@@ -420,7 +567,7 @@ int main() {
 
     if (failures == 0) {
         std::cout
-            << "RESULT PASS: 9 EventDriven DataContainer integration cases\n";
+            << "RESULT PASS: 11 EventDriven DataContainer integration cases\n";
         return 0;
     }
 

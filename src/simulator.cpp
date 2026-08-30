@@ -807,6 +807,7 @@ void Simulator::cycle() {
     spdlog::info(">>>>>> Scheduler Stats <<<<<<");
     _scheduler->print_stat();
     _scheduler->print_op_stat();
+    log_data_container_stat();
     log_stage_stat();
 }
 
@@ -910,4 +911,69 @@ void Simulator::log_stage_stat() {
         ofile << stage_row + "\n";
     }
     ofile.close();
+}
+
+void Simulator::log_data_container_stat() const {
+    if (!_data_container) {
+        return;
+    }
+
+    nlohmann::json output;
+    output["enabled"] = _data_container->enabled();
+    output["burst_length"] = _data_container->burst_length();
+    output["dq_bytes"] = _data_container->dq_bytes();
+    output["burst_bytes"] = _data_container->burst_bytes();
+    output["stored_column_count"] =
+        _data_container->stored_column_count();
+    output["peak_stored_column_count"] =
+        _data_container->peak_stored_column_count();
+    output["dram_payload_bytes"] =
+        _data_container->dram_payload_bytes();
+    output["pim_payload_bytes"] =
+        _data_container->pim_payload_bytes();
+    output["resident_payload_bytes"] =
+        _data_container->resident_payload_bytes();
+    output["peak_resident_payload_bytes"] =
+        _data_container->peak_resident_payload_bytes();
+    output["payload_limit_bytes"] =
+        _data_container->max_resident_payload_bytes();
+    output["payload_limit_enabled"] =
+        _data_container->max_resident_payload_bytes() != 0;
+    output["channels"] = nlohmann::json::array();
+
+    for (uint32_t channel = 0;
+         channel < _data_container->channel_count(); ++channel) {
+        output["channels"].push_back({
+            {"channel", channel},
+            {"pim_input_payload_bytes",
+             _data_container->pim_input_payload_bytes(channel)},
+            {"peak_pim_input_payload_bytes",
+             _data_container->peak_pim_input_payload_bytes(channel)},
+            {"pim_output_payload_bytes",
+             _data_container->pim_output_payload_bytes(channel)},
+            {"peak_pim_output_payload_bytes",
+             _data_container->peak_pim_output_payload_bytes(channel)}});
+    }
+
+    const std::string file_name =
+        Config::system_config.log_dir + "/data_container_stats.json";
+    std::ofstream file(file_name);
+    if (!file.is_open()) {
+        throw std::runtime_error(
+            "Cannot open DataContainer statistics file: " + file_name);
+    }
+    file << output.dump(2) << '\n';
+    if (!file.good()) {
+        throw std::runtime_error(
+            "Failed to write DataContainer statistics file: " + file_name);
+    }
+
+    spdlog::info(
+        "DataContainer: enabled={}, resident={} B, peak={} B, "
+        "stored_columns={}, peak_stored_columns={}",
+        _data_container->enabled(),
+        _data_container->resident_payload_bytes(),
+        _data_container->peak_resident_payload_bytes(),
+        _data_container->stored_column_count(),
+        _data_container->peak_stored_column_count());
 }
