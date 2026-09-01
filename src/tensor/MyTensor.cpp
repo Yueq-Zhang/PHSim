@@ -236,10 +236,15 @@ std::vector<addr_type> MyTensor::get_all_addrs() {
         for (auto dim : _dims) {
             size *= dim;
         }
-        uint32_t burst_times = size / MyAddressAllocator::memory_burst_size;
+        const uint64_t burst_times_u64 =
+            ceil_div_u64(size, MyAddressAllocator::memory_burst_size);
+        if (burst_times_u64 > std::numeric_limits<uint32_t>::max()) {
+            throw std::overflow_error("tensor address list exceeds uint32_t burst count");
+        }
+        const uint32_t burst_times = static_cast<uint32_t>(burst_times_u64);
         std::vector<uint32_t> burst_offsets;
         burst_offsets.reserve(burst_times);
-        for (int i = 0; i < burst_times; i++) {
+        for (uint32_t i = 0; i < burst_times; i++) {
             burst_offsets.push_back(i);
         }
         addrs = get_addrs_from_burst_offset(burst_offsets);
@@ -250,10 +255,16 @@ std::vector<addr_type> MyTensor::get_all_addrs() {
             for (auto dim : _dims) {
                 size *= dim;
             }
-            uint32_t burst_times = size / MyAddressAllocator::memory_burst_size;
+            const uint64_t burst_times_u64 =
+                ceil_div_u64(size, MyAddressAllocator::memory_burst_size);
+            if (burst_times_u64 > std::numeric_limits<uint32_t>::max()) {
+                throw std::overflow_error("weight address list exceeds uint32_t burst count");
+            }
+            const uint32_t burst_times =
+                static_cast<uint32_t>(burst_times_u64);
             std::vector<uint32_t> burst_offsets;
             burst_offsets.reserve(burst_times);
-            for (int i = 0; i < burst_times; i++) {
+            for (uint32_t i = 0; i < burst_times; i++) {
                 burst_offsets.push_back(i);
             }
             addrs = get_addrs_from_burst_offset(burst_offsets);

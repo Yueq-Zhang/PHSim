@@ -1,9 +1,23 @@
 #include "common_function.hpp"
+#include "Scheduler/MyScheduler.hpp"
 
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <type_traits>
+#include <utility>
 
+static_assert(
+    std::is_same_v<
+        std::remove_reference_t<decltype(
+            std::declval<MyScheduler&>()._estimated_all_cycle)>,
+        cycle_type>,
+    "scheduler prediction cycles must retain the 64-bit simulator timeline");
+static_assert(
+    sizeof(decltype(
+        std::declval<MyScheduler&>()._stage_stats)::value_type::second_type) >=
+        sizeof(cycle_type),
+    "scheduler stage statistics must not truncate the simulator timeline");
 namespace {
 
 int failures = 0;
@@ -28,6 +42,17 @@ void test_pim_bandwidth_zero_cycles() {
 
     expect_equal(stat.get_by_enum(MemoryIOStat::StatType::PIMBandwidth),
                  "0", "PIM bandwidth with zero cycles");
+}
+
+void test_ceil_div_boundaries() {
+    expect_equal(std::to_string(ceil_div_u64(0, 64)), "0",
+                 "ceil divide zero");
+    expect_equal(std::to_string(ceil_div_u64(32, 64)), "1",
+                 "ceil divide sub-burst");
+    expect_equal(std::to_string(ceil_div_u64(64, 64)), "1",
+                 "ceil divide exact burst");
+    expect_equal(std::to_string(ceil_div_u64(65, 64)), "2",
+                 "ceil divide burst tail");
 }
 
 void test_pim_bandwidth_wide_intermediate() {
@@ -96,6 +121,7 @@ void test_npu_utilization_wide_intermediate() {
 }  // namespace
 
 int main() {
+    test_ceil_div_boundaries();
     test_pim_bandwidth_zero_cycles();
     test_pim_bandwidth_wide_intermediate();
     test_pim_bandwidth_preserves_truncation();
@@ -103,7 +129,7 @@ int main() {
     test_npu_utilization_wide_intermediate();
 
     if (failures == 0) {
-        std::cout << "RESULT PASS: 7 statistics edge checks\n";
+        std::cout << "RESULT PASS: 11 statistics edge checks\n";
         return 0;
     }
 

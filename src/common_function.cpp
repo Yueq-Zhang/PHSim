@@ -165,17 +165,6 @@ void SysConfig::initialize_inference_config(std::string inference_config_path) {
         throw std::invalid_argument(
             "batch_scheduler must be either 'legacy' or 'continuous'");
     }
-    if (inference_config.contains("max_prefill_batch_tokens")) {
-        const auto& value = inference_config.at("max_prefill_batch_tokens");
-        if ((!value.is_number_integer() && !value.is_number_unsigned()) ||
-            (!value.is_number_unsigned() && value.get<int64_t>() < 0)) {
-            throw std::invalid_argument(
-                "max_prefill_batch_tokens must be a non-negative integer");
-        }
-        max_prefill_batch_tokens = value.get<uint64_t>();
-    } else {
-        max_prefill_batch_tokens = 0;
-    }
     if (max_batch_size == 0 || max_active_reqs == 0) {
         throw std::invalid_argument(
             "max_batch_size and max_active_reqs must be greater than zero");
@@ -1596,7 +1585,13 @@ std::vector<uint32_t> MyAddressAllocator::weight_allocate_1D(std::vector<uint32_
     assert(activation_space_malloced == false);
 
     uint64_t size = dims[0] * precision;
-    uint32_t allocate_column_num = ceil(size/memory_burst_size);  // required burst time of current tensor
+    const uint64_t allocate_column_num_u64 =
+        ceil_div_u64(size, memory_burst_size);
+    if (allocate_column_num_u64 > std::numeric_limits<uint32_t>::max()) {
+        throw std::overflow_error("1-D weight allocation exceeds uint32_t burst count");
+    }
+    uint32_t allocate_column_num =
+        static_cast<uint32_t>(allocate_column_num_u64);  // required burst time of current tensor
 
     while (available_weight_1D_burst < allocate_column_num) {
         weight_malloc_1D();  // malloc new space until required burst time is satisfied
@@ -1663,7 +1658,13 @@ std::vector<uint32_t> MyAddressAllocator::weight_2D_allocate_in_sequence(std::ve
     spdlog::info("The allocated size of Weight 2D is {}", size);
     spdlog::info("The base index is row:{}, {}:{}, {}:{}, {}:{}, column:{}", base_row, outer_row_loop, base_outer_row_loop,
         middle_row_loop, base_middle_row_loop, inner_row_loop, base_inner_row_loop, base_column);
-    uint32_t allocate_column_num = ceil(size/memory_burst_size);  // The required burst times for allocated data
+    const uint64_t allocate_column_num_u64 =
+        ceil_div_u64(size, memory_burst_size);
+    if (allocate_column_num_u64 > std::numeric_limits<uint32_t>::max()) {
+        throw std::overflow_error("2-D weight allocation exceeds uint32_t burst count");
+    }
+    uint32_t allocate_column_num =
+        static_cast<uint32_t>(allocate_column_num_u64);  // The required burst times for allocated data
     uint32_t col_offset = (base_column + allocate_column_num) % BL_num_per_row; // the new col offset
     uint32_t allocate_row_num = (base_column + allocate_column_num) / BL_num_per_row;
     spdlog::info("The allocate size corresponding to {} times burst, {} row", allocate_column_num, allocate_row_num);
@@ -1737,7 +1738,18 @@ std::vector<uint32_t> MyAddressAllocator::weight_2D_allocate_in_DASH(std::vector
      */
 
     uint32_t tile_column_interleaved_per_bank = tile_width / (dram_channels * interleaved_banks_per_tile);
-    uint32_t allocate_rows = K * tile_column_interleaved_per_bank * precision_weight / (dram_burst_size * BL_num_per_row);
+    const uint64_t weight_bytes_per_bank =
+        static_cast<uint64_t>(K) * tile_column_interleaved_per_bank *
+        precision_weight;
+    const uint64_t bytes_per_bank_row =
+        static_cast<uint64_t>(dram_burst_size) * BL_num_per_row;
+    const uint64_t allocate_rows_u64 =
+        ceil_div_u64(weight_bytes_per_bank, bytes_per_bank_row);
+    if (allocate_rows_u64 > std::numeric_limits<uint32_t>::max()) {
+        throw std::overflow_error("DASH weight allocation exceeds uint32_t row count");
+    }
+    const uint32_t allocate_rows =
+        static_cast<uint32_t>(allocate_rows_u64);
     uint32_t allocate_iteration = std::ceil(((double)N / tile_width) / allocated_tiles_per_iteration);
 
     spdlog::info("{} columns 2D weight data interleaved to {} bank * {} channel, {} bank rows is occupied, total {} iteration for 2D Weight with size {}",
@@ -1969,7 +1981,13 @@ std::vector<uint32_t> MyAddressAllocator::activation_allocate_in_sequence(std::v
         size = size * dim * dims.back();
     }
 
-    uint32_t allocate_column_num = ceil(size/memory_burst_size);  // The required burst times for allocated data
+    const uint64_t allocate_column_num_u64 =
+        ceil_div_u64(size, memory_burst_size);
+    if (allocate_column_num_u64 > std::numeric_limits<uint32_t>::max()) {
+        throw std::overflow_error("activation allocation exceeds uint32_t burst count");
+    }
+    uint32_t allocate_column_num =
+        static_cast<uint32_t>(allocate_column_num_u64);  // The required burst times for allocated data
     uint32_t col_offset = (act_column + allocate_column_num) % BL_num_per_row; // the new col offset
     uint32_t allocate_row_num = (act_column + allocate_column_num) / BL_num_per_row;
 
@@ -2136,7 +2154,13 @@ bool MyAddressAllocator::allocate_in_sequence(uint64_t size) {
     spdlog::info("The allocated size is {}", size);
     spdlog::info("The base index is row:{}, {}:{}, {}:{}, {}:{}, column:{}", base_row, outer_row_loop, base_outer_row_loop,
         middle_row_loop, base_middle_row_loop, inner_row_loop, base_inner_row_loop, base_column);
-    uint32_t allocate_column_num = ceil(size/memory_burst_size);  // The required burst times for allocated data
+    const uint64_t allocate_column_num_u64 =
+        ceil_div_u64(size, memory_burst_size);
+    if (allocate_column_num_u64 > std::numeric_limits<uint32_t>::max()) {
+        throw std::overflow_error("output allocation exceeds uint32_t burst count");
+    }
+    uint32_t allocate_column_num =
+        static_cast<uint32_t>(allocate_column_num_u64);  // The required burst times for allocated data
     uint32_t col_offset = (base_column + allocate_column_num) % BL_num_per_row; // the new col offset
     uint32_t allocate_row_num = (base_column + allocate_column_num) / BL_num_per_row;
     spdlog::info("The allocate size corresponding to {} times burst, {} row", allocate_column_num, allocate_row_num);

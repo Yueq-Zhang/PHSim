@@ -1,0 +1,10 @@
+{
+    "model_name": "Invalid-PIM-Decode-H32",
+    "model_params_b": 0.001,
+    "model_vocab_size": 128,
+    "model_n_layer": 1,
+    "model_n_head": 1,
+    "model_n_embd": 32,
+    "n_tp": 1,
+    "n_pp": 1
+}

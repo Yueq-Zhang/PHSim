@@ -33,7 +33,6 @@ MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
     _max_batch_size = config.max_batch_size;   // 256;   // config.max_batch_size;
     _max_active_reqs = config.max_active_reqs;
     _continuous_batching = config.batch_scheduler == "continuous";
-    _max_prefill_batch_tokens = config.max_prefill_batch_tokens;
 
     _init_stage = Stage::Prefill;
     _model_program = nullptr;
@@ -73,10 +72,8 @@ MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
     _core_rr_id = 0;
     _active_reqs = 0;
     spdlog::info(
-        "Batch scheduler: {} (max_batch_size={}, max_active_reqs={}, "
-        "max_prefill_batch_tokens={})",
-        config.batch_scheduler, _max_batch_size, _max_active_reqs,
-        _max_prefill_batch_tokens);
+        "Batch scheduler: {} (max_batch_size={}, max_active_reqs={})",
+        config.batch_scheduler, _max_batch_size, _max_active_reqs);
 }
 
 void MyScheduler::launch(Ptr<Model> model) {  // Register the model on memory
@@ -183,28 +180,11 @@ bool MyScheduler::form_continuous_batch() {
     // full Decode-ready queue could keep an admitted prompt waiting forever.
     const bool choose_prefill = prefill_wait_elapsed;
 
-    uint64_t prompt_tokens = 0;
     if (choose_prefill) {
         const size_t available_slots = batch_capacity;
         while (!_waiting_prefill_queue.empty() &&
                _breq.size() < available_slots) {
             const auto& request = _waiting_prefill_queue.front();
-            const uint64_t request_tokens = request->input_size;
-            if (_max_prefill_batch_tokens != 0 &&
-                request_tokens > _max_prefill_batch_tokens) {
-                throw std::invalid_argument(fmt::format(
-                    "Request {} has {} prompt tokens, exceeding "
-                    "max_prefill_batch_tokens={}; chunked Prefill is not "
-                    "enabled in this implementation",
-                    request->id, request_tokens,
-                    _max_prefill_batch_tokens));
-            }
-            if (_max_prefill_batch_tokens != 0 && !_breq.empty() &&
-                request_tokens >
-                    _max_prefill_batch_tokens - prompt_tokens) {
-                break;
-            }
-            prompt_tokens += request_tokens;
             _breq.push_back(request);
             _waiting_prefill_queue.pop_front();
         }
@@ -226,10 +206,9 @@ bool MyScheduler::form_continuous_batch() {
 
     _current_continuous_batch_id = _next_continuous_batch_id++;
     spdlog::info(
-        "Continuous batch {} formed: stage={}, requests=[{}], "
-        "batch_size={}, prompt_tokens={}",
+        "Continuous batch {} formed: stage={}, requests=[{}], batch_size={}",
         _current_continuous_batch_id, stageToString(_stage),
-        format_request_ids(_breq), _breq.size(), prompt_tokens);
+        format_request_ids(_breq), _breq.size());
     return true;
 }
 
@@ -247,6 +226,8 @@ void MyScheduler::complete_continuous_batch(Stage completed_stage) {
                     "Request {} entered Prefill more than once", request->id));
             }
             request->is_initiated = true;
+            request->prefill_completed_cycle = _cycles;
+            request->prefill_completed = true;
             if (request->generated >= request->output_size) {
                 complete_request(request);
             } else {
@@ -264,6 +245,10 @@ void MyScheduler::complete_continuous_batch(Stage completed_stage) {
                     request->id, request->generated, request->output_size));
             }
             request->generated++;
+            if (!request->first_token_generated) {
+                request->first_token_cycle = _cycles;
+                request->first_token_generated = true;
+            }
             spdlog::info(
                 "Scheduler:: Request {} generated token {}/{}",
                 request->id, request->generated, request->output_size);
@@ -877,7 +862,9 @@ bool MyScheduler::finish_tile(uint32_t core_id, Tile& tile) {  // Record the fin
                         _core_head_sample_cycles[core_id] = *_core_cycle - _core_head_unstable_cycles[core_id]; // 第3个head的完成周期减去第2个head的完成周期
 
                         // 计算剩余head的预测时间
-                        uint32_t remaining_cycles = _core_head_sample_cycles[core_id] * _core_head_remaining[core_id];
+                        const cycle_type remaining_cycles =
+                            _core_head_sample_cycles[core_id] *
+                            _core_head_remaining[core_id];
 
                         // 计算总预测时间
                         _core_head_estimated_cycles[core_id] = *_core_cycle + remaining_cycles;
@@ -900,11 +887,11 @@ bool MyScheduler::finish_tile(uint32_t core_id, Tile& tile) {  // Record the fin
                     // 检查是否达到稳定状态
                     if (_core_kloop_cycles[core_id].size() >= 3 && !_core_stable[core_id]) {
                         // 计算相邻3个K_Loop的完成时间差
-                        uint32_t prev_prev_cycle = _core_kloop_cycles[core_id][_core_kloop_cycles[core_id].size() - 3];
-                        uint32_t prev_cycle = _core_kloop_cycles[core_id][_core_kloop_cycles[core_id].size() - 2];
-                        uint32_t current_cycle = _core_kloop_cycles[core_id].back();
-                        uint32_t delta_cycle = current_cycle - prev_cycle;
-                        uint32_t prev_delta_cycle = prev_cycle - prev_prev_cycle;
+                        const cycle_type prev_prev_cycle = _core_kloop_cycles[core_id][_core_kloop_cycles[core_id].size() - 3];
+                        const cycle_type prev_cycle = _core_kloop_cycles[core_id][_core_kloop_cycles[core_id].size() - 2];
+                        const cycle_type current_cycle = _core_kloop_cycles[core_id].back();
+                        const cycle_type delta_cycle = current_cycle - prev_cycle;
+                        const cycle_type prev_delta_cycle = prev_cycle - prev_prev_cycle;
                         double_t cycle_diff = (double)delta_cycle / prev_delta_cycle;
 
                         if (cycle_diff > 0.98 && cycle_diff < 1.02) {   // 需要在这里添加
@@ -920,7 +907,9 @@ bool MyScheduler::finish_tile(uint32_t core_id, Tile& tile) {  // Record the fin
 
                             // 计算平均每个K_Loop的周期
                             uint32_t sample_kloop_count = _core_kloop_cycles[core_id].size() - 2;
-                            uint32_t avg_kloop_cycle = _core_sample_cycles[core_id] / sample_kloop_count;
+                            const cycle_type avg_kloop_cycle =
+                                _core_sample_cycles[core_id] /
+                                sample_kloop_count;
 
                             // 计算剩余的K_Loop数量
                             uint32_t total_kloops = _total_tiles.size() / (_k_loop_size * _config.num_cores);
@@ -2697,7 +2686,7 @@ void MyScheduler::apply_proportional_core_timing() {
     _proportional_timing_applied = true;
 }
 
-uint32_t MyScheduler::get_estimated_all_cycle() {
+cycle_type MyScheduler::get_estimated_all_cycle() {
     return _estimated_all_cycle;
 }
 
@@ -2799,7 +2788,7 @@ uint32_t MyScheduler::get_exist_tile_count() {
 
 
 void MyScheduler::print_stat() {
-    int prev_cycles = 0;
+    cycle_type prev_cycles = 0;
     // Print Global PIM Bandwidth Utilization
     if (_total_pim_duration > 0) {
         double total_pim_bw = (double)_total_pim_inst_count * (_config.mem_config.burst_cycle / 2) / _total_pim_duration;
@@ -2818,7 +2807,7 @@ void MyScheduler::print_stat() {
 
 
 void MyScheduler::print_op_stat() {
-    uint32_t prev_cycles = 0;
+    cycle_type prev_cycles = 0;
     for (auto op_stat : _op_stats) {
         auto op_name = op_stat.first;
         auto op_cycles = op_stat.second;

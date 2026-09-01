@@ -47,6 +47,8 @@ MyInterconnect::MyInterconnect(const SysConfig& config) : _config(config) {
     _in_buffers.resize(_n_nodes);
     _out_buffers.resize(_n_nodes);
     _busy_node.resize(_n_nodes);
+    _max_input_buffer_occupancy.assign(_n_nodes, 0);
+    _max_output_buffer_occupancy.assign(_n_nodes, 0);
 
     for(int node = 0; node < _n_nodes; node++) {
         _busy_node[node] = false;
@@ -124,8 +126,13 @@ void MyInterconnect::cycle() {
                 if (!_busy_node[dest] && output_has_space) {
                     _out_buffers[dest].push(
                         _in_buffers[src_node].front().access);
+                    _max_output_buffer_occupancy[dest] = std::max<uint64_t>(
+                        _max_output_buffer_occupancy[dest],
+                        _out_buffers[dest].size());
                     _busy_node[dest] = true;
                     _in_buffers[src_node].pop();
+                } else if (!output_has_space) {
+                    ++_output_full_blocked_packet_cycles;
                 }
             }
         }
@@ -197,6 +204,8 @@ void MyInterconnect::push(uint32_t src, uint32_t dest, MemoryAccess *request) {
 
     // -- push to _in_buffer
     _in_buffers[src].push(entity);
+    _max_input_buffer_occupancy[src] = std::max<uint64_t>(
+        _max_input_buffer_occupancy[src], _in_buffers[src].size());
 
     // spdlog::info("At time {}, push a memory request to interconnect from source: {} to dest: {} ",entity.add_cycle,entity.src, entity.dest);
 }
@@ -207,11 +216,21 @@ bool MyInterconnect::is_full(uint32_t nid, MemoryAccess* request) {
             "Interconnect fullness query has an invalid source or request");
     }
     if (_booksim) {
-        return _booksim->is_full(
+        const bool full = _booksim->is_full(
             nid, 0, get_booksim_packet_size(request));
+        if (full) {
+            ++_input_full_query_events;
+            ++_booksim_input_full_query_events;
+        }
+        return full;
     }
-    return _config.icnt_input_buffer_size != 0 &&
-           _in_buffers[nid].size() >= _config.icnt_input_buffer_size;
+    const bool full = _config.icnt_input_buffer_size != 0 &&
+                      _in_buffers[nid].size() >=
+                          _config.icnt_input_buffer_size;
+    if (full) {
+        ++_input_full_query_events;
+    }
+    return full;
 }
 
 bool MyInterconnect::is_empty(uint32_t nid) {
@@ -410,6 +429,38 @@ void MyInterconnect::print_stats() {
     }
     json_out << "}";
     json_out.close();
+
+    nlohmann::json backpressure_stats = {
+        {"backend", _booksim ? "booksim2" : "simple"},
+        {"input_capacity_packets_per_node",
+         _config.icnt_input_buffer_size},
+        {"output_capacity_packets_per_node",
+         _config.icnt_output_buffer_size},
+        {"input_full_query_events", _input_full_query_events},
+        {"booksim_input_full_query_events",
+         _booksim_input_full_query_events},
+        {"output_full_blocked_packet_cycles",
+         _output_full_blocked_packet_cycles},
+        {"max_input_buffer_occupancy",
+         _max_input_buffer_occupancy},
+        {"max_output_buffer_occupancy",
+         _max_output_buffer_occupancy}};
+    const std::string backpressure_path =
+        Config::system_config.log_dir +
+        "/interconnect_backpressure.json";
+    std::ofstream backpressure_out(backpressure_path,
+                                   std::ofstream::out);
+    if (!backpressure_out.is_open()) {
+        throw std::runtime_error(
+            "Cannot open interconnect backpressure statistics file: " +
+            backpressure_path);
+    }
+    backpressure_out << backpressure_stats.dump(2) << '\n';
+    if (!backpressure_out.good()) {
+        throw std::runtime_error(
+            "Failed to write interconnect backpressure statistics file: " +
+            backpressure_path);
+    }
 
     if (_booksim) {
         nlohmann::json booksim_stats = {

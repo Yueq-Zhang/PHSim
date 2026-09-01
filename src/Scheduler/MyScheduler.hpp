@@ -95,7 +95,6 @@ public:
     uint32_t _max_batch_size;
     uint32_t _max_active_reqs;
     bool _continuous_batching = false;
-    uint64_t _max_prefill_batch_tokens = 0;
 
     cycle_type _last_request_cycle;
 
@@ -142,34 +141,34 @@ public:
     std::size_t _unstable_length = 0;
     std::size_t _sample_length = 0;
     std::size_t _tile_position = 0;
-    uint32_t _estimated_all_cycle = 0;
-    uint32_t _actual_all_cycle = 0;
-    uint32_t _unstable_cycle = 0;
-    uint32_t _sample_cycle = 0;
-    uint32_t _mean_cycle = 0;
-    std::vector<uint32_t> _get_tile_cycle;
-    std::vector<uint32_t> _finish_tile_cycle;
+    cycle_type _estimated_all_cycle = 0;
+    cycle_type _actual_all_cycle = 0;
+    cycle_type _unstable_cycle = 0;
+    cycle_type _sample_cycle = 0;
+    cycle_type _mean_cycle = 0;
+    std::vector<cycle_type> _get_tile_cycle;
+    std::vector<cycle_type> _finish_tile_cycle;
     std::double_t _inst_ratio;
 
     // GEMM Loop_wise acceleration variables
-    std::unordered_map<uint32_t, std::vector<uint32_t>> _core_kloop_cycles; // 每个core的K_Loop完成周期
-    std::unordered_map<uint32_t, uint32_t> _core_unstable_cycles; // 每个core的不稳定周期
-    std::unordered_map<uint32_t, uint32_t> _core_sample_cycles; // 每个core的采样周期
-    std::unordered_map<uint32_t, uint32_t> _core_remaining_cycles; // 每个core的剩余周期
+    std::unordered_map<uint32_t, std::vector<cycle_type>> _core_kloop_cycles; // 每个core的K_Loop完成周期
+    std::unordered_map<uint32_t, cycle_type> _core_unstable_cycles; // 每个core的不稳定周期
+    std::unordered_map<uint32_t, cycle_type> _core_sample_cycles; // 每个core的采样周期
+    std::unordered_map<uint32_t, cycle_type> _core_remaining_cycles; // 每个core的剩余周期
     std::unordered_map<uint32_t, uint32_t> _core_k_inner_count; // 每个core的K_Loop计数
     std::unordered_map<uint32_t, bool> _core_stable; // 每个core是否达到稳定状态
-    std::unordered_map<uint32_t, uint32_t> _core_estimated_cycles; // 每个core的估计总周期
+    std::unordered_map<uint32_t, cycle_type> _core_estimated_cycles; // 每个core的估计总周期
     uint32_t _k_loop_size = 0; // K_Loop的大小
 
     // GEMM_Attn Loop_wise acceleration variables
-    std::unordered_map<uint32_t, std::vector<uint32_t>> _core_head_cycles; // 每个core的head完成周期
-    std::unordered_map<uint32_t, uint32_t> _core_head_unstable_cycles; // 每个core的第一个head周期
-    std::unordered_map<uint32_t, uint32_t> _core_head_sample_cycles; // 每个core的第二个head周期
+    std::unordered_map<uint32_t, std::vector<cycle_type>> _core_head_cycles; // 每个core的head完成周期
+    std::unordered_map<uint32_t, cycle_type> _core_head_unstable_cycles; // 每个core的第一个head周期
+    std::unordered_map<uint32_t, cycle_type> _core_head_sample_cycles; // 每个core的第二个head周期
     std::unordered_map<uint32_t, uint32_t> _core_head_tile_count; // 每个core完成tile数量
     std::unordered_map<uint32_t, bool> _core_head_first_done; // 每个core是否完成了第一个head
     std::unordered_map<uint32_t, bool> _core_head_second_done; // 每个core是否完成了第二个head
     std::unordered_map<uint32_t, uint32_t> _core_head_remaining; // 每个core剩余head数量
-    std::unordered_map<uint32_t, uint32_t> _core_head_estimated_cycles; // 每个core完成所有head的估计总周期
+    std::unordered_map<uint32_t, cycle_type> _core_head_estimated_cycles; // 每个core完成所有head的估计总周期
     uint32_t _total_heads = 0; // head数量
     uint8_t _latest_core = 0;
     uint8_t _front_heads = 0;
@@ -227,7 +226,7 @@ public:
     void prepare_proportional_sampling();
     void prepare_proportional_attention_sampling();
     void prepare_proportional_softmax_sampling();
-    uint32_t get_estimated_all_cycle();
+    cycle_type get_estimated_all_cycle();
     bool are_all_cores_stable();
     bool are_all_cores_head_second_done(); // 检查是否所有core都完成了第二个head
     bool proportional_ready_to_predict() const;
@@ -275,8 +274,8 @@ public:
     std::unordered_map<uint32_t, uint64_t> _attention_round_last_pre;
 
 
-    std::vector<std::pair<std::string, uint32_t>> _stage_stats;
-    std::vector<std::pair<std::string, uint32_t>> _op_stats;
+    std::vector<std::pair<std::string, cycle_type>> _stage_stats;
+    std::vector<std::pair<std::string, cycle_type>> _op_stats;
 
     // Global PIM Stats
     uint64_t _total_pim_inst_count = 0;

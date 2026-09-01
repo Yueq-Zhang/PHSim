@@ -134,10 +134,9 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 
 | 字段 | 类型/单位 | 默认值 | 说明与约束 |
 | --- | --- | --- | --- |
-| `max_batch_size` | 无符号整数/请求 | 必填 | 调度批次上限，必须大于0。 |
+| `max_batch_size` | 无符号整数/请求 | 必填 | 单个硬件批次的请求数量上限，必须大于0；批次划分不再设置输入token总数限制。 |
 | `max_active_reqs` | 无符号整数/请求 | 必填 | 调度器中同时驻留（等待或运行）的最大请求数；Client 超出部分暂缓提交，同时用于KV Cache容量预留。必须大于0。 |
 | `batch_scheduler` | 字符串 | `"legacy"` | 批处理策略。`legacy`保持原有整批执行方式；`continuous`允许请求完成后释放驻留槽位，并在stage边界重新组成Prefill或Decode批次。仅支持这两个值。 |
-| `max_prefill_batch_tokens` | 无符号整数/token | `0` | `continuous`模式下单个Prefill批次的输入token总上限；`0`表示不限制。当前尚不支持chunked prefill，因此任一请求的输入长度超过非零上限时会直接报告配置错误。 |
 | `max_seq_len` | 无符号整数/token | 必填 | 最大序列长度；参与KV Cache容量预留。 |
 | `kv_cache_entry_size` | 无符号整数/token | 必填 | IANUS/DASH中每个Cache entry覆盖的token数；NPU布局会根据DRAM页宽重新推导。 |
 | `allocation_scheme` | 字符串 | 必填 | 支持 `NPU`、`NeuPIM`、`IANUS`、`DASH`，区分大小写。 |
@@ -394,7 +393,9 @@ DRAM命令能耗按 `V × mA × ns` 计算，因此JSON/TXT中的DRAM能耗数�
 | --- | --- | --- |
 | `_summary.tsv` | 所有正常结束的运行 | 按stage汇总的核心周期、PIM周期和DRAM带宽利用率。 |
 | `core_timing.tsv` | 所有正常结束的运行 | 每个核心的计算、访存停顿、空闲和算子级周期。 |
+| `request_stats.tsv` | 所有正常结束的运行 | 每个完成请求的到达、Prefill完成、首token和最终完成周期，以及Prefill延迟、TTFT和总延迟。非逐token模式不产生的里程碑记为`NA`。 |
 | `icnt_traffic.json` | 所有正常结束的运行 | 每通道实测、估计和逻辑流量/PIM请求数。 |
+| `interconnect_backpressure.json` | 所有正常结束的运行 | 互联输入判满次数、输出容量阻塞packet-cycle及Simple互联逐节点最大队列占用；默认无限容量时阻塞计数应为0。 |
 | `booksim2_stats.json` | `icnt_type=booksim2` | BookSim拓扑/flit大小、PHSim与BookSim互连周期、注入/弹出数据包和payload字节数。 |
 | `data_container_stats.json` | 所有正常结束的运行 | DataContainer当前/峰值payload、已物化DRAM列数，以及逐通道PIM输入/输出占用；关闭DataContainer时仍生成零值记录。 |
 | `virtual_memory_stats.json` | 所有正常结束的运行 | 虚拟页数量、映射调用/地址变化计数、逐通道映射量和确定性指纹；关闭虚拟内存时仍生成零值记录。 |
@@ -556,7 +557,13 @@ CA和ED采用不同的调度抽象，命令发出时刻、write-buffer合并和�
 
 在同一配置的基线/兼容回退对比中，映射调用数、逐通道数量、地址对指纹和页表指纹都应一致。指纹用于快速发现地址集合变化；需要定位单个地址时仍应使用页表或完成trace。
 
-### 5.8 主机真实时间
+### 5.8 请求延迟与互联背压
+
+`request_stats.tsv`每行对应一个已经返回Client的请求。`arrival_cycle`、`prefill_finish_cycle`、`first_token_cycle`和`completion_cycle`均使用核心周期时间轴；`prefill_latency`、`ttft`和`total_latency`分别以请求到达为起点。完成顺序可能与请求ID顺序不同，因此分析工具应按`request_id`关联，不应依赖文件行序。旧的固定stage模式没有逐请求Prefill/首token完成事件时，对应字段写为`NA`。
+
+`interconnect_backpressure.json`中的`input_full_query_events`统计上游查询互联且得到“已满”的次数；它是背压观测次数，不是唯一数据包数。`output_full_blocked_packet_cycles`统计Simple互联中一个已到达输入队首的数据包因目标输出队列满而等待的packet-cycle。`max_input_buffer_occupancy[]`和`max_output_buffer_occupancy[]`按节点记录Simple队列峰值；BookSim内部VC占用由BookSim自身管理，因此这两个Simple队列数组在BookSim模式下不代表路由器VC深度。`booksim_input_full_query_events`只统计BookSim适配器入口判满事件。
+
+### 5.9 主机真实时间
 
 终端的 `Component Real Time Breakdown` 统计的是仿真器在主机上消耗的wall-clock时间：
 
@@ -628,7 +635,7 @@ CA和ED采用不同的调度抽象，命令发出时刻、write-buffer合并和�
 - `tests/fixtures/smoke/simulation_iterative_decode_cycle_accurate.json`；
 - `tests/fixtures/smoke/simulation_iterative_decode_event_driven.json`。
 
-PIM Decode不能任意缩小模型：当前权重分块会按 `column_interleave × total_banks` 取整，输出维度过小时会得到零长度PIM tile；VCache的最小分块也必须放入 `pim_input_buffer_size`。回归case使用 `model_n_embd=256` 和 `pim_input_buffer_size=4096 byte`，规模仍较小，同时满足当前PIM分块约束。
+PIM Decode不能任意缩小模型：当前权重分块会按 `column_interleave × total_banks` 取整，输出维度必须不小于这个完整Bank组宽度，否则仿真器会在构建Decode程序时给出配置错误，而不会生成零长度PIM tile。VCache的最小分块也必须放入 `pim_input_buffer_size`。回归case使用 `model_n_embd=256` 和 `pim_input_buffer_size=4096 byte`，规模仍较小，同时满足当前PIM分块约束。普通NPU侧不足一个DRAM burst的权重或激活会按一个完整burst分配和访问，尾部按burst粒度补齐。
 
 ### 6.3 多请求连续批处理
 
@@ -639,7 +646,6 @@ PIM Decode不能任意缩小模型：当前权重分块会按 `column_interleave
   "max_batch_size": 2,
   "max_active_reqs": 2,
   "batch_scheduler": "continuous",
-  "max_prefill_batch_tokens": 8,
   "output_token_iteration_enable": true,
   "test_single_op": false,
   "test_multi_layer": false
@@ -664,7 +670,7 @@ Decode  [0,2]
 ctest --test-dir . --output-on-failure -R continuous_batching_test
 ```
 
-完整配置位于 `tests/fixtures/smoke/simulation_continuous_batching_cycle_accurate.json` 和 `tests/fixtures/smoke/simulation_continuous_batching_event_driven.json`。默认 `batch_scheduler="legacy"`，所以现有配置即使不增加新字段也保持原有仿真结果。当前实现没有chunked prefill、动态合并已开始执行的程序，也不会在同一硬件批次中混合Prefill和Decode。
+完整配置位于 `tests/fixtures/smoke/simulation_continuous_batching_cycle_accurate.json` 和 `tests/fixtures/smoke/simulation_continuous_batching_event_driven.json`。默认 `batch_scheduler="legacy"`，所以现有配置即使不增加新字段也保持原有仿真结果。连续模式的单批容量只由 `min(max_batch_size, max_active_reqs)` 确定，不再使用输入token总数限制。当前实现不会动态合并已经开始执行的程序，也不会在同一硬件批次中混合Prefill和Decode。
 
 ### 6.4 单算子GEMM
 

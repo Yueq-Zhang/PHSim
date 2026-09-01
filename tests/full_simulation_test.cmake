@@ -225,6 +225,90 @@ function(run_continuous_batch_backend backend config_name output_variable)
             "${client_response_count}")
     endif()
 
+    foreach(required_file IN ITEMS
+            request_stats.tsv interconnect_backpressure.json)
+        if(NOT EXISTS "${output_dir}/${required_file}")
+            message(FATAL_ERROR
+                "${backend} continuous batching did not produce "
+                "${required_file}")
+        endif()
+    endforeach()
+
+    file(STRINGS "${output_dir}/request_stats.tsv" request_stat_lines)
+    list(LENGTH request_stat_lines request_stat_line_count)
+    if(NOT request_stat_line_count EQUAL 4)
+        message(FATAL_ERROR
+            "${backend} request statistics should contain one header and "
+            "three completed requests")
+    endif()
+    set(seen_request_0 false)
+    set(seen_request_1 false)
+    set(seen_request_2 false)
+    foreach(request_stat_index RANGE 1 3)
+        list(GET request_stat_lines ${request_stat_index} request_stat_row)
+        string(REPLACE "\t" ";" request_stat_fields
+            "${request_stat_row}")
+        list(LENGTH request_stat_fields request_stat_field_count)
+        if(NOT request_stat_field_count EQUAL 10)
+            message(FATAL_ERROR
+                "${backend} request statistics row has "
+                "${request_stat_field_count}/10 fields: ${request_stat_row}")
+        endif()
+        list(GET request_stat_fields 0 request_id)
+        list(GET request_stat_fields 4 prefill_finish_cycle)
+        list(GET request_stat_fields 5 first_token_cycle)
+        list(GET request_stat_fields 6 completion_cycle)
+        foreach(cycle_value IN ITEMS
+                prefill_finish_cycle first_token_cycle completion_cycle)
+            if(NOT ${cycle_value} MATCHES "^[0-9]+$")
+                message(FATAL_ERROR
+                    "${backend} request ${request_id} has invalid "
+                    "${cycle_value}: ${${cycle_value}}")
+            endif()
+        endforeach()
+        if(prefill_finish_cycle GREATER first_token_cycle OR
+           first_token_cycle GREATER completion_cycle)
+            message(FATAL_ERROR
+                "${backend} request ${request_id} milestones are out of "
+                "order: ${prefill_finish_cycle}/${first_token_cycle}/"
+                "${completion_cycle}")
+        endif()
+        if(request_id EQUAL 0)
+            set(seen_request_0 true)
+        elseif(request_id EQUAL 1)
+            set(seen_request_1 true)
+        elseif(request_id EQUAL 2)
+            set(seen_request_2 true)
+        else()
+            message(FATAL_ERROR
+                "${backend} request statistics contain unexpected id "
+                "${request_id}")
+        endif()
+    endforeach()
+    if(NOT seen_request_0 OR NOT seen_request_1 OR NOT seen_request_2)
+        message(FATAL_ERROR
+            "${backend} request statistics do not contain ids 0, 1 and 2")
+    endif()
+
+    file(READ "${output_dir}/interconnect_backpressure.json"
+        backpressure_json)
+    string(JSON interconnect_backend GET "${backpressure_json}" backend)
+    string(JSON input_capacity GET "${backpressure_json}"
+        input_capacity_packets_per_node)
+    string(JSON output_capacity GET "${backpressure_json}"
+        output_capacity_packets_per_node)
+    string(JSON input_full_events GET "${backpressure_json}"
+        input_full_query_events)
+    string(JSON output_blocked_events GET "${backpressure_json}"
+        output_full_blocked_packet_cycles)
+    if(NOT interconnect_backend STREQUAL "simple" OR
+       NOT input_capacity EQUAL 0 OR NOT output_capacity EQUAL 0 OR
+       NOT input_full_events EQUAL 0 OR NOT output_blocked_events EQUAL 0)
+        message(FATAL_ERROR
+            "${backend} unbounded Simple interconnect reported unexpected "
+            "capacity/backpressure state")
+    endif()
+
     string(FIND "${simulator_stdout}"
         "Scheduler:: Request 1 completed after generating 1/1 tokens"
         short_request_completion)
@@ -698,13 +782,17 @@ elseif(TEST_MODE STREQUAL "memory-access-gemm")
     require_data_container_stats("${dc_event_output}" TRUE)
 
     foreach(prefix IN ITEMS CA EVENT DC_CA DC_EVENT)
-        if(NOT ${prefix}_TOTAL_CYCLES EQUAL 869 OR
+        # The 64x64 DASH weight occupies one partial bank row.  Rounding that
+        # allocation up keeps the following activation in a distinct row, so
+        # all 276 logical reads now reach DRAM instead of eight being merged
+        # through the former address overlap.
+        if(NOT ${prefix}_TOTAL_CYCLES EQUAL 914 OR
            NOT ${prefix}_READ_BYTES EQUAL 8832 OR
            NOT ${prefix}_WRITE_BYTES EQUAL 2048 OR
            NOT ${prefix}_PIM_REQUESTS EQUAL 0 OR
            NOT ${prefix}_READS_DONE EQUAL 276 OR
            NOT ${prefix}_WRITES_DONE EQUAL 64 OR
-           NOT ${prefix}_READ_COMMANDS EQUAL 268)
+           NOT ${prefix}_READ_COMMANDS EQUAL 276)
             message(FATAL_ERROR
                 "${prefix} GEMM ownership regression: cycles/read-bytes/"
                 "write-bytes/reads/writes/read-commands = "

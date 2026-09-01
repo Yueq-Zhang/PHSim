@@ -2,7 +2,6 @@
     "max_batch_size": 2,
     "max_active_reqs": 2,
     "batch_scheduler": "continuous",
-    "max_prefill_batch_tokens": 8,
     "max_seq_len": 16,
     "kv_cache_entry_size": 32,
 

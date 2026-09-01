@@ -101,6 +101,11 @@ protected:
     uint64_t _booksim_ejected_packets = 0;
     uint64_t _booksim_injected_payload_bytes = 0;
     uint64_t _booksim_ejected_payload_bytes = 0;
+    uint64_t _input_full_query_events = 0;
+    uint64_t _booksim_input_full_query_events = 0;
+    uint64_t _output_full_blocked_packet_cycles = 0;
+    std::vector<uint64_t> _max_input_buffer_occupancy;
+    std::vector<uint64_t> _max_output_buffer_occupancy;
     std::unordered_map<const MemoryAccess*, uint32_t>
         _booksim_inflight_payload_bytes;
 

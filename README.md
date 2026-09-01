@@ -87,7 +87,8 @@ initializes the configured accelerator and memory system, runs the model, and
 writes statistics to that directory.
 
 Every normal run writes `_summary.tsv`, `core_timing.tsv`,
-`icnt_traffic.json`, and `data_container_stats.json`. CycleAccurate runs also
+`request_stats.tsv`, `icnt_traffic.json`,
+`interconnect_backpressure.json`, and `data_container_stats.json`. CycleAccurate runs also
 write `dramsim3.json/.txt`; EventDriven runs write
 `eventdrivendram.json/.txt`; BookSim runs additionally write
 `booksim2_stats.json`.
@@ -122,7 +123,6 @@ Small, Base, Mobile, and Server configurations.
 | `max_batch_size` | Maximum requests included in one hardware Prefill/Decode program |
 | `max_active_reqs` | Maximum requests resident in the scheduler/KV-cache set; additional Client requests are backpressured |
 | `batch_scheduler` | Select `legacy` (default) or stage-boundary `continuous` batching |
-| `max_prefill_batch_tokens` | Continuous-Prefill token budget; `0` means unlimited, and one request may not exceed a nonzero limit because chunked Prefill is not implemented |
 | `virtual_mem_hash_enable` | Enable virtual-page mapping and DRAM bank hashing |
 | `dram_data_container_enable` | Maintain simulated DRAM data values with instance-owned sparse storage |
 | `dram_data_container_max_payload_mb` | Optional resident DataContainer payload limit in MiB; `0` means unlimited |
@@ -267,7 +267,6 @@ the following fields in a complete inference configuration:
   "max_batch_size": 2,
   "max_active_reqs": 2,
   "batch_scheduler": "continuous",
-  "max_prefill_batch_tokens": 8,
   "output_token_iteration_enable": true,
   "test_single_op": false,
   "test_multi_layer": false
@@ -276,7 +275,8 @@ the following fields in a complete inference configuration:
 
 Completed requests release their KV-cache and active-request slot immediately.
 New requests may enter at the next stage boundary. Prefill and Decode are not
-mixed in one hardware program, and chunked Prefill is not currently supported.
+mixed in one hardware program. Batch capacity is determined only by the number
+of requests through `min(max_batch_size, max_active_reqs)`.
 
 #### DataContainer and virtual memory
 

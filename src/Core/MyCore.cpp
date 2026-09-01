@@ -206,8 +206,11 @@ void MyCore::ld_queue_cycle() {
             if (front.skip==true or front.src_addrs.empty()) {
                 spdlog::info("Current load instruction has no src address, just reserve the dest_addr {}", front.dest_addr);
                 buffer->reserve(front.dest_addr, buffer_id, front.size, 0); // remain burst times of cache block of SRAM
+                auto parent_tile = front.parent_tile.lock();
+                assert(parent_tile);
+                assert(parent_tile->remaining_loads > 0);
                 _ld_inst_queue.pop();
-                front.parent_tile.lock()->remaining_loads--;
+                parent_tile->remaining_loads--;
                 continue;
             }
 
@@ -258,8 +261,11 @@ void MyCore::st_queue_cycle() {
 
         if (front.skip==true or front.src_addrs.empty()) {
             spdlog::info("Current store instruction has no Destination address");
+            auto parent_tile = front.parent_tile.lock();
+            assert(parent_tile);
+            assert(parent_tile->remaining_accum_io > 0);
             _st_inst_queue.pop();
-            front.parent_tile.lock()->remaining_accum_io--;
+            parent_tile->remaining_accum_io--;
             return;
         }
 
@@ -574,6 +580,7 @@ void MyCore::issue(Tile &in_tile) {
 
         if (inst.opcode == Opcode::MOVIN) {  // Load instruction
             if (inst.src_addrs.empty()) {
+                tile->remaining_loads++;
                 _ld_inst_queue.push(inst);  // MOVIN with no source addr
             }
             else if (!buffer->check_allocated(inst.dest_addr, buffer_id) && buffer->check_remain(inst.size, buffer_id)) {

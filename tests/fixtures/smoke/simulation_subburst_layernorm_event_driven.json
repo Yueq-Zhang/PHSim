@@ -1,0 +1,8 @@
+{
+    "compute_die_config_file_path": "tests/fixtures/smoke/compute_config.json",
+    "DRAM_config_file_path": "tests/fixtures/smoke/memory_config.ini",
+    "PIM_config_file_path": "tests/fixtures/smoke/pim_config_iterative.json",
+    "model_config_file_path": "tests/fixtures/smoke/model_config_subburst_h16.json",
+    "inference_config_file_path": "tests/fixtures/smoke/inference_subburst_prefill_event_driven.json",
+    "request_file_path": "tests/fixtures/smoke/request_trace_subburst_prefill.csv"
+}

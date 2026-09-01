@@ -357,7 +357,8 @@ void Simulator::cycle() {
                         else if (_scheduler->_tile_position == _scheduler->_sample_length - 1) {
                             _scheduler->finish_last_mm_tile(core_id, *finished_tile);
                             _scheduler->compute_estimated_cycle();
-                            uint32_t estimated_cycle = _scheduler->get_estimated_all_cycle();
+                            const cycle_type estimated_cycle =
+                                _scheduler->get_estimated_all_cycle();
                             if (estimated_cycle > 0){
                                 spdlog::info("Applying naive acceleration: jumping from cycle {} to estimated cycle {}", _core_cycles, estimated_cycle);
                                 // Update CORE, DRAM, interconnect cycles to estimated_cycle
@@ -404,7 +405,8 @@ void Simulator::cycle() {
                              */
                             _scheduler->compute_estimated_cycle();
                             // _scheduler->_active_operation_stats[_scheduler->_operation_id].remain_tiles = 0;
-                            uint32_t estimated_cycle = _scheduler->get_estimated_all_cycle();
+                            const cycle_type estimated_cycle =
+                                _scheduler->get_estimated_all_cycle();
                             bool core_clear = true;
                             for (int clear = 0; clear < _n_cores; clear++) {
                                 core_clear = core_clear & _cores[clear]->_tiles.empty();
@@ -810,6 +812,7 @@ void Simulator::cycle() {
     spdlog::info(">>>>>> Scheduler Stats <<<<<<");
     _scheduler->print_stat();
     _scheduler->print_op_stat();
+    _client->write_request_stats();
     log_data_container_stat();
     log_virtual_memory_stat();
     log_stage_stat();
@@ -899,13 +902,13 @@ void Simulator::log_stage_stat() {
     header += "mem_bw_util\t";
     ofile << header + "\n";
 
-    int prev_cycle = 0;
+    cycle_type prev_cycle = 0;
 
     for (int i = 0; i < _stage_stats.size(); i++) {
         StageStat stage_stat = _stage_stats[i];
         std::string stage_row = "";
 
-        int total_cycle = stage_stat.done_cycle - prev_cycle;
+        const cycle_type total_cycle = stage_stat.done_cycle - prev_cycle;
         prev_cycle = stage_stat.done_cycle;
         stage_row += stageToString(stage_stat.stage) + "\t";
         stage_row += std::to_string(total_cycle) + "\t";

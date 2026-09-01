@@ -18,6 +18,7 @@ class Client {
     bool request_can_issue();
     std::shared_ptr<InferRequest> pop_request();
     void receive_response(std::shared_ptr<InferRequest> response);
+    void write_request_stats() const;
     virtual void set_client_cycle(cycle_type cycle);
     cycle_type current_cycle() const { return _cycles; }
 
@@ -39,6 +40,7 @@ class Client {
 
     cycle_type _request_interval;  // send a request per (core_freq/qps) cycles
     std::queue<std::shared_ptr<InferRequest>> _waiting_queue;
+    std::vector<std::shared_ptr<InferRequest>> _completed_requests;
 
     std::poisson_distribution<> request_interval_random;
 

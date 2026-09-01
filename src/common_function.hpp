@@ -75,6 +75,13 @@ enum class DramMode {
 
 typedef uint64_t cycle_type;
 
+inline uint64_t ceil_div_u64(uint64_t numerator, uint64_t denominator) {
+    if (denominator == 0) {
+        throw std::invalid_argument("ceil_div_u64 denominator must be non-zero");
+    }
+    return numerator / denominator + (numerator % denominator != 0);
+}
+
 inline int ReadTCKESRWithLegacyFallback(const INIReader& reader) {
     constexpr int default_tckesr = 12;
     const std::string canonical_text = reader.Get("timing", "tCKESR", "");
@@ -857,9 +864,6 @@ public:
     // "legacy" preserves the historical fixed batch. "continuous" rebuilds
     // Prefill/Decode batches only at StageProgram boundaries.
     std::string batch_scheduler = "legacy";
-    // Maximum sum of prompt tokens in one continuous Prefill batch. Zero
-    // keeps the historical behavior of imposing no token-count limit.
-    uint64_t max_prefill_batch_tokens = 0;
     uint32_t max_seq_len;
     uint32_t kv_cache_entry_size;
     uint64_t DRAM_act_buf_size;  // Size of Preset DRAM space for activation buffer in bytes
@@ -2372,6 +2376,8 @@ typedef struct {
     uint32_t id;
     cycle_type arrival_cycle;    // time spent on client == arrival time to scheduler
     cycle_type completed_cycle;  // return time to client
+    cycle_type prefill_completed_cycle;  // Prefill completion at scheduler
+    cycle_type first_token_cycle;        // first Decode token completion
 
     // request demand
     uint32_t input_size;   // input sequence length
@@ -2380,6 +2386,8 @@ typedef struct {
     // request status
     bool is_initiated;   // whether initialization phase is done
     uint32_t generated;  // # tokens generated
+    bool prefill_completed;
+    bool first_token_generated;
     // mapped channel
     int channel;
 

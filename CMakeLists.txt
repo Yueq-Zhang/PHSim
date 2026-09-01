@@ -474,6 +474,17 @@ if(BUILD_TESTING)
     )
     set_tests_properties(continuous_batching_test PROPERTIES TIMEOUT 150)
 
+    add_test(
+        NAME subburst_layernorm_and_pim_guard_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -P ${PROJECT_SOURCE_DIR}/tests/subburst_layernorm_and_pim_guard_test.cmake
+    )
+    set_tests_properties(
+        subburst_layernorm_and_pim_guard_test PROPERTIES TIMEOUT 60)
+
     foreach(pruning_suite IN ITEMS
             tile decode-fixed decode-continuous triple)
         string(REPLACE "-" "_" pruning_test_suffix "${pruning_suite}")

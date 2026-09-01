@@ -1,3 +1,6 @@
+#include <fstream>
+#include <stdexcept>
+
 #include "Client.h"
 
 Client::Client(const SysConfig& config)
@@ -103,10 +106,14 @@ void Client::cycle() {
             std::make_shared<InferRequest>(InferRequest{.id = request_id, // request_index
                                                         .arrival_cycle = _cycles,  // the Operation cycle
                                                         .completed_cycle = 0, // request finished cycle
+                                                        .prefill_completed_cycle = 0,
+                                                        .first_token_cycle = 0,
                                                         .input_size = input_size, // input token length size
                                                         .output_size = output_size, // output token length
                                                         .is_initiated = false,
                                                         .generated = 0,  // tokens generated
+                                                        .prefill_completed = false,
+                                                        .first_token_generated = false,
                                                         .channel = 0});
         _waiting_queue.push(request);
         spdlog::info("Request #{} is generated at client time {}, input size:{}, output size:{}", request_id, _cycles,  input_size, output_size);
@@ -146,6 +153,7 @@ void Client::receive_response(std::shared_ptr<InferRequest> response) {
            response->generated == response->output_size);
     response->completed_cycle = _cycles;
     _completed_cnt++;
+    _completed_requests.push_back(response);
 
     spdlog::info("Client Receive response From Scheduler! spend_cycles: {}", response->completed_cycle - response->arrival_cycle);
     if (!_completion_logged && _completed_cnt == _total_cnt) {
@@ -155,6 +163,55 @@ void Client::receive_response(std::shared_ptr<InferRequest> response) {
 
     // todo stat.
     // delete response;
+}
+
+void Client::write_request_stats() const {
+    const std::string path =
+        Config::system_config.log_dir + "/request_stats.tsv";
+    std::ofstream output(path, std::ofstream::out);
+    if (!output.is_open()) {
+        throw std::runtime_error(
+            "Cannot open request statistics file: " + path);
+    }
+
+    output << "request_id\tinput_tokens\toutput_tokens\tarrival_cycle\t"
+              "prefill_finish_cycle\tfirst_token_cycle\tcompletion_cycle\t"
+              "prefill_latency\tttft\ttotal_latency\n";
+    for (const auto& request : _completed_requests) {
+        output << request->id << '\t' << request->input_size << '\t'
+               << request->output_size << '\t' << request->arrival_cycle
+               << '\t';
+        if (request->prefill_completed) {
+            output << request->prefill_completed_cycle;
+        } else {
+            output << "NA";
+        }
+        output << '\t';
+        if (request->first_token_generated) {
+            output << request->first_token_cycle;
+        } else {
+            output << "NA";
+        }
+        output << '\t' << request->completed_cycle << '\t';
+        if (request->prefill_completed) {
+            output << request->prefill_completed_cycle -
+                          request->arrival_cycle;
+        } else {
+            output << "NA";
+        }
+        output << '\t';
+        if (request->first_token_generated) {
+            output << request->first_token_cycle - request->arrival_cycle;
+        } else {
+            output << "NA";
+        }
+        output << '\t'
+               << request->completed_cycle - request->arrival_cycle << '\n';
+    }
+    if (!output.good()) {
+        throw std::runtime_error(
+            "Failed to write request statistics file: " + path);
+    }
 }
 
 void Client::set_client_cycle(cycle_type cycle) {

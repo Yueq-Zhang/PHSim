@@ -390,8 +390,30 @@ void PIMGEMV::calculate_my_loops() {
         }
         uint32_t column_inner_loop_per_bank = std::floor(static_cast<double>(pim_output_buffer_size) / _my_outputs[0]->_precision / column_interleave) * column_interleave;
 
-        _pim_inner_loop[2] = std::min(std::floor(static_cast<double>(_matrix_dim[1])/(column_interleave * MyAddressAllocator::total_banks)) *column_interleave,
+        const uint64_t complete_bank_group_width =
+            static_cast<uint64_t>(column_interleave) *
+            MyAddressAllocator::total_banks;
+        if (complete_bank_group_width == 0 ||
+            _matrix_dim[1] < complete_bank_group_width) {
+            throw std::invalid_argument(fmt::format(
+                "PIM Decode weight output dimension {} is too small for "
+                "column_interleave={} and total_banks={}; require at least {} "
+                "output elements or use a non-PIM Decode backend",
+                _matrix_dim[1], column_interleave,
+                MyAddressAllocator::total_banks,
+                complete_bank_group_width));
+        }
+
+        _pim_inner_loop[2] = std::min(std::floor(static_cast<double>(_matrix_dim[1])/complete_bank_group_width) *column_interleave,
             static_cast<double>(column_inner_loop_per_bank)); 
+        if (_pim_inner_loop[2] == 0) {
+            throw std::invalid_argument(fmt::format(
+                "PIM Decode cannot form a non-zero output tile for dimension "
+                "{}, column_interleave={}, total_banks={}, and output buffer "
+                "{} bytes",
+                _matrix_dim[1], column_interleave,
+                MyAddressAllocator::total_banks, pim_output_buffer_size));
+        }
         
         _pim_outer_loop[2] = std::ceil(static_cast<double>(_matrix_dim[1])/(_pim_inner_loop[2] * MyAddressAllocator::total_banks));
         // _pim_inner_loop[2] = std::floor(static_cast<double>(pim_output_buffer_size) / _my_outputs[0]->_precision);
