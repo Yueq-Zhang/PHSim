@@ -28,6 +28,7 @@ public:
   void run();
   // bool done() const override;
   uint32_t get_flit_size() { return flit_size; }
+  int get_network_node_count() const { return gNodes; }
 
   bool is_full(uint32_t nid, uint32_t subnet, uint32_t size) const;
   void push(void* packet, uint32_t subnet, 
@@ -37,6 +38,8 @@ public:
   void pop(uint32_t nid, uint32_t subnet);
 
   void Transfer2BoundaryBuffer(uint32_t subnet, uint32_t output);
+  bool CanAcceptEjectedFlit(uint32_t subnet, uint32_t output,
+                            int vc) const;
   void WriteOutBuffer(uint32_t subnet, int output, Flit* flit);
   Flit* GetEjectedFlit(uint32_t subnet, uint32_t nid);
 
@@ -82,6 +85,7 @@ private:
   public:
     BoundaryBufferItem(): num_packets(0) {}
     inline uint32_t size(void) const { return buffer.size(); }
+    inline uint32_t packet_count(void) const { return num_packets; }
     inline bool is_empty() const { return num_packets == 0; }
     void pop();
     const void* top() const;

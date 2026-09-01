@@ -63,7 +63,8 @@ public:
   virtual void Send(T * data);
   
   // Receive data
-  virtual T * Receive(); 
+  virtual T * Receive();
+  virtual T * Peek() const { return _output; }
   
   virtual void ReadInputs();
   virtual void Evaluate() {}
@@ -99,7 +100,9 @@ void Channel<T>::Send(T * data) {
 
 template<typename T>
 T * Channel<T>::Receive() {
-  return _output;
+  T * const result = _output;
+  _output = 0;
+  return result;
 }
 
 template<typename T>
@@ -111,7 +114,11 @@ void Channel<T>::ReadInputs() {
 
 template<typename T>
 void Channel<T>::WriteOutputs() {
-  _output = 0;
+  // A finite terminal buffer may stop consuming this channel. Retain the
+  // presented item until Receive() accepts it instead of overwriting it.
+  if(_output) {
+    return;
+  }
   if(_wait_queue.empty()) {
     return;
   }
@@ -120,7 +127,7 @@ void Channel<T>::WriteOutputs() {
   if(icnt->get_cycle() < time) {
     return;
   }
-  assert(icnt->get_cycle() == time);
+  assert(icnt->get_cycle() >= time);
   _output = item.second;
   assert(_output);
   _wait_queue.pop();

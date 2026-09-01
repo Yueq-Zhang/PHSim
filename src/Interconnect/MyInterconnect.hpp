@@ -1,5 +1,6 @@
 
 #include <list>
+#include <unordered_map>
 
 #include "../common_function.hpp"
 #include "../../ext/booksim/include/booksim2/Interconnect.hpp"
@@ -34,6 +35,8 @@ public:
     uint64_t get_dram_tick(uint64_t global_cycle); // 基于当前的ICNT cycle 得到dram cycle
     cycle_type get_dram_cycle();
 
+    bool using_booksim() const noexcept { return _booksim != nullptr; }
+
 
 protected:
     const SysConfig& _config;
@@ -56,7 +59,6 @@ protected:
     uint32_t _latency;
     double _bandwidth;
     uint32_t _rr_start;
-    uint32_t _buffer_size;
 
     // Check The IOstate
     std::vector<std::vector<MemoryIOStat>> _stats;
@@ -93,6 +95,16 @@ protected:
 
     uint64_t _current_dram_tick_sync_by_icnt;
     uint64_t _next_dram_tick_sync_by_icnt;
+
+    std::unique_ptr<booksim2::Interconnect> _booksim;
+    uint64_t _booksim_injected_packets = 0;
+    uint64_t _booksim_ejected_packets = 0;
+    uint64_t _booksim_injected_payload_bytes = 0;
+    uint64_t _booksim_ejected_payload_bytes = 0;
+    std::unordered_map<const MemoryAccess*, uint32_t>
+        _booksim_inflight_payload_bytes;
+
+    booksim2::Interconnect::Type get_booksim_type(
+        const MemoryAccess* access) const;
+    uint32_t get_booksim_packet_size(const MemoryAccess* access) const;
 };
-
-

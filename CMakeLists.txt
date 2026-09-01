@@ -463,6 +463,35 @@ if(BUILD_TESTING)
     )
     set_tests_properties(iterative_decode_test PROPERTIES TIMEOUT 150)
 
+    add_test(
+        NAME continuous_batching_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -DTEST_MODE=continuous-batching
+            -P ${PROJECT_SOURCE_DIR}/tests/full_simulation_test.cmake
+    )
+    set_tests_properties(continuous_batching_test PROPERTIES TIMEOUT 150)
+
+    foreach(pruning_suite IN ITEMS
+            tile decode-fixed decode-continuous triple)
+        string(REPLACE "-" "_" pruning_test_suffix "${pruning_suite}")
+        add_test(
+            NAME pruning_${pruning_test_suffix}_test
+            COMMAND ${CMAKE_COMMAND}
+                -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+                -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+                -DBINARY_DIR=${PROJECT_BINARY_DIR}
+                -DTEST_SUITE=${pruning_suite}
+                -P ${PROJECT_SOURCE_DIR}/tests/pruning_composition_test.cmake
+        )
+        set_tests_properties(
+            pruning_${pruning_test_suffix}_test PROPERTIES
+            TIMEOUT 900
+            LABELS "pruning;integration")
+    endforeach()
+
     add_executable(
         memory_access_owner_test
         tests/memory_access_owner_test.cpp
@@ -474,6 +503,35 @@ if(BUILD_TESTING)
     target_link_libraries(memory_access_owner_test PRIVATE dramsim3 format)
     add_test(NAME memory_access_owner_test COMMAND memory_access_owner_test)
 
+    add_executable(
+        interconnect_backpressure_test
+        tests/interconnect_backpressure_test.cpp
+        src/Interconnect/MyInterconnect.cpp
+    )
+    target_include_directories(
+        interconnect_backpressure_test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/ext"
+    )
+    target_compile_definitions(
+        interconnect_backpressure_test PRIVATE
+        PH_SIM_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
+    target_link_libraries(
+        interconnect_backpressure_test PRIVATE dramsim3 booksim2 format
+    )
+    add_test(
+        NAME simple_interconnect_backpressure_test
+        COMMAND interconnect_backpressure_test simple
+    )
+    add_test(
+        NAME booksim2_unbounded_buffer_test
+        COMMAND interconnect_backpressure_test booksim-unbounded
+    )
+    add_test(
+        NAME booksim2_finite_backpressure_test
+        COMMAND interconnect_backpressure_test booksim-finite
+    )
+
     add_test(
         NAME memory_access_lifecycle_gemm_test
         COMMAND ${CMAKE_COMMAND}
@@ -484,4 +542,16 @@ if(BUILD_TESTING)
             -P ${PROJECT_SOURCE_DIR}/tests/full_simulation_test.cmake
     )
     set_tests_properties(memory_access_lifecycle_gemm_test PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME booksim2_full_simulation_smoke_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -DTEST_MODE=booksim2-smoke
+            -P ${PROJECT_SOURCE_DIR}/tests/full_simulation_test.cmake
+    )
+    set_tests_properties(
+        booksim2_full_simulation_smoke_test PROPERTIES TIMEOUT 60)
 endif()

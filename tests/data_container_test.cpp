@@ -167,6 +167,34 @@ void test_payload_limit() {
     expect(threw, "a new column beyond the payload limit should be rejected");
 }
 
+void test_deterministic_content_fingerprint() {
+    begin_case("deterministic_content_fingerprint");
+    DramDataContainer first(*tiny_config());
+    DramDataContainer second(*tiny_config());
+    const Burst low{{0x10, 0x00}, {0x20, 0x21}};
+    const Burst high{{0x30, 0x31}, {0x40, 0x00}};
+
+    first.write_burst(low, 0, 0, 0, 0, 1, 0);
+    first.write_burst(high, 1, 0, 0, 1, 2, 4);
+    second.write_burst(high, 1, 0, 0, 1, 2, 4);
+    second.write_burst(low, 0, 0, 0, 0, 1, 0);
+
+    expect(first.content_fingerprint() == second.content_fingerprint(),
+           "content fingerprint must not depend on unordered insertion order");
+    expect(first.content_fingerprint() != 0,
+           "a populated DataContainer should have a nonzero fingerprint");
+    expect(first.nonzero_payload_bytes() == 6,
+           "nonzero byte statistics should cover every stored column");
+
+    second.write_burst({{0x11, 0x00}}, 0, 0, 0, 0, 1, 0);
+    expect(first.content_fingerprint() != second.content_fingerprint(),
+           "changing one stored byte must change the content fingerprint");
+    first.clear();
+    expect(first.content_fingerprint() == 0 &&
+               first.nonzero_payload_bytes() == 0,
+           "clearing the DataContainer should reset content statistics");
+}
+
 }  // namespace
 
 int main() {
@@ -178,13 +206,14 @@ int main() {
         test_disabled_and_clear();
         test_invalid_coordinates();
         test_payload_limit();
+        test_deterministic_content_fingerprint();
     } catch (const std::exception& error) {
         ++failures;
         std::cerr << "UNCAUGHT EXCEPTION: " << error.what() << '\n';
     }
 
     if (failures == 0) {
-        std::cout << "RESULT PASS: 7 instance-owned sparse cases\n";
+        std::cout << "RESULT PASS: 8 instance-owned sparse cases\n";
         return 0;
     }
     std::cerr << "RESULT FAIL: " << failures << " assertion(s) failed\n";

@@ -564,6 +564,7 @@ void PIMGEMV::initialize_my_tiles() {
                         const bool defer_qkv_decode_compile =
                             _config.decode_pruning_enabled &&
                             _config.decode_pruning_compile_context &&
+                            !_config.virtual_mem_hash_enable &&
                             (get_name().find(".attn.QGen") != std::string::npos ||
                              get_name().find(".attn.KGen") != std::string::npos ||
                              get_name().find(".attn.VGen") != std::string::npos ||

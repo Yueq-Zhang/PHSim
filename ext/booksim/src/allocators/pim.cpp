@@ -33,18 +33,18 @@
 
 //#define DEBUG_PIM
 
-PIM::PIM( Module *parent, const string& name,
-	  int inputs, int outputs, int iters ) :
+PIMAllocator::PIMAllocator( Module *parent, const string& name,
+		            int inputs, int outputs, int iters ) :
   DenseAllocator( parent, name, inputs, outputs ),
   _PIM_iter(iters)
 {
 }
 
-PIM::~PIM( )
+PIMAllocator::~PIMAllocator( )
 {
 }
 
-void PIM::Allocate( )
+void PIMAllocator::Allocate( )
 {
   int input;
   int output;
@@ -116,5 +116,4 @@ void PIM::Allocate( )
   cout << endl;
 #endif
 }
-
 

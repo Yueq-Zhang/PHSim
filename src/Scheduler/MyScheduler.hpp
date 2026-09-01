@@ -32,6 +32,8 @@ public:
     void cycle();
     void init_batches();
     void cleanup_batch(std::vector<Ptr<InferRequest>> batch_request);
+    bool form_continuous_batch();
+    void complete_continuous_batch(Stage completed_stage);
 
     void make_program();
     void refresh_status();
@@ -92,10 +94,16 @@ public:
 
     uint32_t _max_batch_size;
     uint32_t _max_active_reqs;
+    bool _continuous_batching = false;
+    uint64_t _max_prefill_batch_tokens = 0;
 
     cycle_type _last_request_cycle;
 
     std::vector<Ptr<InferRequest>> _breq;
+    std::deque<Ptr<InferRequest>> _waiting_prefill_queue;
+    std::deque<Ptr<InferRequest>> _ready_decode_queue;
+    uint64_t _next_continuous_batch_id = 0;
+    uint64_t _current_continuous_batch_id = 0;
 
     uint32_t _active_reqs;
 
@@ -124,10 +132,6 @@ public:
     // uint32_t _gwrite_latency;
     // uint32_t _gemv_latency;
     int _core_rr_id;
-
-    // tile map, reduced to accelerate
-    std::unordered_map<std::string, Tile*> _tile_map;
-    uint32_t _get_tile_count;
 
     // added logic for Tile based prediction
     // predicting used cycle
@@ -191,6 +195,8 @@ public:
     std::unordered_map<uint32_t, std::deque<Tile>> _proportional_tail_queues;
     std::unordered_map<uint32_t, ProportionalWorkloadStat>
         _proportional_estimated_workload;
+    std::unordered_map<uint32_t, std::deque<Tile>>
+        _proportional_vm_replay_tiles;
     bool _proportional_workload_applied = false;
     bool _proportional_command_sample_started = false;
     bool _proportional_timing_applied = false;
@@ -243,10 +249,13 @@ public:
     }
 
     ProportionalWorkloadStat summarize_proportional_tile(const Tile& tile) const;
-    void record_proportional_skipped_tile(uint32_t core_id, const Tile& tile);
+    void record_proportional_skipped_tile(uint32_t core_id, Tile& tile);
     void record_proportional_skipped_tile(
-        uint32_t core_id, const Tile& tile,
+        uint32_t core_id, Tile& tile,
         const Tile& compiled_representative);
+    uint64_t replay_virtual_memory_tile(const Tile& tile) const;
+    uint64_t replay_virtual_memory_tiles(
+        std::unordered_map<uint32_t, std::deque<Tile>>& queues);
     void materialize_tile(Tile& tile);
     void materialize_tile_range(std::deque<Tile>& queue, uint32_t begin,
                                 uint32_t end);
@@ -302,6 +311,8 @@ public:
         _decode_pruning_accumulators;
     std::unordered_map<uint32_t, std::vector<DecodeCoreTiming>>
         _decode_pruning_start_timing;
+    std::unordered_map<uint32_t, std::string>
+        _decode_pruning_operation_keys;
     std::unordered_map<
         uint32_t,
         std::unordered_map<uint32_t, ProportionalWorkloadStat>>
@@ -309,10 +320,15 @@ public:
     bool _decode_pruning_pending = false;
     cycle_type _decode_pruning_pending_cycles = 0;
     uint32_t _decode_pruning_pending_operation = 0;
+    std::string _decode_pruning_pending_key;
     std::unordered_map<uint32_t, ProportionalWorkloadStat>
         _decode_pruning_pending_workload;
+    std::unordered_map<uint32_t, std::deque<Tile>>
+        _decode_pruning_pending_vm_tiles;
 
     bool is_decode_pruning_target(const std::string& name) const;
+    std::string decode_pruning_template_key(
+        const Ptr<Operation>& operation) const;
     DecodeCoreTiming decode_core_timing_snapshot(uint32_t core_id) const;
     void prepare_decode_pruning_prediction();
     void capture_decode_pruning_template(uint32_t operation_id);

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <stdexcept>
 
 #include "../../ext/booksim/include/booksim2/Interconnect.hpp"
 
@@ -20,7 +22,9 @@
 
 
 MyInterconnect::MyInterconnect(const SysConfig& config) : _config(config) {
-    spdlog::info("Initialize My Interconnect");
+    spdlog::info("Initialize My Interconnect ({})",
+                 config.icnt_type == IcntType::BOOKSIM2 ? "booksim2"
+                                                        : "simple");
 
     // period information (us) =  1 / MHZ
     _icnt_period = 1.0 / static_cast<double>(_config.icnt_freq);
@@ -31,6 +35,8 @@ MyInterconnect::MyInterconnect(const SysConfig& config) : _config(config) {
     _icnt_time = 0.0;
 
     _latency = config.icnt_latency;
+    _cycles = 0;
+    _rr_start = 0;
     _n_nodes = config.num_cores * config.dram_channels + config.dram_channels;
 
     _n_cores = config.num_cores;
@@ -58,26 +64,69 @@ MyInterconnect::MyInterconnect(const SysConfig& config) : _config(config) {
     _dram_push_valid.assign(config.dram_channels, true);
     _dram_pop_valid.assign(config.dram_channels, true);
 
+    if (config.icnt_type == IcntType::SIMPLE) {
+        spdlog::info(
+            "Simple interconnect queue capacities: input={} packets/node, "
+            "output={} packets/node (0 means unbounded)",
+            config.icnt_input_buffer_size,
+            config.icnt_output_buffer_size);
+    }
+
+    if (config.icnt_type == IcntType::BOOKSIM2) {
+        if (config.icnt_config_path.empty()) {
+            throw std::invalid_argument(
+                "BookSim interconnect requires icnt_config_path");
+        }
+        if (!std::filesystem::is_regular_file(config.icnt_config_path)) {
+            throw std::invalid_argument(
+                "BookSim configuration file does not exist: " +
+                config.icnt_config_path);
+        }
+        _booksim = std::make_unique<booksim2::Interconnect>(
+            config.icnt_config_path, static_cast<int>(_n_nodes));
+        if (_booksim->get_network_node_count() !=
+            static_cast<int>(_n_nodes)) {
+            throw std::invalid_argument(
+                "BookSim topology node count " +
+                std::to_string(_booksim->get_network_node_count()) +
+                " does not match PHSim interconnect node count " +
+                std::to_string(_n_nodes));
+        }
+        spdlog::info(
+            "BookSim active: config='{}', nodes={}, flit_size={} B",
+            config.icnt_config_path, _n_nodes, _booksim->get_flit_size());
+    }
+
     // 设置所同步的 DRAM tick
     _current_dram_tick_sync_by_icnt = 0;
     _next_dram_tick_sync_by_icnt = 1;
 }
 
 bool MyInterconnect::running() {
-    return false;
+    return _booksim &&
+           _booksim_injected_packets != _booksim_ejected_packets;
 }
 
 void MyInterconnect::cycle() {
-    // Send request from Core to DRAM, and get DRAM response back to Core
-    for (int node = 0; node < _n_nodes; node++) {
-        int src_node = (_rr_start + node) % _n_nodes;
-        if (!_in_buffers[src_node].empty() && _in_buffers[src_node].front().finish_cycle <= _cycles) {
-            uint32_t dest = _in_buffers[src_node].front().dest;
-            if (!_busy_node[dest]) {
-                _out_buffers[dest].push(_in_buffers[src_node].front().access);
-                _busy_node[dest] = true;
-                // spdlog::info("Interconnect transport a memory access from source: {} to dest: {} at ICNT cycle {}",src_node, dest, _cycles);
-                _in_buffers[src_node].pop();
+    if (_booksim) {
+        _booksim->run();
+    } else {
+        // Send request from Core to DRAM, and get DRAM response back to Core
+        for (int node = 0; node < _n_nodes; node++) {
+            int src_node = (_rr_start + node) % _n_nodes;
+            if (!_in_buffers[src_node].empty() &&
+                _in_buffers[src_node].front().finish_cycle <= _cycles) {
+                uint32_t dest = _in_buffers[src_node].front().dest;
+                const bool output_has_space =
+                    _config.icnt_output_buffer_size == 0 ||
+                    _out_buffers[dest].size() <
+                        _config.icnt_output_buffer_size;
+                if (!_busy_node[dest] && output_has_space) {
+                    _out_buffers[dest].push(
+                        _in_buffers[src_node].front().access);
+                    _busy_node[dest] = true;
+                    _in_buffers[src_node].pop();
+                }
             }
         }
     }
@@ -90,17 +139,50 @@ void MyInterconnect::cycle() {
         }
     }
 
-    // set the busy node flag for each port
-    for(int node = 0; node < _n_nodes; node++) {
-        _busy_node[node] = false;
+    if (!_booksim) {
+        // set the busy node flag for each port
+        for(int node = 0; node < _n_nodes; node++) {
+            _busy_node[node] = false;
+        }
+        _rr_start = (_rr_start + 1) % _n_nodes;
     }
-
-    _rr_start = (_rr_start + 1) % _n_nodes;
     _cycles++;
 }
 
 
 void MyInterconnect::push(uint32_t src, uint32_t dest, MemoryAccess *request) {
+    if (src >= _n_nodes || dest >= _n_nodes || request == nullptr) {
+        throw std::out_of_range(
+            "Interconnect push has an invalid node or null request");
+    }
+    if (is_full(src, request)) {
+        throw std::overflow_error(
+            "Interconnect input buffer capacity exceeded at node " +
+            std::to_string(src));
+    }
+    if (_booksim) {
+        const uint32_t packet_size = get_booksim_packet_size(request);
+        if (packet_size > static_cast<uint32_t>(
+                              std::numeric_limits<int>::max())) {
+            throw std::overflow_error(
+                "BookSim packet size exceeds the supported int range");
+        }
+        _booksim->push(request, 0, request->dram_address,
+                       static_cast<int>(packet_size),
+                       get_booksim_type(request), static_cast<int>(src),
+                       static_cast<int>(dest));
+        const bool inserted =
+            _booksim_inflight_payload_bytes.emplace(request, packet_size)
+                .second;
+        if (!inserted) {
+            throw std::logic_error(
+                "The same MemoryAccess was injected into BookSim twice");
+        }
+        ++_booksim_injected_packets;
+        _booksim_injected_payload_bytes += packet_size;
+        return;
+    }
+
     // -- initialize entity
     MyInterconnect::Entity entity;
     if (_in_buffers[src].empty())
@@ -120,33 +202,117 @@ void MyInterconnect::push(uint32_t src, uint32_t dest, MemoryAccess *request) {
 }
 
 bool MyInterconnect::is_full(uint32_t nid, MemoryAccess* request) {
-    // TODO: unlimit buffer size
-    return false;
+    if (nid >= _n_nodes || request == nullptr) {
+        throw std::out_of_range(
+            "Interconnect fullness query has an invalid source or request");
+    }
+    if (_booksim) {
+        return _booksim->is_full(
+            nid, 0, get_booksim_packet_size(request));
+    }
+    return _config.icnt_input_buffer_size != 0 &&
+           _in_buffers[nid].size() >= _config.icnt_input_buffer_size;
 }
 
 bool MyInterconnect::is_empty(uint32_t nid) {
+    if (nid >= _n_nodes) {
+        throw std::out_of_range("Interconnect node index out of range");
+    }
+    if (_booksim) {
+        return _booksim->is_empty(nid, 0);
+    }
     return _out_buffers[nid].empty();
 }
 
 MemoryAccess* MyInterconnect::top(uint32_t nid) {
     assert(!is_empty(nid));
+    if (_booksim) {
+        return const_cast<MemoryAccess*>(
+            static_cast<const MemoryAccess*>(_booksim->top(nid, 0)));
+    }
     return _out_buffers[nid].front();
 }
 
 
 MemoryAccess* MyInterconnect::top(uint32_t nid, cycle_type update_dram_enter_cycle) {
     assert(!is_empty(nid));
-    _out_buffers[nid].front()->dram_enter_cycle = update_dram_enter_cycle;
-    return _out_buffers[nid].front();
+    MemoryAccess* access = top(nid);
+    access->dram_enter_cycle = update_dram_enter_cycle;
+    return access;
 }
 
 void MyInterconnect::pop(uint32_t nid) {
-    auto mem_access = _out_buffers[nid].front();
+    if (is_empty(nid)) {
+        throw std::underflow_error("Cannot pop an empty interconnect output");
+    }
+    auto mem_access = top(nid);
     // spdlog::trace("PUSH {}", _cycles);
     if (nid < memory_offset) {
         update_stat(*mem_access, nid % _config.dram_channels);
     }
-    _out_buffers[nid].pop();
+    if (_booksim) {
+        const auto size_it = _booksim_inflight_payload_bytes.find(mem_access);
+        if (size_it == _booksim_inflight_payload_bytes.end()) {
+            throw std::logic_error(
+                "BookSim ejected a packet without injection metadata");
+        }
+        const uint32_t packet_size = size_it->second;
+        _booksim->pop(nid, 0);
+        _booksim_inflight_payload_bytes.erase(size_it);
+        ++_booksim_ejected_packets;
+        _booksim_ejected_payload_bytes += packet_size;
+    } else {
+        _out_buffers[nid].pop();
+    }
+}
+
+booksim2::Interconnect::Type MyInterconnect::get_booksim_type(
+    const MemoryAccess* access) const {
+    if (access == nullptr) {
+        throw std::invalid_argument(
+            "Cannot classify a null BookSim packet");
+    }
+    const bool write_like =
+        access->req_type == MemoryAccessType::WRITE ||
+        access->req_type == MemoryAccessType::GWRITE;
+    if (access->request) {
+        return write_like ? booksim2::Interconnect::Type::WRITE
+                          : booksim2::Interconnect::Type::READ;
+    }
+    return write_like ? booksim2::Interconnect::Type::WRITE_REPLY
+                      : booksim2::Interconnect::Type::READ_REPLY;
+}
+
+uint32_t MyInterconnect::get_booksim_packet_size(
+    const MemoryAccess* access) const {
+    if (access == nullptr) {
+        throw std::invalid_argument(
+            "Cannot size a null BookSim packet");
+    }
+
+    const bool request_carries_data =
+        access->request &&
+        (access->req_type == MemoryAccessType::WRITE ||
+         access->req_type == MemoryAccessType::GWRITE);
+    const bool response_carries_data =
+        !access->request &&
+        (access->req_type == MemoryAccessType::READ ||
+         access->req_type == MemoryAccessType::READRES ||
+         access->req_type == MemoryAccessType::COMPS_READRES);
+
+    uint64_t payload_bytes = _config.icnt_ctrl_size;
+    if (request_carries_data || response_carries_data) {
+        payload_bytes = std::max<uint64_t>(access->size,
+                                           access->data.size());
+        if (payload_bytes == 0) {
+            payload_bytes = _config.icnt_ctrl_size;
+        }
+    }
+    if (payload_bytes > std::numeric_limits<uint32_t>::max()) {
+        throw std::overflow_error(
+            "BookSim packet payload does not fit in uint32_t");
+    }
+    return static_cast<uint32_t>(payload_bytes);
 }
 
 
@@ -243,6 +409,41 @@ void MyInterconnect::print_stats() {
                  << "}";
     }
     json_out << "}";
+    json_out.close();
+
+    if (_booksim) {
+        nlohmann::json booksim_stats = {
+            {"backend", "booksim2"},
+            {"config_path", _config.icnt_config_path},
+            {"nodes", _n_nodes},
+            {"flit_size_bytes", _booksim->get_flit_size()},
+            {"phsim_icnt_cycles", _cycles},
+            {"booksim_cycles", _booksim->get_cycle()},
+            {"injected_packets", _booksim_injected_packets},
+            {"ejected_packets", _booksim_ejected_packets},
+            {"injected_payload_bytes",
+             _booksim_injected_payload_bytes},
+            {"ejected_payload_bytes",
+             _booksim_ejected_payload_bytes}};
+        const std::string path =
+            Config::system_config.log_dir + "/booksim2_stats.json";
+        std::ofstream booksim_out(path, std::ofstream::out);
+        if (!booksim_out.is_open()) {
+            throw std::runtime_error(
+                "Cannot open BookSim statistics file: " + path);
+        }
+        booksim_out << booksim_stats.dump(2) << '\n';
+        if (!booksim_out.good()) {
+            throw std::runtime_error(
+                "Failed to write BookSim statistics file: " + path);
+        }
+        spdlog::info(
+            "BookSim packets injected/ejected={}/{}, payload bytes={}/{}, "
+            "BookSim cycles={}",
+            _booksim_injected_packets, _booksim_ejected_packets,
+            _booksim_injected_payload_bytes,
+            _booksim_ejected_payload_bytes, _booksim->get_cycle());
+    }
 }
 
 

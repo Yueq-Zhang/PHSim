@@ -63,6 +63,26 @@ public:
     uint64_t pim_output_payload_bytes(uint32_t channel) const;
     uint64_t peak_pim_input_payload_bytes(uint32_t channel) const;
     uint64_t peak_pim_output_payload_bytes(uint32_t channel) const;
+    uint64_t nonzero_payload_bytes() const noexcept;
+    uint64_t content_fingerprint() const;
+    uint64_t read_response_count() const noexcept {
+        return read_response_count_;
+    }
+    uint64_t write_response_count() const noexcept {
+        return write_response_count_;
+    }
+    uint64_t pheader_response_count() const noexcept {
+        return pheader_response_count_;
+    }
+    uint64_t gwrite_response_count() const noexcept {
+        return gwrite_response_count_;
+    }
+    uint64_t comp_response_count() const noexcept {
+        return comp_response_count_;
+    }
+    uint64_t readres_response_count() const noexcept {
+        return readres_response_count_;
+    }
 
 private:
     struct ColumnAddress {
@@ -118,6 +138,12 @@ private:
     uint64_t max_resident_payload_bytes_ = 0;
     uint64_t peak_resident_payload_bytes_ = 0;
     std::size_t peak_stored_column_count_ = 0;
+    uint64_t read_response_count_ = 0;
+    uint64_t write_response_count_ = 0;
+    uint64_t pheader_response_count_ = 0;
+    uint64_t gwrite_response_count_ = 0;
+    uint64_t comp_response_count_ = 0;
+    uint64_t readres_response_count_ = 0;
 
     std::unordered_map<ColumnAddress, ColumnData, ColumnAddressHash>
         columns_data_;

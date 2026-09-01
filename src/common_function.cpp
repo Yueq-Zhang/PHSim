@@ -96,8 +96,51 @@ void SysConfig::initialize_compute_die_system_config(std::string sys_config_path
     icnt_latency = config["icnt_latency"];
     phsim::ConfigValidator::ValidatePositiveValue(
         "icnt_latency", icnt_latency, sys_config_path);
-    if (config.contains("icnt_config_path"))
+    icnt_ctrl_size = config.value("icnt_ctrl_size", 8U);
+    phsim::ConfigValidator::ValidatePositiveValue(
+        "icnt_ctrl_size", icnt_ctrl_size, sys_config_path);
+    const auto read_optional_capacity =
+        [&config, &sys_config_path](const char* field) -> uint32_t {
+        if (!config.contains(field)) {
+            return 0;
+        }
+        const auto& value = config.at(field);
+        if (!value.is_number_integer() && !value.is_number_unsigned()) {
+            throw std::invalid_argument(
+                fmt::format("{} in {} must be a non-negative integer",
+                            field, sys_config_path));
+        }
+        if (!value.is_number_unsigned() && value.get<int64_t>() < 0) {
+            throw std::invalid_argument(
+                fmt::format("{} in {} must be non-negative",
+                            field, sys_config_path));
+        }
+        const uint64_t capacity = value.get<uint64_t>();
+        if (capacity > std::numeric_limits<uint32_t>::max()) {
+            throw std::invalid_argument(
+                fmt::format("{} in {} exceeds uint32_t range",
+                            field, sys_config_path));
+        }
+        return static_cast<uint32_t>(capacity);
+    };
+    icnt_input_buffer_size =
+        read_optional_capacity("icnt_input_buffer_size");
+    icnt_output_buffer_size =
+        read_optional_capacity("icnt_output_buffer_size");
+    if (config.contains("icnt_config_path")) {
         icnt_config_path = config["icnt_config_path"];
+    }
+    if (icnt_type == IcntType::BOOKSIM2 && icnt_config_path.empty()) {
+        throw std::invalid_argument(
+            "icnt_config_path is required when icnt_type is booksim2");
+    }
+    if (icnt_type == IcntType::BOOKSIM2 &&
+        (icnt_input_buffer_size != 0 || icnt_output_buffer_size != 0)) {
+        throw std::invalid_argument(
+            "icnt_input_buffer_size and icnt_output_buffer_size apply only "
+            "to the simple interconnect; configure BookSim capacities in "
+            "the .icnt file");
+    }
 
     precision = config["precision"];
     layout = config.value("layout", std::string{"NHWC"});
@@ -116,6 +159,27 @@ void SysConfig::initialize_inference_config(std::string inference_config_path) {
     kv_cache_entry_size = inference_config["kv_cache_entry_size"];
     max_active_reqs = inference_config["max_active_reqs"];
     max_batch_size = inference_config["max_batch_size"];
+    batch_scheduler =
+        inference_config.value("batch_scheduler", std::string{"legacy"});
+    if (batch_scheduler != "legacy" && batch_scheduler != "continuous") {
+        throw std::invalid_argument(
+            "batch_scheduler must be either 'legacy' or 'continuous'");
+    }
+    if (inference_config.contains("max_prefill_batch_tokens")) {
+        const auto& value = inference_config.at("max_prefill_batch_tokens");
+        if ((!value.is_number_integer() && !value.is_number_unsigned()) ||
+            (!value.is_number_unsigned() && value.get<int64_t>() < 0)) {
+            throw std::invalid_argument(
+                "max_prefill_batch_tokens must be a non-negative integer");
+        }
+        max_prefill_batch_tokens = value.get<uint64_t>();
+    } else {
+        max_prefill_batch_tokens = 0;
+    }
+    if (max_batch_size == 0 || max_active_reqs == 0) {
+        throw std::invalid_argument(
+            "max_batch_size and max_active_reqs must be greater than zero");
+    }
 
     allocation_scheme = inference_config["allocation_scheme"];
     virtual_mem_hash_enable = inference_config.value("virtual_mem_hash_enable", false);
@@ -178,6 +242,14 @@ void SysConfig::initialize_inference_config(std::string inference_config_path) {
         inference_config.value("gen_request_output_size", 0U);
     output_token_iteration_enable =
         inference_config.value("output_token_iteration_enable", false);
+
+    if (batch_scheduler == "continuous" &&
+        (!output_token_iteration_enable || test_single_op ||
+         test_multi_layer)) {
+        throw std::invalid_argument(
+            "batch_scheduler='continuous' requires full-model "
+            "output_token_iteration_enable=true");
+    }
 
     gen_random_request = inference_config["gen_random_request"];
     request_interval = inference_config["request_interval"];
@@ -264,15 +336,44 @@ void SysConfig::validate_configuration_contracts() {
     ConfigValidator::ValidateBackendCapabilities(
         dram_trace_simulation_mode, mem_config.enable_self_refresh);
 
+    // DataContainer payload mutations cannot be reconstructed from aggregate
+    // pruning statistics, so it always retains the exact execution path.
+    // Virtual memory can use the mapping-only replay implemented for
+    // Proportional Tile Pruning and the stable FFN subset of Decode Pruning.
+    if (dram_data_container_enable && accelerate_ctrl) {
+        spdlog::warn(
+            "Simulation acceleration method '{}' is disabled because "
+            "dram_data_container_enable=true requires exact per-request "
+            "data side effects",
+            accelerate_method);
+        accelerate_ctrl = false;
+        compile_time_tile_pruning = false;
+    }
+    if (virtual_mem_hash_enable && accelerate_ctrl &&
+        accelerate_method != "Proportional") {
+        spdlog::warn(
+            "Simulation acceleration method '{}' is disabled because "
+            "virtual-memory side-effect replay currently supports only "
+            "the Proportional method",
+            accelerate_method);
+        accelerate_ctrl = false;
+        compile_time_tile_pruning = false;
+    }
+    if (dram_data_container_enable && decode_pruning_enabled) {
+        spdlog::warn(
+            "Decode Pruning is disabled because "
+            "dram_data_container_enable=true requires exact per-request "
+            "data side effects");
+        decode_pruning_enabled = false;
+        decode_pruning_compile_context = false;
+    }
+
     ConfigValidator::ValidateSupportedValue(
         "core_type",
         core_type == CoreType::SYSTOLIC_WS ? "systolic_ws" : "systolic_os",
         "systolic_ws", system_config_path_);
     ConfigValidator::ValidateSupportedValue(
         "scheduler", scheduler_type, "simple", system_config_path_);
-    ConfigValidator::ValidateSupportedValue(
-        "icnt_type", icnt_type == IcntType::SIMPLE ? "simple" : "booksim2",
-        "simple", system_config_path_);
     ConfigValidator::ValidateSupportedValue(
         "dram_type", dram_type == DramType::NEWTON ? "newton" : "dram",
         "newton", pim_config_path);
@@ -335,6 +436,7 @@ void TwoLevelDeterministicMapper::configure(const MemConfig& mem_config) {
     columns_ = mem_config.columns;
     bus_width_ = mem_config.bus_width;
     burst_length_ = mem_config.BL;
+    mapping_calls_by_channel_.assign(channels_, 0);
 
     ch_bits_ = log2_power_of_two(channels_);
     ra_bits_ = log2_power_of_two(ranks_);
@@ -404,6 +506,12 @@ void TwoLevelDeterministicMapper::reset() {
     logical_to_physical_.clear();
     physical_used_.assign(physical_used_.size(), false);
     next_free_physical_page_ = 0;
+    mapping_call_count_ = 0;
+    changed_mapping_count_ = 0;
+    mapping_pair_xor_ = 0;
+    mapping_pair_sum_ = 0;
+    std::fill(mapping_calls_by_channel_.begin(),
+              mapping_calls_by_channel_.end(), 0);
 }
 
 void TwoLevelDeterministicMapper::free_page(addr_type logical_page) {
@@ -520,7 +628,51 @@ TwoLevelDeterministicMapper::addr_type TwoLevelDeterministicMapper::map(addr_typ
             "Virtual-memory bank hashing escaped its configured physical page");
     }
 
+    ++mapping_call_count_;
+    if (final_addr != logical_addr) {
+        ++changed_mapping_count_;
+    }
+    if (logical_ch >= mapping_calls_by_channel_.size()) {
+        throw std::runtime_error(
+            "Virtual-memory mapping produced an invalid logical channel");
+    }
+    ++mapping_calls_by_channel_[logical_ch];
+    uint64_t pair_fingerprint = logical_addr + 0x9e3779b97f4a7c15ULL;
+    pair_fingerprint ^= final_addr + 0x9e3779b97f4a7c15ULL +
+                        (pair_fingerprint << 6U) +
+                        (pair_fingerprint >> 2U);
+    pair_fingerprint ^= pair_fingerprint >> 30U;
+    pair_fingerprint *= 0xbf58476d1ce4e5b9ULL;
+    pair_fingerprint ^= pair_fingerprint >> 27U;
+    pair_fingerprint *= 0x94d049bb133111ebULL;
+    pair_fingerprint ^= pair_fingerprint >> 31U;
+    mapping_pair_xor_ ^= pair_fingerprint;
+    mapping_pair_sum_ += pair_fingerprint;
+
     return final_addr;
+}
+
+uint64_t TwoLevelDeterministicMapper::page_table_fingerprint() const {
+    if (logical_to_physical_.empty()) {
+        return 0;
+    }
+    std::vector<std::pair<addr_type, addr_type>> entries(
+        logical_to_physical_.begin(), logical_to_physical_.end());
+    std::sort(entries.begin(), entries.end());
+    constexpr uint64_t kFnvPrime = 1099511628211ULL;
+    uint64_t fingerprint = 14695981039346656037ULL;
+    const auto update = [&fingerprint](uint64_t value) {
+        for (uint32_t byte = 0; byte < sizeof(value); ++byte) {
+            fingerprint ^= static_cast<uint8_t>(value >> (byte * 8U));
+            fingerprint *= kFnvPrime;
+        }
+    };
+    update(entries.size());
+    for (const auto& entry : entries) {
+        update(entry.first);
+        update(entry.second);
+    }
+    return fingerprint;
 }
 
 TwoLevelDeterministicMapper::addr_type TwoLevelDeterministicMapper::write_bank_tuple(
@@ -722,6 +874,31 @@ bool is_enabled() {
 
 addr_type mapped_page_count() {
     return is_enabled() ? g_mapper->mapped_page_count() : 0;
+}
+
+uint64_t mapping_call_count() {
+    return is_enabled() ? g_mapper->mapping_call_count() : 0;
+}
+
+uint64_t changed_mapping_count() {
+    return is_enabled() ? g_mapper->changed_mapping_count() : 0;
+}
+
+uint64_t mapping_pair_xor() {
+    return is_enabled() ? g_mapper->mapping_pair_xor() : 0;
+}
+
+uint64_t mapping_pair_sum() {
+    return is_enabled() ? g_mapper->mapping_pair_sum() : 0;
+}
+
+uint64_t page_table_fingerprint() {
+    return is_enabled() ? g_mapper->page_table_fingerprint() : 0;
+}
+
+std::vector<uint64_t> mapping_calls_by_channel() {
+    return is_enabled() ? g_mapper->mapping_calls_by_channel()
+                        : std::vector<uint64_t>{};
 }
 
 // if enabled, Logical addresses are mapped to physical addresses; else the original address is returned directly

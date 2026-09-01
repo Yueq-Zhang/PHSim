@@ -1,6 +1,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <stdexcept>
 
 #include "Interconnect.hpp"
 
@@ -51,20 +52,22 @@ Interconnect::Interconnect(const std::string ConfigFilePath,
     nets[n] = Network::New(Config, name.str(), this);
   }
 
-  flit_size = Config.GetInt("flit_size");
-  if (Config.GetInt("ejection_buffer_size")) {
-    ejection_buffer_capacity = Config.GetInt("ejection_buffer_size");
-  } else {
-    ejection_buffer_capacity = Config.GetInt("vc_buf_size");
+  const int configured_flit_size = Config.GetInt("flit_size");
+  if (configured_flit_size <= 0) {
+    throw std::invalid_argument("BookSim flit_size must be positive");
   }
-
-  boundary_buffer_capacity = Config.GetInt("boundary_buffer_size");
-  assert(boundary_buffer_capacity);
-  if (Config.GetInt("input_buffer_size")) {
-    input_buffer_capacity = Config.GetInt("input_buffer_size");
-  } else {
-    input_buffer_capacity = 9;
-  }
+  flit_size = static_cast<uint32_t>(configured_flit_size);
+  const auto read_capacity = [&Config](const char* field) {
+    const int value = Config.GetInt(field);
+    if (value < 0) {
+      throw std::invalid_argument(
+          std::string("BookSim ") + field + " must be non-negative");
+    }
+    return static_cast<uint32_t>(value);
+  };
+  input_buffer_capacity = read_capacity("input_buffer_size");
+  ejection_buffer_capacity = read_capacity("ejection_buffer_size");
+  boundary_buffer_capacity = read_capacity("boundary_buffer_size");
 
   std::string watch_file = Config.GetStr("watch_out");
   if (watch_file == "")
@@ -130,13 +133,21 @@ void Interconnect::run() {
 }
 
 bool Interconnect::is_full(uint32_t nid, uint32_t subnet, uint32_t size) const {
+  if (nid >= static_cast<uint32_t>(num_nodes) ||
+      subnet >= static_cast<uint32_t>(num_subnets)) {
+    throw std::out_of_range("BookSim fullness query index out of range");
+  }
+  if (input_buffer_capacity == 0) {
+    return false;
+  }
   // WARNING: Must append header to the payload
-  size += HEADER_SIZE;
-  uint32_t num_flits = size / flit_size + ((size % flit_size) ? 1 : 0);
+  const uint64_t packet_size = static_cast<uint64_t>(size) + HEADER_SIZE;
+  const uint64_t num_flits =
+      packet_size / flit_size + ((packet_size % flit_size) ? 1 : 0);
   // TODO: select input_queue depending on the node (memory and compute)
   // currently, set to 0
   // [subnets][nodes][vcs]
-  uint32_t expected_size = 
+  const uint64_t expected_size =
     traffic_manager->_input_queue[subnet][nid][0].size() + num_flits;
 
   return expected_size > input_buffer_capacity;
@@ -144,6 +155,15 @@ bool Interconnect::is_full(uint32_t nid, uint32_t subnet, uint32_t size) const {
 
 void Interconnect::push(void* packet, uint32_t subnet, 
                         uint64_t addr, int bytes, Type type, int src, int dst) {
+  if (packet == nullptr || bytes <= 0 || src < 0 || src >= num_nodes ||
+      dst < 0 || dst >= num_nodes ||
+      subnet >= static_cast<uint32_t>(num_subnets)) {
+    throw std::invalid_argument("Invalid BookSim packet injection");
+  }
+  if (is_full(static_cast<uint32_t>(src), subnet,
+              static_cast<uint32_t>(bytes))) {
+    throw std::overflow_error("BookSim input buffer capacity exceeded");
+  }
   // TODO: Get srouce from the Queue ID
   // TODO: Need to calculate the destination
   // _GeneratePacket will calculate packet type and the number of flits
@@ -154,8 +174,10 @@ void Interconnect::push(void* packet, uint32_t subnet,
 void Interconnect::Transfer2BoundaryBuffer(uint32_t subnet, uint32_t output) {
   Flit* flit;
   for (uint32_t vc = 0; vc < vcs; ++vc) {
-    if (!ejection_buffer[subnet][output][vc].empty() && 
-        boundary_buffer[subnet][output][vc].size() < boundary_buffer_capacity) {
+    if (!ejection_buffer[subnet][output][vc].empty() &&
+        (boundary_buffer_capacity == 0 ||
+         boundary_buffer[subnet][output][vc].packet_count() <
+             boundary_buffer_capacity)) {
       flit = ejection_buffer[subnet][output][vc].front();
       assert(flit);
       ejection_buffer[subnet][output][vc].pop();
@@ -170,9 +192,24 @@ void Interconnect::Transfer2BoundaryBuffer(uint32_t subnet, uint32_t output) {
   }
 }
 
+bool Interconnect::CanAcceptEjectedFlit(uint32_t subnet, uint32_t output,
+                                        int vc) const {
+  if (subnet >= static_cast<uint32_t>(num_subnets) ||
+      output >= static_cast<uint32_t>(num_nodes) || vc < 0 || vc >= vcs) {
+    throw std::out_of_range("BookSim ejection-buffer index out of range");
+  }
+  return ejection_buffer_capacity == 0 ||
+         ejection_buffer[subnet][output][vc].size() <
+             ejection_buffer_capacity;
+}
+
 void Interconnect::WriteOutBuffer(uint32_t subnet, int output, Flit* flit) {
+  if (flit == nullptr ||
+      !CanAcceptEjectedFlit(subnet, static_cast<uint32_t>(output),
+                            flit->vc)) {
+    throw std::overflow_error("BookSim ejection buffer capacity exceeded");
+  }
   int vc = flit->vc;
-  assert(ejection_buffer[subnet][output][vc].size() < ejection_buffer_capacity);
   ejection_buffer[subnet][output][vc].push(flit);
 
   // if (flit->tail) {
@@ -300,5 +337,12 @@ void Interconnect::initParameters() {
   gWriteReplyEndVC = 0;
 }
 
-Interconnect::~Interconnect() = default;
+Interconnect::~Interconnect() {
+  delete traffic_manager;
+  traffic_manager = nullptr;
+  for (auto* net : nets) {
+    delete net;
+  }
+  nets.clear();
+}
 }

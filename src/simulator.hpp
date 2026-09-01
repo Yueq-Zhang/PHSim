@@ -38,6 +38,7 @@ public:
     void update_stage_stat();
     void log_stage_stat();
     void log_data_container_stat() const;
+    void log_virtual_memory_stat() const;
 
     const SysConfig& _config;
 

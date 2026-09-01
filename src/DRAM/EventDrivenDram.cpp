@@ -470,6 +470,16 @@ void DRAMBank::Read(std::shared_ptr<Event> event) {
 
 
 void DRAMBank::Write(std::shared_ptr<Event> event) {
+    if (event->row_index != static_cast<uint32_t>(open_row)) {
+        spdlog::critical(
+            "EventDriven WRITE row-state mismatch: address={}, "
+            "rank={}, bankgroup={}, bank={}, event_row={}, open_row={}, "
+            "open_row_exec_event_count={}, pending_precharge={}, "
+            "pending_activate={}",
+            event->dram_address, rank_id, bankgroup_id, bank_id,
+            event->row_index, open_row, open_row_exec_event_count,
+            pending_precharge, pending_activate);
+    }
     assert(event->row_index == open_row);
     open_row_exec_event_count--;
     assert(open_row_exec_event_count>=0);
@@ -1457,7 +1467,9 @@ EventDrivenDram::EventDrivenDram(const SysConfig& config,
                                  DramDataContainer* data_container)
     : dramsim3_config_(std::make_unique<dramsim3::Config>(
           config.memory_config_path_, config.output_path_)),
-      _data_container(data_container) {
+      _data_container(data_container),
+      _serialize_pim_after_physical_rw(
+          config.batch_scheduler == "continuous") {
     // PIM completion callback
     std::function<void(uint64_t)> pim_callback = [&](uint64_t addr) {
         auto channel_index = MyAddressAllocator::get_channel_index(addr);
@@ -2108,12 +2120,12 @@ void EventDrivenDram::schedule_pending_event_transaction(uint32_t cid) {
     }
     _last_transaction_schedule_cycle[cid] = transaction_cycle;
 
+    const bool physical_queue_empty = channel->execute_queue.empty() &&
+                                      channel->activate_queue.empty() &&
+                                      channel->precharge_queue.empty();
     if (!_rw_dependency_lock[cid] && _write_draining[cid] == 0) {
         const size_t write_size = _write_buffer[cid].size();
         const auto write_capacity = static_cast<size_t>(dramsim3_config_->trans_queue_size);
-        const bool physical_queue_empty = channel->execute_queue.empty() &&
-                                          channel->activate_queue.empty() &&
-                                          channel->precharge_queue.empty();
         if ((write_capacity > 0 && write_size >= write_capacity)
             || (write_size > 8 && physical_queue_empty)
             || (write_size > 0 && !_pending_pim_events[cid].empty())) {
@@ -2128,7 +2140,8 @@ void EventDrivenDram::schedule_pending_event_transaction(uint32_t cid) {
          queue_to_schedule = QueueClass::WRITE_Q;
     }
     else if (!_pim_queue[cid].empty() && _read_queue[cid].empty() &&
-             _write_buffer[cid].empty()) {
+             _write_buffer[cid].empty() &&
+             (!_serialize_pim_after_physical_rw || physical_queue_empty)) {
          queue_to_schedule = QueueClass::PIM_Q;
     }
     else {
@@ -2322,12 +2335,12 @@ void EventDrivenDram::schedule_pending_operation(uint32_t cid, cycle_type curren
     }
     _last_transaction_schedule_cycle[cid] = current_cycle;
 
+    const bool physical_queue_empty = channel->execute_queue.empty() &&
+                                      channel->activate_queue.empty() &&
+                                      channel->precharge_queue.empty();
     if (!_rw_dependency_lock[cid] && _write_draining[cid] == 0) {
         const size_t write_size = _write_buffer[cid].size();
         const auto write_capacity = static_cast<size_t>(dramsim3_config_->trans_queue_size);
-        const bool physical_queue_empty = channel->execute_queue.empty() &&
-                                          channel->activate_queue.empty() &&
-                                          channel->precharge_queue.empty();
         if ((write_capacity > 0 && write_size >= write_capacity)
             || (write_size > 8 && physical_queue_empty)
             || (write_size > 0 && !_pending_pim_events[cid].empty())
@@ -2343,7 +2356,8 @@ void EventDrivenDram::schedule_pending_operation(uint32_t cid, cycle_type curren
         issue_pending_write_event(cid);
     }
     else if (!_pim_queue[cid].empty() && _read_queue[cid].empty() &&
-             _write_buffer[cid].empty()) {
+             _write_buffer[cid].empty() &&
+             (!_serialize_pim_after_physical_rw || physical_queue_empty)) {
         issue_pending_pim_event(cid);
     }
     else {

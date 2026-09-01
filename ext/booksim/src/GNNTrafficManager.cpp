@@ -209,9 +209,7 @@ void GNNTrafficManager::_GeneratePacket(void* packet,
   } else if (type == booksim2::Interconnect::Type::READ_REPLY) {
     packet_type = Flit::READ_REPLY;
   } else if (type == booksim2::Interconnect::Type::WRITE_REPLY) {
-    // FIX: Do we need write reply (ACK)?
     packet_type = Flit::WRITE_REPLY;
-    assert(false && "No write reply currently");
   } else {
     packet_type = Flit::ANY_TYPE;
     cout << "Packet type is undefined!" << endl;
@@ -219,6 +217,14 @@ void GNNTrafficManager::_GeneratePacket(void* packet,
   }
   int pkt_size = bytes + header_size;
   int num_flits = (pkt_size / flit_size) + ((pkt_size % flit_size) ? 1 : 0);
+
+  // Externally injected PHSim requests do not pass through _IssuePacket(),
+  // so maintain the request/reply accounting here. Every PHSim DRAM request
+  // produces one response on the reverse path.
+  if (packet_type == Flit::READ_REQUEST ||
+      packet_type == Flit::WRITE_REQUEST) {
+    _requestsOutstanding[source]++;
+  }
 
   if ((packet_destination <0) || (packet_destination >= _nodes)) {
     ostringstream err;
@@ -331,7 +337,12 @@ void GNNTrafficManager::_Step()
   
   for ( int subnet = 0; subnet < _subnets; ++subnet ) {
     for ( int n = 0; n < _nodes; ++n ) {
-      Flit * const f = _net[subnet]->ReadFlit( n );
+      Flit * const pending = _net[subnet]->PeekFlit( n );
+      Flit * const f =
+        (!pending ||
+         icnt->CanAcceptEjectedFlit(subnet, n, pending->vc))
+          ? _net[subnet]->ReadFlit( n )
+          : nullptr;
       if ( f ) {
         if(f->watch) {
           *(icnt->gWatchOut) << icnt->get_cycle() << " | "

@@ -102,10 +102,13 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | `spad_size` | 无符号整数/KiB | 必填 | 主scratchpad容量；多数算子按一半容量预留双缓冲。 |
 | `accum_spad_size` | 无符号整数/KiB | 必填 | 累加scratchpad容量。 |
 | `sram_width` | 无符号整数/bit | `128`（兼容值） | 当前SRAM时序没有消费该字段；为避免静默无效，仅接受历史值 `128`。 |
-| `icnt_type` | 字符串 | 必填 | 当前主仿真路径仅实现 `simple`；`booksim2` 会在启动时明确拒绝，避免配置与实际构造的互连不一致。 |
-| `icnt_latency` | 无符号整数/互连周期 | 必填 | `simple`互连延迟，必须显式提供且大于0；不再允许缺失后读取未初始化值。 |
+| `icnt_type` | 字符串 | 必填 | `simple` 使用原有固定延迟互连；`booksim2` 使用逐flit的BookSim 2网络模型。其他值在解析时拒绝。 |
+| `icnt_latency` | 无符号整数/互连周期 | 必填 | `simple`互连延迟，必须显式提供且大于0；BookSim的路由/分配/交换延迟由 `.icnt` 文件控制，该字段不再作为数据包固定延迟。 |
 | `icnt_freq` | 无符号整数/MHz | 必填 | 互连频率，必须大于0。 |
-| `icnt_config_path` | 字符串/路径 | 保留字段 | 历史上用于 `booksim2`；当前仅支持 `simple`，因此不会读取该路径。 |
+| `icnt_config_path` | 字符串/路径 | `simple`时可省略 | `booksim2`时必填，指向BookSim INI格式配置；文件必须存在，拓扑端点数必须等于 `num_cores * dram_channels + dram_channels`。 |
+| `icnt_ctrl_size` | 无符号整数/byte | `8` | BookSim中不携带payload的请求/响应大小，必须大于0。WRITE/GWRITE请求和READ/READRES响应使用实际数据字节数。 |
+| `icnt_input_buffer_size` | 无符号整数/packet/node | `0`（无限） | 仅用于`simple`：每个源节点的输入队列容量。设为正数后，队列达到容量时`is_full()`向Core/DRAM返回背压；不得为负数。 |
+| `icnt_output_buffer_size` | 无符号整数/packet/node | `0`（无限） | 仅用于`simple`：每个目的节点的输出队列容量。设为正数后，目的队列满时数据包保留在源输入队列，并逐步向上游传播背压；不得为负数。 |
 | `precision` | 无符号整数/byte/element | 必填 | 旧的统一数据宽度，仍被部分算子和SRAM使用；例如FP16填`2`。 |
 | `precision_weight` | 无符号整数/byte/element | 必填 | 权重元素字节数，必须大于0。 |
 | `precision_activation` | 无符号整数/byte/element | 必填 | 激活元素字节数，必须大于0。 |
@@ -133,6 +136,8 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | --- | --- | --- | --- |
 | `max_batch_size` | 无符号整数/请求 | 必填 | 调度批次上限，必须大于0。 |
 | `max_active_reqs` | 无符号整数/请求 | 必填 | 调度器中同时驻留（等待或运行）的最大请求数；Client 超出部分暂缓提交，同时用于KV Cache容量预留。必须大于0。 |
+| `batch_scheduler` | 字符串 | `"legacy"` | 批处理策略。`legacy`保持原有整批执行方式；`continuous`允许请求完成后释放驻留槽位，并在stage边界重新组成Prefill或Decode批次。仅支持这两个值。 |
+| `max_prefill_batch_tokens` | 无符号整数/token | `0` | `continuous`模式下单个Prefill批次的输入token总上限；`0`表示不限制。当前尚不支持chunked prefill，因此任一请求的输入长度超过非零上限时会直接报告配置错误。 |
 | `max_seq_len` | 无符号整数/token | 必填 | 最大序列长度；参与KV Cache容量预留。 |
 | `kv_cache_entry_size` | 无符号整数/token | 必填 | IANUS/DASH中每个Cache entry覆盖的token数；NPU布局会根据DRAM页宽重新推导。 |
 | `allocation_scheme` | 字符串 | 必填 | 支持 `NPU`、`NeuPIM`、`IANUS`、`DASH`，区分大小写。 |
@@ -166,14 +171,14 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | `test_single_op_name` | 字符串 | 必填 | 支持 `rmsnorm`、`layernorm`、`gemm`、`gemm_att`、`gemv`、`gemv_att`、`softmax`、`add`、`mul`、`gelu`、`silu`、`data_convert`/`dataconvert`、`pim_gemv`、`pim_gemv_qkt`、`pim_gemv_sv` 等注册名称。 |
 | `test_multi_layer` | 布尔 | 必填 | `true`时构造预设的算子块/单层路径。 |
 | `test_multi_layer_name` | 字符串 | 必填 | 当前实现包含 `ffn`、`decode_ffn`、`decode_attn`、`attn`、`decode`、`npu_decode`、`prefill`、`llama_ffn`、`data_convert_weights`、`llama_decode_ffn`、`llama_attn`、`llama_decode_attn`。 |
-| `accelerate_ctrl` | 布尔 | `false` | 开启工作量采样/预测。做基线或CA/ED一致性验证时应关闭。 |
+| `accelerate_ctrl` | 布尔 | `false` | 开启工作量采样/预测。做基线或CA/ED一致性验证时应关闭。DataContainer开启时自动回退；虚拟内存开启时仅支持`Proportional`，`naive`和`Loop_wise`会自动回退。 |
 | `accelerate_method` | 字符串 | 空字符串 | 当前实现识别 `naive`、`Loop_wise`、`Proportional`。 |
 | `accelerate_sample_ratio` | 浮点/比例 | `0.25` | Proportional采样比例；有效范围应为 `(0,1]`，具体算子还要求存在足够完整循环。 |
 | `attention_command_warmup_weight` | 浮点/比例 | `0.0` | 注意力命令补偿的warmup权重；代码强制 `[0,1]`。 |
 | `softmax_warmup_rounds` | 无符号整数/轮 | `2` | Proportional Softmax warmup轮数；相关加速时必须大于0。 |
 | `softmax_sample_rounds` | 无符号整数/轮 | `4` | Proportional Softmax采样轮数；相关加速时必须大于0。 |
 | `compile_time_tile_pruning` | 布尔 | `false` | 在程序构造期裁剪可预测tile。 |
-| `decode_pruning_enabled` | 布尔 | `false` | 打开decode迭代采样/复用。 |
+| `decode_pruning_enabled` | 布尔 | `false` | 打开decode迭代采样/复用；模板键包含操作名、请求批次签名、tile数量和循环形状。DataContainer开启时自动回退；虚拟内存开启时仅剪枝地址稳定的FFN操作。 |
 | `decode_pruning_iterations` | 无符号整数/迭代 | `1` | 必须大于0。 |
 | `decode_pruning_sample_iterations` | 无符号整数/迭代 | `1` | 必须大于0且不能超过 `decode_pruning_iterations`。 |
 | `dram_trace_simulation_mode` | 布尔 | `false` | `false` = CycleAccurate/NewtonSim；`true` = EventDriven。 |
@@ -390,7 +395,9 @@ DRAM命令能耗按 `V × mA × ns` 计算，因此JSON/TXT中的DRAM能耗数�
 | `_summary.tsv` | 所有正常结束的运行 | 按stage汇总的核心周期、PIM周期和DRAM带宽利用率。 |
 | `core_timing.tsv` | 所有正常结束的运行 | 每个核心的计算、访存停顿、空闲和算子级周期。 |
 | `icnt_traffic.json` | 所有正常结束的运行 | 每通道实测、估计和逻辑流量/PIM请求数。 |
+| `booksim2_stats.json` | `icnt_type=booksim2` | BookSim拓扑/flit大小、PHSim与BookSim互连周期、注入/弹出数据包和payload字节数。 |
 | `data_container_stats.json` | 所有正常结束的运行 | DataContainer当前/峰值payload、已物化DRAM列数，以及逐通道PIM输入/输出占用；关闭DataContainer时仍生成零值记录。 |
+| `virtual_memory_stats.json` | 所有正常结束的运行 | 虚拟页数量、映射调用/地址变化计数、逐通道映射量和确定性指纹；关闭虚拟内存时仍生成零值记录。 |
 | `dramsim3.json`、`dramsim3.txt` | CycleAccurate | NewtonSim逐通道命令、延迟、状态周期、带宽和能耗。前缀可由INI修改。 |
 | `eventdrivendram.json`、`eventdrivendram.txt` | EventDriven | ED逐通道请求、合并、命令、逻辑补偿、状态周期、带宽和能耗。 |
 | `proportional_command_compensation.json` | CycleAccurate | Proportional采样的CA命令补偿；关闭采样时可能为空。 |
@@ -445,6 +452,10 @@ DRAM命令能耗按 `V × mA × ns` 计算，因此JSON/TXT中的DRAM能耗数�
 - `logical_* = measured_* + estimated_*`：用于不同加速设置之间比较的完整逻辑工作量。
 
 流量字段 `read_bytes`、`write_bytes` 单位为byte。PIM字段 `pheader_requests`、`gwrite_requests`、`comp_requests`、`readres_requests` 单位为请求条数。`COMP_HASH`计入 `comp_requests`；组合COMP+READRES会同时计入两类。
+
+#### BookSim `booksim2_stats.json`
+
+`nodes` 和 `flit_size_bytes` 记录激活的BookSim拓扑；`phsim_icnt_cycles` 是PHSim互连时钟推进次数，`booksim_cycles` 是BookSim内部周期。当前两者每次互连tick同步推进一次。`injected_packets/ejected_packets` 及对应payload字节在正常结束时应分别相等；不相等表示仿真结束时仍有在途包或统计元数据错误。该文件记录的是payload字节，BookSim实际占用的flit数还受 `flit_size` 和header配置影响。
 
 ### 5.5 DRAM JSON/TXT公共指标
 
@@ -524,11 +535,28 @@ CA和ED采用不同的调度抽象，命令发出时刻、write-buffer合并和�
 | `pim_payload_bytes` | byte | 结束时所有通道PIM输入和输出payload总量。 |
 | `resident_payload_bytes` | byte | `dram_payload_bytes + pim_payload_bytes`。 |
 | `peak_resident_payload_bytes` | byte | 本次运行中上述驻留payload的峰值。 |
+| `nonzero_payload_bytes` | byte | 结束时所有已维护payload中非零字节总数。 |
+| `content_fingerprint` | 十进制字符串 | 对排序后的DRAM列地址/内容和逐通道PIM输入、输出、读偏移计算的确定性64位指纹；用于同配置回归比较，不代表密码学摘要。 |
+| `response_counts.read/write/pheader/gwrite/comp/readres` | 完成响应 | DataContainer实际消费的各类DRAM/PIM完成响应数量；组合请求按其DataContainer语义计入对应阶段。 |
 | `payload_limit_bytes` | byte | `dram_data_container_max_payload_mb`换算后的上限；0表示不限制。 |
 | `payload_limit_enabled` | 布尔 | 是否设置了非零payload上限。 |
 | `channels[]` | 数组 | 每个DRAM通道的PIM输入/输出当前字节数和峰值字节数。P_HEADER会清空当前值，但不会清除生命周期峰值。 |
 
-### 5.7 主机真实时间
+### 5.7 `virtual_memory_stats.json`
+
+| 字段 | 单位 | 含义 |
+| --- | --- | --- |
+| `enabled` | 布尔 | 本次运行是否启用两级页映射与bank hash。 |
+| `mapped_page_count` | 页 | 结束时稀疏页表中实际分配的逻辑页数量。 |
+| `mapping_call_count` | 请求 | 实际进入互联的DRAM/PIM请求执行地址映射的次数；有限容量背压期间，同一等待请求不会重复计数。 |
+| `changed_mapping_count` | 请求 | 映射后地址数值与逻辑地址不同的调用次数。 |
+| `mapping_calls_by_channel[]` | 请求/通道 | 按映射前逻辑通道统计的调用数。总和应等于`mapping_call_count`。 |
+| `mapping_pair_xor`、`mapping_pair_sum` | 十进制字符串 | 所有`(逻辑地址, 物理地址)`对的顺序无关64位多重集指纹；一个使用XOR聚合，一个使用模2^64求和聚合。 |
+| `page_table_fingerprint` | 十进制字符串 | 对按逻辑页排序后的页表计算的确定性64位指纹。 |
+
+在同一配置的基线/兼容回退对比中，映射调用数、逐通道数量、地址对指纹和页表指纹都应一致。指纹用于快速发现地址集合变化；需要定位单个地址时仍应使用页表或完成trace。
+
+### 5.8 主机真实时间
 
 终端的 `Component Real Time Breakdown` 统计的是仿真器在主机上消耗的wall-clock时间：
 
@@ -602,7 +630,43 @@ CA和ED采用不同的调度抽象，命令发出时刻、write-buffer合并和�
 
 PIM Decode不能任意缩小模型：当前权重分块会按 `column_interleave × total_banks` 取整，输出维度过小时会得到零长度PIM tile；VCache的最小分块也必须放入 `pim_input_buffer_size`。回归case使用 `model_n_embd=256` 和 `pim_input_buffer_size=4096 byte`，规模仍较小，同时满足当前PIM分块约束。
 
-### 6.3 单算子GEMM
+### 6.3 多请求连续批处理
+
+连续批处理在完整模型的逐token推理路径上启用：
+
+```json
+{
+  "max_batch_size": 2,
+  "max_active_reqs": 2,
+  "batch_scheduler": "continuous",
+  "max_prefill_batch_tokens": 8,
+  "output_token_iteration_enable": true,
+  "test_single_op": false,
+  "test_multi_layer": false
+}
+```
+
+`max_active_reqs`限制已进入调度器且仍占用KV Cache的请求数，`max_batch_size`限制一个Prefill或Decode程序实际包含的请求数。请求不会在一个已经生成的硬件程序中途加入；调度器只在stage边界重新组批，因此同一批次不会混合Prefill和Decode。若存在已等待至少一个原有调度窗口（64个核心周期）的Prefill请求，优先组成Prefill批次，避免持续可运行的Decode请求使新Prompt饥饿；否则从可Decode请求中按轮转顺序组成Decode批次。完成输出目标的请求立即释放KV Cache和active slot，Client随后可以提交被背压的请求。
+
+仓库内的小型trace依次包含 `(input, output)=(4,3)、(4,1)、(4,2)`。在两个驻留槽位下，第二个请求完成1个输出token后释放槽位，第三个请求随即进入；预期批次序列为：
+
+```text
+Prefill [0,1]
+Decode  [0,1]
+Prefill [2]
+Decode  [0,2]
+Decode  [0,2]
+```
+
+可直接运行CA/ED配对回归：
+
+```bash
+ctest --test-dir . --output-on-failure -R continuous_batching_test
+```
+
+完整配置位于 `tests/fixtures/smoke/simulation_continuous_batching_cycle_accurate.json` 和 `tests/fixtures/smoke/simulation_continuous_batching_event_driven.json`。默认 `batch_scheduler="legacy"`，所以现有配置即使不增加新字段也保持原有仿真结果。当前实现没有chunked prefill、动态合并已开始执行的程序，也不会在同一硬件批次中混合Prefill和Decode。
+
+### 6.4 单算子GEMM
 
 仓库提供经过CTest验证的小型配置：
 
@@ -617,7 +681,7 @@ mkdir -p output/gemm-ca
 
 若只想测时序而不维护数据，把对应inference JSON中的 `dram_data_container_enable` 改为 `false`。
 
-### 6.4 CA与ED切换和对比
+### 6.5 CA与ED切换和对比
 
 唯一后端开关是：
 
@@ -644,7 +708,7 @@ mkdir -p output/gemm-ca output/gemm-ed
 
 至少比较：stage完成量、`logical_read_bytes`、`logical_write_bytes`、读写/PIM完成量和最终周期。不要要求CA/ED的WRITE发出数、ACT/PRE数或行命中数天然完全相同。
 
-### 6.5 DataContainer
+### 6.6 DataContainer
 
 最小设置：
 
@@ -657,6 +721,10 @@ mkdir -p output/gemm-ca output/gemm-ed
 
 DataContainer只为访问过的DRAM列物化存储；未写位置读为0。CA和ED共用同一套完成语义：普通READ/WRITE维护DRAM burst，P_HEADER清空对应通道的PIM暂存状态，GWRITE按burst写入输入缓冲区，COMP/COMP_HASH发布结果，READRES按burst读回结果。COMPS_READRES执行后两步的组合语义。重复读取同一个已完成响应不会再次修改状态。
 
+当前Pruning不重放DataContainer的payload修改。因此，只要开启DataContainer，初始化阶段就会关闭仿真加速和Decode Pruning并输出warning，实际执行自动回到逐请求精确路径。这是有意的正确性保护，不是配置失效。
+
+虚拟内存具有独立的“仅地址副作用重放”路径：`Proportional` Tile Pruning被跳过的tile仍会生成其逻辑地址并调用页映射，但不会送入Core、互联或DRAM；Decode Pruning只对地址形状稳定的FFN操作使用该路径，Q/K/V/投影生成仍真实执行，因为KV-cache增长可能改变不同token迭代的地址。虚拟内存与`naive`或`Loop_wise`组合时仍自动回退。测试会对比映射次数、逐通道分布、地址对指纹和最终页表，而不仅是流量计数。
+
 这里的PIM payload是“透明字节流”，不是数值计算引擎。测试或上层功能模型可以在COMP请求中提供结果字节；若未提供，DataContainer只把当前输入缓冲区快照作为可追踪的占位结果，不执行矩阵乘加、量化或浮点运算。因此专用测试验证的是数据流、顺序、通道隔离和容量边界，不能替代算子数值正确性验证。
 
 正常结束的仿真会把占用量写入`data_container_stats.json`；它只能说明维护了多少payload，数据内容及完成语义仍应由专用测试验证：
@@ -668,7 +736,7 @@ ctest --test-dir . --output-on-failure \
 
 大模型启用真实数据维护时，先用1请求、8 token、单算子和较小payload上限。统计结果一致只说明逻辑工作量一致；DataContainer正确性由专用读回/写回测试判断。
 
-### 6.6 虚拟内存与地址hash
+### 6.7 虚拟内存与地址hash
 
 只验证地址映射/PIM hash、不开DataContainer：
 
@@ -718,6 +786,60 @@ mkdir -p output/vm-dc-ca output/vm-dc-ed
 - 专用 `virtual_memory_address_layout_test` 和 `pim_hash_address_group_test` 通过；
 - 开关关闭后的基线case保持原有周期和流量口径。
 
+### 6.8 BookSim互连
+
+仓库提供一个4端点的2×2 mesh小型case，对应1个核心、2个核心到DRAM通道端口和2个DRAM端口。该测试fixture中的路径相对仓库根目录，因此这一例从仓库根目录运行：
+
+```bash
+mkdir -p output/booksim-smoke
+./build/NMC_Simulator \
+  -sc tests/fixtures/smoke/simulation_booksim2_event_driven.json \
+  -o output/booksim-smoke
+```
+
+关键计算芯片配置为：
+
+```json
+{
+  "icnt_type": "booksim2",
+  "icnt_config_path": "configs/booksim2_configs/mesh_2x2.icnt",
+  "icnt_ctrl_size": 8
+}
+```
+
+`simple`互连默认保持历史上的无限队列。如需验证有限容量，可在计算芯片JSON中加入：
+
+```json
+{
+  "icnt_input_buffer_size": 8,
+  "icnt_output_buffer_size": 4
+}
+```
+
+两个数均按“每节点可容纳的数据包数”计；省略或设为`0`表示无限。输入队列满时Core/DRAM暂停注入，输出队列满时已到期的数据包留在输入队列，不会被丢弃或覆盖。
+
+BookSim使用`.icnt`中的三级容量，三者省略或设为`0`时均为无限，设置正数后才启用有限容量：
+
+| `.icnt`字段 | 单位 | 默认值 | 有限容量语义 |
+| --- | --- | --- | --- |
+| `input_buffer_size` | flit/source node | `0`（无限） | PHSim到BookSim的注入队列；新数据包的全部flit放入后超过容量时拒绝注入。 |
+| `ejection_buffer_size` | flit/destination node/VC | `0`（无限） | BookSim网络出口缓冲；满时不消费出口链路flit，也不返回credit，因此压力向路由器传播。 |
+| `boundary_buffer_size` | complete packet/destination node/VC | `0`（无限） | PHSim可见的边界队列；按完整数据包计数，允许一个正在组装的数据包接收至tail，避免多flit数据包因容量小于包长而死锁。 |
+
+`input_buffer_size`必须至少能容纳可能注入的最大单包flit数，否则该数据包会持续收到背压而无法注入。这里的容量只控制PHSim与BookSim之间的适配器队列；`vc_buf_size`仍是BookSim路由器内部VC的flit容量，是网络微结构参数，必须为正。仓库中的`mesh_2x2.icnt`显式配置了`32/16/16`，属于有限容量case；`mesh_2x2_unbounded.icnt`演示默认无限；`mesh_2x2_backpressure.icnt`使用`2/1/1`进行饱和回归。
+
+启动日志应包含 `BookSim active`，正常结束后 `booksim2_stats.json` 中注入/弹出的数据包和payload字节应分别相等。与 `simple` 对比时，`icnt_traffic.json` 的逻辑工作量应一致，但 `_summary.tsv` 周期可因mesh路由、VC分配、flit分割和缓冲竞争而不同。回归测试可单独运行：
+
+```bash
+ctest --test-dir . --output-on-failure -R booksim2
+```
+
+只运行互连容量与背压专测：
+
+```bash
+ctest --test-dir . --output-on-failure -R "interconnect_backpressure|booksim2_(unbounded_buffer|finite_backpressure)"
+```
+
 ## 7. 实验检查清单
 
 运行前：
@@ -746,6 +868,7 @@ mkdir -p output/vm-dc-ca output/vm-dc-ed
 ## 8. 已知配置兼容性提示
 
 - `gen_request_output_size` 已用于固定请求的输出目标，但只有 `output_token_iteration_enable=true` 才按该目标重复Decode；默认关闭时仍执行原有固定stage序列。
+- `batch_scheduler`缺失时默认使用`legacy`，因此旧配置不改变调度语义。`continuous`仅支持完整模型且要求`output_token_iteration_enable=true`；单算子、多层测试或固定stage序列会在启动时拒绝该组合。
 - `gen_request=false` 时，Client读取CSV第1列作为输入长度、第2列作为输出长度；文件缺失、列数错误、非法数值或空数据都会在启动时给出明确错误。仓库Case默认路径指向 `sample_trace/request-traces/`。
 - `core_type`、`scheduler`、`dram_type`、`PU_location` 只允许当前实际实现的值；`sram_width=128`、`scalar_add_latency=1` 和空的 `operation_log_output_path` 作为历史兼容值保留，修改为其他值会被拒绝而不是静默忽略。
 - PIM Decode的维度必须满足当前bank/column交织粒度；过小的隐藏维度或过小的 `pim_input_buffer_size` 可能产生零长度分块，优先从已验证的迭代smoke配置缩放。

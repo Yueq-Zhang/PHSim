@@ -12,9 +12,11 @@ GNNSimConfig::GNNSimConfig() {
   // The header size of NVLINK is 16B
   _int_map["header_size"] = 16;
   
+  // External PHSim/BookSim adapter buffers are unbounded by default. Positive
+  // values opt into finite-capacity backpressure.
   _int_map["input_buffer_size"] = 0;
-  _int_map["ejection_buffer_size"] = 0; // if left zero the simulator will use the vc_buf_size instead
-  _int_map["boundary_buffer_size"] = 16;
+  _int_map["ejection_buffer_size"] = 0;
+  _int_map["boundary_buffer_size"] = 0;
   
 
   // FIXME: obsolete, unsupport configs

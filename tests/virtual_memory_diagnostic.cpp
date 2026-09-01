@@ -179,6 +179,18 @@ int main() {
     const bool wrapper_enabled = TwoLevelPageMapper::is_enabled();
     const bool wrapper_tracks_sparse_pages =
         TwoLevelPageMapper::mapped_page_count() == 1;
+    const auto wrapper_channel_calls =
+        TwoLevelPageMapper::mapping_calls_by_channel();
+    const uint32_t probe_channel =
+        MyAddressAllocator::get_channel_index(probe_address);
+    const bool wrapper_runtime_stats =
+        TwoLevelPageMapper::mapping_call_count() == 2 &&
+        TwoLevelPageMapper::changed_mapping_count() ==
+            (wrapper_first != probe_address ? 2 : 0) &&
+        wrapper_channel_calls.size() == mem.channels &&
+        wrapper_channel_calls[probe_channel] == 2 &&
+        TwoLevelPageMapper::mapping_pair_sum() != 0 &&
+        TwoLevelPageMapper::page_table_fingerprint() != 0;
 
     std::ostringstream page_table;
     TwoLevelPageMapper::dump_page_table(page_table);
@@ -308,6 +320,8 @@ int main() {
     print_check("wrapper_reports_enabled", wrapper_enabled);
     print_check("wrapper_tracks_only_mapped_pages",
                 wrapper_tracks_sparse_pages);
+    print_check("wrapper_reports_runtime_mapping_stats",
+                wrapper_runtime_stats);
     print_check("page_table_records_first_touch", wrapper_page_allocated);
     print_check("address_units_match_mem_config", address_units_match_config);
     print_check("mapper_and_dram_decoders_agree", decoders_agree);
@@ -364,7 +378,8 @@ int main() {
 
     const bool healthy = disabled_pass_through && wrapper_deterministic &&
                          wrapper_enabled && wrapper_tracks_sparse_pages &&
-                         wrapper_page_allocated && address_units_match_config &&
+                         wrapper_runtime_stats && wrapper_page_allocated &&
+                         address_units_match_config &&
                          decoders_agree &&
                          hash_changes_runtime_bank && channel_is_preserved &&
                          row_is_preserved_within_page && pages_are_isolated &&

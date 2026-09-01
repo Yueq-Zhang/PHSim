@@ -6,12 +6,31 @@
 #include <utility>
 #include <algorithm>
 #include <limits>
+#include <tuple>
 
 namespace {
 
 void hash_combine(std::size_t& seed, uint32_t value) noexcept {
     seed ^= std::hash<uint32_t>{}(value) + 0x9e3779b9U + (seed << 6U) +
             (seed >> 2U);
+}
+
+void fingerprint_update(uint64_t& fingerprint, uint64_t value) noexcept {
+    constexpr uint64_t kFnvPrime = 1099511628211ULL;
+    for (uint32_t byte = 0; byte < sizeof(value); ++byte) {
+        fingerprint ^= static_cast<uint8_t>(value >> (byte * 8U));
+        fingerprint *= kFnvPrime;
+    }
+}
+
+void fingerprint_update(uint64_t& fingerprint,
+                        const std::vector<uint8_t>& bytes) noexcept {
+    constexpr uint64_t kFnvPrime = 1099511628211ULL;
+    fingerprint_update(fingerprint, bytes.size());
+    for (const uint8_t byte : bytes) {
+        fingerprint ^= byte;
+        fingerprint *= kFnvPrime;
+    }
 }
 
 }  // namespace
@@ -78,6 +97,12 @@ void DramDataContainer::clear() noexcept {
     }
     peak_resident_payload_bytes_ = 0;
     peak_stored_column_count_ = 0;
+    read_response_count_ = 0;
+    write_response_count_ = 0;
+    pheader_response_count_ = 0;
+    gwrite_response_count_ = 0;
+    comp_response_count_ = 0;
+    readres_response_count_ = 0;
 }
 
 uint64_t DramDataContainer::resident_payload_bytes() const noexcept {
@@ -119,6 +144,67 @@ uint64_t DramDataContainer::peak_pim_output_payload_bytes(
     uint32_t channel) const {
     validate_channel(channel);
     return pim_channels_[channel].peak_output_bytes;
+}
+
+uint64_t DramDataContainer::nonzero_payload_bytes() const noexcept {
+    uint64_t count = 0;
+    const auto count_nonzero = [&count](const std::vector<uint8_t>& bytes) {
+        count += static_cast<uint64_t>(std::count_if(
+            bytes.begin(), bytes.end(),
+            [](uint8_t value) { return value != 0; }));
+    };
+    for (const auto& entry : columns_data_) {
+        count_nonzero(entry.second);
+    }
+    for (const auto& state : pim_channels_) {
+        count_nonzero(state.input);
+        count_nonzero(state.output);
+    }
+    return count;
+}
+
+uint64_t DramDataContainer::content_fingerprint() const {
+    if (!enabled_ || resident_payload_bytes() == 0) {
+        return 0;
+    }
+
+    constexpr uint64_t kFnvOffset = 14695981039346656037ULL;
+    uint64_t fingerprint = kFnvOffset;
+    std::vector<std::pair<ColumnAddress, const ColumnData*>> columns;
+    columns.reserve(columns_data_.size());
+    for (const auto& entry : columns_data_) {
+        columns.emplace_back(entry.first, &entry.second);
+    }
+    std::sort(columns.begin(), columns.end(), [](const auto& lhs,
+                                                  const auto& rhs) {
+        const auto lhs_key = std::tie(
+            lhs.first.channel, lhs.first.rank, lhs.first.bankgroup,
+            lhs.first.bank, lhs.first.row, lhs.first.column);
+        const auto rhs_key = std::tie(
+            rhs.first.channel, rhs.first.rank, rhs.first.bankgroup,
+            rhs.first.bank, rhs.first.row, rhs.first.column);
+        return lhs_key < rhs_key;
+    });
+
+    fingerprint_update(fingerprint, columns.size());
+    for (const auto& entry : columns) {
+        fingerprint_update(fingerprint, entry.first.channel);
+        fingerprint_update(fingerprint, entry.first.rank);
+        fingerprint_update(fingerprint, entry.first.bankgroup);
+        fingerprint_update(fingerprint, entry.first.bank);
+        fingerprint_update(fingerprint, entry.first.row);
+        fingerprint_update(fingerprint, entry.first.column);
+        fingerprint_update(fingerprint, *entry.second);
+    }
+    fingerprint_update(fingerprint, pim_channels_.size());
+    for (uint32_t channel = 0; channel < pim_channels_.size(); ++channel) {
+        const auto& state = pim_channels_[channel];
+        fingerprint_update(fingerprint, channel);
+        fingerprint_update(fingerprint, state.input);
+        fingerprint_update(fingerprint, state.output);
+        fingerprint_update(fingerprint, state.read_offset);
+    }
+    return fingerprint;
 }
 
 bool DramDataContainer::ColumnAddress::operator==(
@@ -355,10 +441,12 @@ void DramDataContainer::apply_response(MemoryAccess* response) {
 
     switch (response->req_type) {
         case MemoryAccessType::READ:
+            ++read_response_count_;
             response->data = flatten_burst(
                 read_burst(channel, rank, bankgroup, bank, row, column));
             break;
         case MemoryAccessType::WRITE:
+            ++write_response_count_;
             if (!response->data.empty()) {
                 BurstData burst(burst_length_, ColumnData(dq_bytes_, 0));
                 for (uint32_t column_offset = 0;
@@ -378,20 +466,26 @@ void DramDataContainer::apply_response(MemoryAccess* response) {
             }
             break;
         case MemoryAccessType::P_HEADER:
+            ++pheader_response_count_;
             reset_pim_state(channel);
             response->data.clear();
             break;
         case MemoryAccessType::GWRITE:
+            ++gwrite_response_count_;
             append_pim_input(channel, response->data);
             break;
         case MemoryAccessType::COMP:
         case MemoryAccessType::COMP_HASH:
+            ++comp_response_count_;
             materialize_pim_output(channel, response->data);
             break;
         case MemoryAccessType::READRES:
+            ++readres_response_count_;
             response->data = read_pim_output_burst(channel);
             break;
         case MemoryAccessType::COMPS_READRES:
+            ++comp_response_count_;
+            ++readres_response_count_;
             materialize_pim_output(channel, response->data);
             response->data = read_pim_output_burst(channel);
             break;

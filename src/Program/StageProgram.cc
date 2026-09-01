@@ -30,6 +30,16 @@ uint32_t model_kv_cache_width() {
     return Config::system_config.model_n_kv_head *
            (Config::system_config.model_n_embd / Config::system_config.model_n_head);
 }
+
+std::vector<uint8_t> make_data_container_diagnostic_payload(
+    uint64_t size, uint8_t seed) {
+    std::vector<uint8_t> payload(size);
+    for (uint64_t index = 0; index < size; ++index) {
+        payload[index] = static_cast<uint8_t>(
+            seed + (index * 37U + index / 17U) % 251U);
+    }
+    return payload;
+}
 }
 
 
@@ -156,10 +166,12 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
         if (_data_container != nullptr && _data_container->enabled()) {
             // Store Bias
             my_bias->initial_data_container(*_data_container);
-            std::vector<uint8_t> bias_data(my_bias->get_total_size(), 0);
+            auto bias_data = make_data_container_diagnostic_payload(
+                my_bias->get_total_size(), 0x11);
             my_bias->append_data_into_container(bias_data, *_data_container);
             // Store Weight
-            std::vector<uint8_t> weight_data(my_weight->get_total_size(), 0);
+            auto weight_data = make_data_container_diagnostic_payload(
+                my_weight->get_total_size(), 0x43);
             my_weight->initial_data_container(*_data_container);
             my_weight->append_data_into_container(weight_data, *_data_container);
         }
@@ -172,7 +184,9 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
             auto my_input = std::make_shared<MyTensor>("input", input_dim, TensorType::ACT, true);
             if (_data_container != nullptr && _data_container->enabled()) {
                 // Store Activation data
-                std::vector<uint8_t> activation_data(my_input->get_total_size(), 0);
+                auto activation_data =
+                    make_data_container_diagnostic_payload(
+                        my_input->get_total_size(), 0x85);
                 my_input->initial_data_container(*_data_container);
                 my_input->append_data_into_container(activation_data, *_data_container);
             }

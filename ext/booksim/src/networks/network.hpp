@@ -82,6 +82,7 @@ public:
 
   virtual void WriteFlit( Flit *f, int source );
   virtual Flit *ReadFlit( int dest );
+  virtual Flit *PeekFlit( int dest ) const;
 
   virtual void    WriteCredit( Credit *c, int dest );
   virtual Credit *ReadCredit( int source );
@@ -118,4 +119,3 @@ public:
 };
 
 #endif 
-

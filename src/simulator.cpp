@@ -607,13 +607,16 @@ void Simulator::cycle() {
                         // add the mem access from core to interconnect, then send to dram
                         if (_cores[core_id]->has_memory_request(mem_id)) {
                             MemoryAccess *front = _cores[core_id]->top_memory_request(mem_id);  //
-                            // 2-level dram address mapping from Interconnect
-                            front->logical_dram_address = front->dram_address;
-                            front->dram_address = TwoLevelPageMapper::map_logical_address(front->logical_dram_address);
-                            assert(MyAddressAllocator::get_channel_index(front->dram_address) == mem_id); // get channel index based from dram address
                             front->core_id = core_id;
                             front->mem_id = mem_id;
                             if (!_icnt->is_full(core_id * _n_memories + mem_id, front)) {
+                                // Map exactly once, when the interconnect can
+                                // accept the request.  Mapping before the
+                                // capacity check would remap an already-mapped
+                                // address on every back-pressured cycle.
+                                front->logical_dram_address = front->dram_address;
+                                front->dram_address = TwoLevelPageMapper::map_logical_address(front->logical_dram_address);
+                                assert(MyAddressAllocator::get_channel_index(front->dram_address) == mem_id); // get channel index based from dram address
                                 _icnt->push(core_id * _n_memories + mem_id, get_dest_node(front), front);
                                 _cores[core_id]->pop_memory_request(mem_id);
                             }
@@ -692,15 +695,15 @@ void Simulator::cycle() {
                         // Core -> ICNT (request), if core has memory request to some dram channel, send the request
                         if (_cores[core_id]->has_memory_request(mem_id)) {
                             MemoryAccess *front = _cores[core_id]->top_memory_request(mem_id);
-                            front->logical_dram_address = front->dram_address;
-                            front->dram_address = TwoLevelPageMapper::map_logical_address(front->logical_dram_address);
-                            assert(MyAddressAllocator::get_channel_index(front->dram_address) == mem_id);
                             // update_req_stat(front->req_type, _stat_core2icnt_read, _stat_core2icnt_write, _stat_core2icnt_gwrite, _stat_core2icnt_other);
                             front->core_id = core_id;
                             front->mem_id  = mem_id;
                             uint32_t src = core_id * _n_memories + mem_id;
-                            uint32_t dst = get_dest_node(front); // memory node
                             if (!_icnt->is_full(src, front)) {
+                                front->logical_dram_address = front->dram_address;
+                                front->dram_address = TwoLevelPageMapper::map_logical_address(front->logical_dram_address);
+                                assert(MyAddressAllocator::get_channel_index(front->dram_address) == mem_id);
+                                uint32_t dst = get_dest_node(front); // memory node
                                 _icnt->push(src, dst, front);
                                 _cores[core_id]->pop_memory_request(mem_id);
                             }
@@ -808,6 +811,7 @@ void Simulator::cycle() {
     _scheduler->print_stat();
     _scheduler->print_op_stat();
     log_data_container_stat();
+    log_virtual_memory_stat();
     log_stage_stat();
 }
 
@@ -935,6 +939,17 @@ void Simulator::log_data_container_stat() const {
         _data_container->resident_payload_bytes();
     output["peak_resident_payload_bytes"] =
         _data_container->peak_resident_payload_bytes();
+    output["nonzero_payload_bytes"] =
+        _data_container->nonzero_payload_bytes();
+    output["content_fingerprint"] =
+        std::to_string(_data_container->content_fingerprint());
+    output["response_counts"] = {
+        {"read", _data_container->read_response_count()},
+        {"write", _data_container->write_response_count()},
+        {"pheader", _data_container->pheader_response_count()},
+        {"gwrite", _data_container->gwrite_response_count()},
+        {"comp", _data_container->comp_response_count()},
+        {"readres", _data_container->readres_response_count()}};
     output["payload_limit_bytes"] =
         _data_container->max_resident_payload_bytes();
     output["payload_limit_enabled"] =
@@ -976,4 +991,44 @@ void Simulator::log_data_container_stat() const {
         _data_container->peak_resident_payload_bytes(),
         _data_container->stored_column_count(),
         _data_container->peak_stored_column_count());
+}
+
+void Simulator::log_virtual_memory_stat() const {
+    nlohmann::json output;
+    output["enabled"] = TwoLevelPageMapper::is_enabled();
+    output["mapped_page_count"] =
+        TwoLevelPageMapper::mapped_page_count();
+    output["mapping_call_count"] =
+        TwoLevelPageMapper::mapping_call_count();
+    output["changed_mapping_count"] =
+        TwoLevelPageMapper::changed_mapping_count();
+    output["mapping_pair_xor"] =
+        std::to_string(TwoLevelPageMapper::mapping_pair_xor());
+    output["mapping_pair_sum"] =
+        std::to_string(TwoLevelPageMapper::mapping_pair_sum());
+    output["page_table_fingerprint"] =
+        std::to_string(TwoLevelPageMapper::page_table_fingerprint());
+    output["mapping_calls_by_channel"] =
+        TwoLevelPageMapper::mapping_calls_by_channel();
+
+    const std::string file_name =
+        Config::system_config.log_dir + "/virtual_memory_stats.json";
+    std::ofstream file(file_name);
+    if (!file.is_open()) {
+        throw std::runtime_error(
+            "Cannot open virtual-memory statistics file: " + file_name);
+    }
+    file << output.dump(2) << '\n';
+    if (!file.good()) {
+        throw std::runtime_error(
+            "Failed to write virtual-memory statistics file: " + file_name);
+    }
+
+    spdlog::info(
+        "Virtual memory: enabled={}, mapped_pages={}, mapping_calls={}, "
+        "changed_mappings={}",
+        TwoLevelPageMapper::is_enabled(),
+        TwoLevelPageMapper::mapped_page_count(),
+        TwoLevelPageMapper::mapping_call_count(),
+        TwoLevelPageMapper::changed_mapping_count());
 }

@@ -6,8 +6,25 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <sstream>
 
 #include "../Client/Client.h"
+
+namespace {
+
+std::string format_request_ids(
+    const std::vector<Ptr<InferRequest>>& requests) {
+    std::ostringstream output;
+    for (size_t index = 0; index < requests.size(); ++index) {
+        if (index != 0) {
+            output << ',';
+        }
+        output << requests[index]->id;
+    }
+    return output.str();
+}
+
+}  // namespace
 
 MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
                          DramDataContainer* data_container)
@@ -15,6 +32,8 @@ MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
       _data_container(data_container) {
     _max_batch_size = config.max_batch_size;   // 256;   // config.max_batch_size;
     _max_active_reqs = config.max_active_reqs;
+    _continuous_batching = config.batch_scheduler == "continuous";
+    _max_prefill_batch_tokens = config.max_prefill_batch_tokens;
 
     _init_stage = Stage::Prefill;
     _model_program = nullptr;
@@ -53,6 +72,11 @@ MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
 
     _core_rr_id = 0;
     _active_reqs = 0;
+    spdlog::info(
+        "Batch scheduler: {} (max_batch_size={}, max_active_reqs={}, "
+        "max_prefill_batch_tokens={})",
+        config.batch_scheduler, _max_batch_size, _max_active_reqs,
+        _max_prefill_batch_tokens);
 }
 
 void MyScheduler::launch(Ptr<Model> model) {  // Register the model on memory
@@ -72,6 +96,15 @@ void MyScheduler::add_request(std::shared_ptr<InferRequest> request) {
             request->id, _max_active_reqs));
     }
     _request_queue.push_back(request);
+    if (_continuous_batching) {
+        if (request->is_initiated) {
+            throw std::logic_error(
+                "A newly admitted continuous-batching request is already "
+                "initialized");
+        }
+        _waiting_prefill_queue.push_back(request);
+        ++_active_reqs;
+    }
     if (_stage == Stage::Finish && _model_program == nullptr &&
         _breq.empty()) {
         _stage = _init_stage;
@@ -118,6 +151,146 @@ void MyScheduler::init_batches() {
         }
     }
     //TODO:: Multi Batch Inference
+}
+
+
+bool MyScheduler::form_continuous_batch() {
+    if (!_continuous_batching) {
+        return false;
+    }
+    if (_model_program != nullptr || !_breq.empty()) {
+        throw std::logic_error(
+            "Cannot form a continuous batch while another batch is active");
+    }
+
+    const size_t batch_capacity =
+        std::min(_max_batch_size, _max_active_reqs);
+    if (batch_capacity == 0) {
+        throw std::logic_error("Continuous batch capacity is zero");
+    }
+
+    bool prefill_wait_elapsed = false;
+    if (!_waiting_prefill_queue.empty()) {
+        const cycle_type arrival =
+            _waiting_prefill_queue.front()->arrival_cycle;
+        prefill_wait_elapsed =
+            _cycles > arrival && _cycles - arrival > 64;
+    }
+
+    // Prefill and Decode are intentionally kept in separate hardware
+    // programs. Once a resident prompt has waited through the existing
+    // batching window, schedule it before another Decode round. Otherwise a
+    // full Decode-ready queue could keep an admitted prompt waiting forever.
+    const bool choose_prefill = prefill_wait_elapsed;
+
+    uint64_t prompt_tokens = 0;
+    if (choose_prefill) {
+        const size_t available_slots = batch_capacity;
+        while (!_waiting_prefill_queue.empty() &&
+               _breq.size() < available_slots) {
+            const auto& request = _waiting_prefill_queue.front();
+            const uint64_t request_tokens = request->input_size;
+            if (_max_prefill_batch_tokens != 0 &&
+                request_tokens > _max_prefill_batch_tokens) {
+                throw std::invalid_argument(fmt::format(
+                    "Request {} has {} prompt tokens, exceeding "
+                    "max_prefill_batch_tokens={}; chunked Prefill is not "
+                    "enabled in this implementation",
+                    request->id, request_tokens,
+                    _max_prefill_batch_tokens));
+            }
+            if (_max_prefill_batch_tokens != 0 && !_breq.empty() &&
+                request_tokens >
+                    _max_prefill_batch_tokens - prompt_tokens) {
+                break;
+            }
+            prompt_tokens += request_tokens;
+            _breq.push_back(request);
+            _waiting_prefill_queue.pop_front();
+        }
+        if (_breq.empty()) {
+            throw std::logic_error(
+                "Continuous Prefill selection produced an empty batch");
+        }
+        _stage = Stage::Prefill;
+    } else if (!_ready_decode_queue.empty()) {
+        while (!_ready_decode_queue.empty() &&
+               _breq.size() < batch_capacity) {
+            _breq.push_back(_ready_decode_queue.front());
+            _ready_decode_queue.pop_front();
+        }
+        _stage = iterative_decode_stage();
+    } else {
+        return false;
+    }
+
+    _current_continuous_batch_id = _next_continuous_batch_id++;
+    spdlog::info(
+        "Continuous batch {} formed: stage={}, requests=[{}], "
+        "batch_size={}, prompt_tokens={}",
+        _current_continuous_batch_id, stageToString(_stage),
+        format_request_ids(_breq), _breq.size(), prompt_tokens);
+    return true;
+}
+
+
+void MyScheduler::complete_continuous_batch(Stage completed_stage) {
+    if (!_continuous_batching || _breq.empty()) {
+        throw std::logic_error("No continuous batch is available to complete");
+    }
+
+    const std::string completed_ids = format_request_ids(_breq);
+    if (completed_stage == Stage::Prefill) {
+        for (const auto& request : _breq) {
+            if (request->is_initiated) {
+                throw std::logic_error(fmt::format(
+                    "Request {} entered Prefill more than once", request->id));
+            }
+            request->is_initiated = true;
+            if (request->generated >= request->output_size) {
+                complete_request(request);
+            } else {
+                _ready_decode_queue.push_back(request);
+            }
+        }
+    } else if (completed_stage == Stage::Decode ||
+               completed_stage == Stage::NPU_Decode) {
+        for (const auto& request : _breq) {
+            if (!request->is_initiated ||
+                request->generated >= request->output_size) {
+                throw std::logic_error(fmt::format(
+                    "Request {} entered an invalid continuous Decode "
+                    "iteration ({}/{})",
+                    request->id, request->generated, request->output_size));
+            }
+            request->generated++;
+            spdlog::info(
+                "Scheduler:: Request {} generated token {}/{}",
+                request->id, request->generated, request->output_size);
+            if (request->generated >= request->output_size) {
+                complete_request(request);
+            } else {
+                _ready_decode_queue.push_back(request);
+            }
+        }
+    } else {
+        throw std::logic_error(
+            "Continuous batching only supports Prefill and Decode stages");
+    }
+
+    spdlog::info(
+        "Continuous batch {} completed: stage={}, requests=[{}]",
+        _current_continuous_batch_id, stageToString(completed_stage),
+        completed_ids);
+    _breq.clear();
+
+    if (_request_queue.empty()) {
+        _stage = Stage::Finish;
+    } else if (!_ready_decode_queue.empty()) {
+        _stage = iterative_decode_stage();
+    } else {
+        _stage = Stage::Prefill;
+    }
 }
 
 
@@ -222,7 +395,12 @@ void MyScheduler::advance_iterative_inference(Stage completed_stage) {
 void MyScheduler::cycle() {
     bool step_next_stage = _model_program == nullptr; // no model program
 
-    if (step_next_stage && _stage == _init_stage && !_request_queue.empty() && _cycles - _last_request_cycle > 64) {   // Init one inference batch
+    if (step_next_stage && _continuous_batching && _breq.empty()) {
+        form_continuous_batch();
+    }
+    else if (step_next_stage && _stage == _init_stage &&
+             !_request_queue.empty() &&
+             _cycles - _last_request_cycle > 64) {   // Init one inference batch
         init_batches();
     }
 
@@ -231,6 +409,10 @@ void MyScheduler::cycle() {
     bool exist_request = !_breq.empty();
     if (program_none && exist_request) {   // has request but no program
         if (_stage == Stage::Finish) { // Current request finished
+            if (_continuous_batching) {
+                throw std::logic_error(
+                    "Continuous batch cannot be active in Finish stage");
+            }
             cleanup_batch(_breq);
             _breq.clear();
             // The Client may still hold requests that were back-pressured by
@@ -442,9 +624,17 @@ void MyScheduler::refresh_status() {
                 const bool decode_target =
                     _config.decode_pruning_enabled &&
                     is_decode_pruning_target(current_op_name);
+                const std::string decode_template_key =
+                    decode_target
+                        ? decode_pruning_template_key(_current_op)
+                        : std::string{};
                 const bool decode_has_template =
-                    _decode_pruning_templates.find(current_op_name) !=
+                    _decode_pruning_templates.find(decode_template_key) !=
                     _decode_pruning_templates.end();
+                if (decode_target) {
+                    _decode_pruning_operation_keys[op->get_id()] =
+                        decode_template_key;
+                }
                 if (decode_target && !decode_has_template) {
                     auto& baseline = _decode_pruning_start_timing[op->get_id()];
                     baseline.clear();
@@ -457,11 +647,11 @@ void MyScheduler::refresh_status() {
                         assert(_event_driven_dram != nullptr);
                         _event_driven_dram
                             ->begin_decode_pruning_state_sample(
-                                current_op_name);
+                                decode_template_key);
                     } else {
                         assert(_dram != nullptr);
                         _dram->begin_decode_pruning_state_sample(
-                            current_op_name);
+                            decode_template_key);
                     }
                 }
                 issue_tile_per_core();  // issue current tile to each core
@@ -498,7 +688,11 @@ void MyScheduler::refresh_stage() {
             _stage = Stage::Finish;
         }
         else if (_output_token_iteration_enable) {
-            advance_iterative_inference(_prev_stage);
+            if (_continuous_batching) {
+                complete_continuous_batch(_prev_stage);
+            } else {
+                advance_iterative_inference(_prev_stage);
+            }
         }
         else {
             int stageValue = static_cast<int>(_stage);  // Update to the next stage
@@ -790,7 +984,6 @@ bool MyScheduler::finish_tile(uint32_t core_id, Tile& tile) {  // Record the fin
             _active_operation_stats[tile.operation_id].name,
             host_total_time_sec);
         print_current_operation_workload_stat();
-
         // Calculate and Print PIM stats for this operation
         if (_active_operation_stats[tile.operation_id].pim_inst_count > 0) {
             const auto& pim_stat = _active_operation_stats[tile.operation_id];
@@ -1099,7 +1292,6 @@ bool MyScheduler::update_stats_last_tile(uint32_t core_id, Tile& tile) {
             _active_operation_stats[tile.operation_id].name,
             host_total_time_sec);
         print_current_operation_workload_stat();
-
         // Calculate and Print PIM stats for this operation
         if (_active_operation_stats[tile.operation_id].pim_inst_count > 0) {
             const auto& pim_stat = _active_operation_stats[tile.operation_id];
@@ -1204,6 +1396,7 @@ void MyScheduler::reset_proportional_sampling_state() {
     _proportional_finish_cycles.clear();
     _proportional_tail_queues.clear();
     _proportional_estimated_workload.clear();
+    _proportional_vm_replay_tiles.clear();
     _proportional_workload_applied = false;
     _proportional_command_sample_started = false;
     _proportional_timing_applied = false;
@@ -1400,14 +1593,17 @@ ProportionalWorkloadStat MyScheduler::summarize_proportional_tile(
 }
 
 void MyScheduler::record_proportional_skipped_tile(uint32_t core_id,
-                                                    const Tile& tile) {
+                                                    Tile& tile) {
     assert(!tile.deferred_compile);
     _proportional_estimated_workload[core_id] +=
         summarize_proportional_tile(tile);
+    if (_config.virtual_mem_hash_enable) {
+        _proportional_vm_replay_tiles[core_id].push_back(std::move(tile));
+    }
 }
 
 void MyScheduler::record_proportional_skipped_tile(
-    uint32_t core_id, const Tile& tile,
+    uint32_t core_id, Tile& tile,
     const Tile& compiled_representative) {
     if (!tile.deferred_compile) {
         record_proportional_skipped_tile(core_id, tile);
@@ -1416,6 +1612,131 @@ void MyScheduler::record_proportional_skipped_tile(
     assert(!compiled_representative.deferred_compile);
     _proportional_estimated_workload[core_id] +=
         summarize_proportional_tile(compiled_representative);
+    if (_config.virtual_mem_hash_enable) {
+        _proportional_vm_replay_tiles[core_id].push_back(std::move(tile));
+    }
+}
+
+uint64_t MyScheduler::replay_virtual_memory_tile(const Tile& tile) const {
+    assert(_config.virtual_mem_hash_enable);
+    uint64_t mapping_calls = 0;
+    const auto map_address = [&mapping_calls](addr_type logical_address) {
+        const uint32_t logical_channel =
+            MyAddressAllocator::get_channel_index(logical_address);
+        const addr_type physical_address =
+            TwoLevelPageMapper::map_logical_address(logical_address);
+        assert(MyAddressAllocator::get_channel_index(physical_address) ==
+               logical_channel);
+        ++mapping_calls;
+    };
+    const auto replay_normal = [&map_address](const Instruction& inst) {
+        if (inst.skip || inst.src_addrs.empty()) {
+            return;
+        }
+        if (inst.per_ch_inst) {
+            for (const addr_type address : inst.src_addrs) {
+                map_address(address);
+            }
+            return;
+        }
+        for (const addr_type address : inst.src_addrs) {
+            for (uint32_t channel = 0;
+                 channel < MyAddressAllocator::dram_channels; ++channel) {
+                map_address(MyAddressAllocator::add_channel_index(
+                    address, channel));
+            }
+        }
+    };
+    const auto replay_pim = [&map_address](const Instruction& inst) {
+        if (inst.skip || inst.src_addrs.empty()) {
+            return;
+        }
+        for (const addr_type address : inst.src_addrs) {
+            if (inst.opcode == Opcode::PIM_COMP_HASH) {
+                const uint32_t row =
+                    MyAddressAllocator::get_row_index(address);
+                const uint32_t column =
+                    MyAddressAllocator::get_col_index(address);
+                for (uint32_t rank = 0;
+                     rank < MyAddressAllocator::ranks; ++rank) {
+                    for (uint32_t bank = 0;
+                         bank < MyAddressAllocator::banks; ++bank) {
+                        for (uint32_t bankgroup = 0;
+                             bankgroup < MyAddressAllocator::bankgroups;
+                             ++bankgroup) {
+                            for (uint32_t channel = 0;
+                                 channel < MyAddressAllocator::dram_channels;
+                                 ++channel) {
+                                map_address(
+                                    MyAddressAllocator::make_address_by_index(
+                                        rank, bankgroup, bank, row, column,
+                                        channel));
+                            }
+                        }
+                    }
+                }
+            } else {
+                for (uint32_t channel = 0;
+                     channel < MyAddressAllocator::dram_channels; ++channel) {
+                    map_address(MyAddressAllocator::add_channel_index(
+                        address, channel));
+                }
+            }
+        }
+    };
+
+    for (const auto& instruction : tile.instructions) {
+        switch (instruction.opcode) {
+            case Opcode::MOVIN:
+            case Opcode::MOVOUT:
+            case Opcode::MOVOUT_POOL:
+                replay_normal(instruction);
+                break;
+            case Opcode::PIM_HEADER:
+            case Opcode::PIM_GWRITE:
+            case Opcode::PIM_COMP:
+            case Opcode::PIM_COMP_HASH:
+            case Opcode::PIM_READRES:
+            case Opcode::PIM_COMPS_READRES:
+                replay_pim(instruction);
+                break;
+            default:
+                break;
+        }
+    }
+    return mapping_calls;
+}
+
+uint64_t MyScheduler::replay_virtual_memory_tiles(
+    std::unordered_map<uint32_t, std::deque<Tile>>& queues) {
+    if (!_config.virtual_mem_hash_enable) {
+        assert(queues.empty());
+        return 0;
+    }
+
+    uint64_t mapping_calls = 0;
+    uint64_t replayed_tiles = 0;
+    bool replayed_one = true;
+    while (replayed_one) {
+        replayed_one = false;
+        for (uint32_t core_id = 0; core_id < _config.num_cores; ++core_id) {
+            auto queue_it = queues.find(core_id);
+            if (queue_it == queues.end() || queue_it->second.empty()) {
+                continue;
+            }
+            Tile tile = std::move(queue_it->second.front());
+            queue_it->second.pop_front();
+            materialize_tile(tile);
+            mapping_calls += replay_virtual_memory_tile(tile);
+            ++replayed_tiles;
+            replayed_one = true;
+        }
+    }
+    queues.clear();
+    spdlog::info(
+        "Replayed {} virtual-memory mappings from {} pruned tiles",
+        mapping_calls, replayed_tiles);
+    return mapping_calls;
 }
 
 void MyScheduler::materialize_tile(Tile& tile) {
@@ -1458,7 +1779,49 @@ bool MyScheduler::is_decode_pruning_target(const std::string& name) const {
         name.find(".attn.KGen") != std::string::npos ||
         name.find(".attn.VGen") != std::string::npos ||
         name.find(".attn.proj") != std::string::npos;
+    // K/V-cache growth can change the logical addresses of attention
+    // generation operations between Decode iterations even when the tile
+    // geometry is unchanged.  A sampled tile therefore cannot reproduce
+    // their exact virtual-memory side effects.  FFN operands remain stable
+    // for a fixed request batch, so those operations can use mapping-only
+    // replay while attention generation continues through the exact path.
+    if (_config.virtual_mem_hash_enable) {
+        return decode_stage && ffn_operation;
+    }
     return decode_stage && (ffn_operation || qkv_generation);
+}
+
+std::string MyScheduler::decode_pruning_template_key(
+    const Ptr<Operation>& operation) const {
+    assert(operation != nullptr);
+
+    // A name-only key can incorrectly reuse one sample when continuous
+    // batching changes request membership or when an operation with the same
+    // name is emitted with different tile geometry.  Request progress is
+    // deliberately excluded so repeated token iterations for the same batch
+    // can still reuse a compatible template.
+    std::ostringstream key;
+    key << operation->get_name()
+        << "|stage=" << static_cast<uint32_t>(_stage)
+        << "|requests=";
+    for (size_t index = 0; index < _breq.size(); ++index) {
+        if (index != 0) {
+            key << ',';
+        }
+        const auto& request = _breq[index];
+        key << request->id << ':' << request->input_size << ':'
+            << request->output_size << ':' << request->is_initiated;
+    }
+
+    key << "|tiles=" << _executable_tile_queue.size() << "|inner=";
+    for (const uint32_t extent : operation->get_inner_loop()) {
+        key << extent << ',';
+    }
+    key << "|outer=";
+    for (const uint32_t extent : operation->get_outer_loop()) {
+        key << extent << ',';
+    }
+    return key.str();
 }
 
 MyScheduler::DecodeCoreTiming
@@ -1480,12 +1843,15 @@ void MyScheduler::capture_decode_pruning_template(uint32_t operation_id) {
     if (!_config.decode_pruning_enabled) return;
     const auto active = _active_operation_stats.find(operation_id);
     const auto baseline = _decode_pruning_start_timing.find(operation_id);
+    const auto key_it = _decode_pruning_operation_keys.find(operation_id);
     if (active == _active_operation_stats.end() ||
         baseline == _decode_pruning_start_timing.end() ||
+        key_it == _decode_pruning_operation_keys.end() ||
         !is_decode_pruning_target(active->second.name) ||
-        _decode_pruning_templates.count(active->second.name)) {
+        _decode_pruning_templates.count(key_it->second)) {
         return;
     }
+    const std::string template_key = key_it->second;
     const bool npu_decode_stage =
         _stage == Stage::NPU_Decode ||
         (_stage == Stage::Multi_test &&
@@ -1504,27 +1870,27 @@ void MyScheduler::capture_decode_pruning_template(uint32_t operation_id) {
             sampled_write_requests =
                 _event_driven_dram
                     ->decode_pruning_sampled_write_requests(
-                        active->second.name);
+                        template_key);
             sampled_write_commands =
                 _event_driven_dram
                     ->decode_pruning_sampled_write_commands(
-                        active->second.name);
+                        template_key);
         }
         _event_driven_dram->finish_decode_pruning_state_sample(
-            active->second.name,
+            template_key,
             _config.decode_pruning_sample_iterations);
     } else {
         assert(_dram != nullptr);
         if (npu_attention_projection) {
             sampled_write_requests =
                 _dram->decode_pruning_sampled_write_requests(
-                    active->second.name);
+                    template_key);
             sampled_write_commands =
                 _dram->decode_pruning_sampled_write_commands(
-                    active->second.name);
+                    template_key);
         }
         _dram->finish_decode_pruning_state_sample(
-            active->second.name,
+            template_key,
             _config.decode_pruning_sample_iterations);
     }
 
@@ -1612,7 +1978,7 @@ void MyScheduler::capture_decode_pruning_template(uint32_t operation_id) {
     _decode_pruning_sample_workload.erase(operation_id);
 
     auto& accumulator =
-        _decode_pruning_accumulators[active->second.name];
+        _decode_pruning_accumulators[template_key];
     if (accumulator.core_timing.empty()) {
         accumulator.core_timing.resize(_cores.size());
         accumulator.core_workload.resize(_cores.size());
@@ -1652,6 +2018,7 @@ void MyScheduler::capture_decode_pruning_template(uint32_t operation_id) {
         "Decode Pruning sample {}/{} captured for {}: {} cycles",
         accumulator.samples, _config.decode_pruning_sample_iterations,
         active->second.name, sample.operation_cycles);
+    _decode_pruning_operation_keys.erase(operation_id);
 
     if (accumulator.samples <
         _config.decode_pruning_sample_iterations) {
@@ -1689,7 +2056,7 @@ void MyScheduler::capture_decode_pruning_template(uint32_t operation_id) {
             value.op_stall[op] = average(sum.op_stall[op]);
         }
     }
-    _decode_pruning_templates.emplace(active->second.name, result);
+    _decode_pruning_templates.emplace(template_key, result);
     spdlog::info(
         "Decode Pruning template finalized for {} from {} samples: "
         "{} average cycles",
@@ -1700,11 +2067,15 @@ void MyScheduler::capture_decode_pruning_template(uint32_t operation_id) {
 void MyScheduler::prepare_decode_pruning_prediction() {
     assert(_current_op != nullptr);
     assert(!_decode_pruning_pending);
+    const auto key_it =
+        _decode_pruning_operation_keys.find(_current_op->get_id());
+    assert(key_it != _decode_pruning_operation_keys.end());
     const auto template_it =
-        _decode_pruning_templates.find(_current_op->get_name());
+        _decode_pruning_templates.find(key_it->second);
     assert(template_it != _decode_pruning_templates.end());
 
     _decode_pruning_pending_workload.clear();
+    _decode_pruning_pending_vm_tiles.clear();
     uint64_t deferred_tiles_skipped = 0;
     for (uint32_t core_id = 0; core_id < _cores.size(); ++core_id) {
         auto& queue = _core_executable_tile_queue[core_id];
@@ -1713,17 +2084,34 @@ void MyScheduler::prepare_decode_pruning_prediction() {
             [](const Tile& tile) { return tile.deferred_compile; }));
         _decode_pruning_pending_workload[core_id] =
             template_it->second.core_workload.at(core_id);
-        queue.clear();
+        if (_config.virtual_mem_hash_enable) {
+            auto& replay_queue =
+                _decode_pruning_pending_vm_tiles[core_id];
+            while (!queue.empty()) {
+                replay_queue.push_back(std::move(queue.front()));
+                queue.pop_front();
+            }
+        } else {
+            queue.clear();
+        }
     }
-    spdlog::info(
-        "Decode compile-time pruning discarded {} deferred tiles for {} "
-        "without materializing instructions",
-        deferred_tiles_skipped, _current_op->get_name());
+    if (_config.virtual_mem_hash_enable) {
+        spdlog::info(
+            "Decode compile-time pruning removed {} deferred tiles from "
+            "execution for {}; their address mappings will be replayed",
+            deferred_tiles_skipped, _current_op->get_name());
+    } else {
+        spdlog::info(
+            "Decode compile-time pruning discarded {} deferred tiles for "
+            "{} without materializing instructions",
+            deferred_tiles_skipped, _current_op->get_name());
+    }
 
     _decode_pruning_pending = true;
     _decode_pruning_pending_cycles =
         template_it->second.operation_cycles;
     _decode_pruning_pending_operation = _current_op->get_id();
+    _decode_pruning_pending_key = key_it->second;
     _active_operation_stats.at(_decode_pruning_pending_operation)
         .remain_tiles = 0;
 
@@ -1752,8 +2140,9 @@ cycle_type MyScheduler::decode_pruning_prediction_cycles() const {
 
 void MyScheduler::apply_decode_pruning_prediction() {
     assert(_decode_pruning_pending);
+    replay_virtual_memory_tiles(_decode_pruning_pending_vm_tiles);
     const auto& prediction =
-        _decode_pruning_templates.at(_current_op->get_name());
+        _decode_pruning_templates.at(_decode_pruning_pending_key);
     ProportionalWorkloadStat total;
     for (const auto& [core_id, workload] :
          _decode_pruning_pending_workload) {
@@ -1818,11 +2207,11 @@ void MyScheduler::apply_decode_pruning_dram_state(
     if (_config.dram_trace_simulation_mode) {
         assert(_event_driven_dram != nullptr);
         _event_driven_dram->apply_decode_pruning_state(
-            _current_op->get_name(), skipped_dram_cycles);
+            _decode_pruning_pending_key, skipped_dram_cycles);
     } else {
         assert(_dram != nullptr);
         _dram->apply_decode_pruning_state(
-            _current_op->get_name(), skipped_dram_cycles);
+            _decode_pruning_pending_key, skipped_dram_cycles);
     }
 }
 
@@ -1840,8 +2229,12 @@ void MyScheduler::complete_decode_pruning_prediction(
     update_stats_last_tile(0, completed);
     _decode_pruning_pending = false;
     _decode_pruning_pending_cycles = 0;
+    _decode_pruning_operation_keys.erase(
+        _decode_pruning_pending_operation);
     _decode_pruning_pending_operation = 0;
+    _decode_pruning_pending_key.clear();
     _decode_pruning_pending_workload.clear();
+    _decode_pruning_pending_vm_tiles.clear();
     refresh_status();
 }
 
@@ -2250,6 +2643,7 @@ bool MyScheduler::proportional_workload_applied() const {
 
 void MyScheduler::mark_proportional_workload_applied() {
     assert(!_proportional_workload_applied);
+    replay_virtual_memory_tiles(_proportional_vm_replay_tiles);
     for (const auto& [core_id, workload] : _proportional_estimated_workload) {
         assert(core_id < _cores.size());
         _cores[core_id]->apply_estimated_workload(workload);
@@ -2356,10 +2750,6 @@ void MyScheduler::get_tile(uint32_t core_id) {
     }
     else {
         Tile& tile = _core_executable_tile_queue[core_id].front();
-        // 下面三行是新添加的
-        _get_tile_count++;
-        std::string tile_name = name_gen(std::to_string(core_id), std::to_string(_get_tile_count), tile.optype);
-        _tile_map[tile_name] = &tile;
 
         if (tile.pim_tile == true) {assert(core_id == 0);}  // Double check the PIM Tile can only be executed by Core 0
         if (tile.status == Tile::Status::BAR) {
@@ -2373,10 +2763,13 @@ void MyScheduler::get_tile(uint32_t core_id) {
             return;
         }
         else {
-            _active_operation_stats[tile.operation_id].launched_tiles++;
+            const uint32_t operation_id = tile.operation_id;
+            auto& operation_stat = _active_operation_stats[operation_id];
+            operation_stat.launched_tiles++;
+            const std::string operation_name = operation_stat.name;
             _core_executable_tile_queue[core_id].pop_front();
             spdlog::info("At cycle {} Core {} get Tile, pop a tile from the Scheduler executable tile queue, {} exist for operation {}",
-                *_core_cycle, core_id, get_exist_tile_count(), _active_operation_stats[tile.operation_id].name);
+                *_core_cycle, core_id, get_exist_tile_count(), operation_name);
         }
     }
 }

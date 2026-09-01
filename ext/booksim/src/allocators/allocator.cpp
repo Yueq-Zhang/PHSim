@@ -448,7 +448,7 @@ Allocator *Allocator::NewAllocator( Module *parent, const string& name,
     a = new MaxSizeMatch( parent, name, inputs, outputs );
   } else if ( alloc_name == "pim" ) {
     int iters = param_str.empty() ? (config ? config->GetInt("alloc_iters") : 1) : atoi(param_str.c_str());
-    a = new PIM( parent, name, inputs, outputs, iters );
+    a = new PIMAllocator( parent, name, inputs, outputs, iters );
   } else if ( alloc_name == "islip" ) {
     int iters = param_str.empty() ? (config ? config->GetInt("alloc_iters") : 1) : atoi(param_str.c_str());
     a = new iSLIP_Sparse( parent, name, inputs, outputs, iters );
@@ -478,4 +478,3 @@ Allocator *Allocator::NewAllocator( Module *parent, const string& name,
 
   return a;
 }
-

@@ -152,6 +152,115 @@ function(run_iterative_decode_backend backend config_name output_variable)
     set(${output_variable} "${output_dir}" PARENT_SCOPE)
 endfunction()
 
+function(run_continuous_batch_backend backend config_name output_variable)
+    set(output_dir
+        "${BINARY_DIR}/test-output/${TEST_MODE}/${backend}")
+    file(REMOVE_RECURSE "${output_dir}")
+    file(MAKE_DIRECTORY "${output_dir}")
+
+    execute_process(
+        COMMAND
+            "${SIMULATOR}"
+            --simulation_config
+            "${SOURCE_DIR}/tests/fixtures/smoke/${config_name}"
+            --output_path
+            "${output_dir}"
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        RESULT_VARIABLE simulator_result
+        OUTPUT_VARIABLE simulator_stdout
+        ERROR_VARIABLE simulator_stderr
+        TIMEOUT 60
+    )
+
+    file(WRITE "${output_dir}/test-process.log"
+        "${simulator_stdout}\n${simulator_stderr}")
+    if(NOT simulator_result EQUAL 0 OR
+       NOT simulator_stdout MATCHES "Finish the simulation" OR
+       NOT simulator_stdout MATCHES
+           "Outstanding MemoryAccess requests at simulation end: 0")
+        message(FATAL_ERROR
+            "${backend} continuous batching did not finish cleanly")
+    endif()
+
+    foreach(expected_batch IN ITEMS
+            "Continuous batch 0 formed: stage=Prefill, requests=[0,1]"
+            "Continuous batch 1 formed: stage=Decode, requests=[0,1]"
+            "Continuous batch 2 formed: stage=Prefill, requests=[2]"
+            "Continuous batch 3 formed: stage=Decode, requests=[0,2]"
+            "Continuous batch 4 formed: stage=Decode, requests=[0,2]")
+        string(FIND "${simulator_stdout}" "${expected_batch}"
+            expected_batch_position)
+        if(expected_batch_position EQUAL -1)
+            message(FATAL_ERROR
+                "${backend} missing expected scheduling event: "
+                "${expected_batch}")
+        endif()
+    endforeach()
+
+    foreach(request_id IN ITEMS 0 1 2)
+        if(request_id EQUAL 0)
+            set(expected_tokens 3)
+        elseif(request_id EQUAL 1)
+            set(expected_tokens 1)
+        else()
+            set(expected_tokens 2)
+        endif()
+        string(REGEX MATCHALL
+            "Scheduler:: Request ${request_id} generated token [0-9]+/${expected_tokens}"
+            token_progress "${simulator_stdout}")
+        list(LENGTH token_progress generated_token_count)
+        if(NOT generated_token_count EQUAL expected_tokens)
+            message(FATAL_ERROR
+                "${backend} request ${request_id} generated "
+                "${generated_token_count}/${expected_tokens} tokens")
+        endif()
+    endforeach()
+
+    string(REGEX MATCHALL "Client Receive response From Scheduler!"
+        client_responses "${simulator_stdout}")
+    list(LENGTH client_responses client_response_count)
+    if(NOT client_response_count EQUAL 3)
+        message(FATAL_ERROR
+            "${backend} expected three completed client requests, found "
+            "${client_response_count}")
+    endif()
+
+    string(FIND "${simulator_stdout}"
+        "Scheduler:: Request 1 completed after generating 1/1 tokens"
+        short_request_completion)
+    string(FIND "${simulator_stdout}"
+        "Scheduler admitted request 2: 2/2 resident requests"
+        replacement_request_admission)
+    if(short_request_completion EQUAL -1 OR
+       replacement_request_admission EQUAL -1 OR
+       replacement_request_admission LESS short_request_completion)
+        message(FATAL_ERROR
+            "${backend} did not admit request 2 after request 1 released "
+            "its active slot")
+    endif()
+
+    file(STRINGS "${output_dir}/_summary.tsv" summary_lines)
+    list(LENGTH summary_lines summary_line_count)
+    if(NOT summary_line_count EQUAL 6)
+        message(FATAL_ERROR
+            "${backend} expected header + five continuous batches, found "
+            "${summary_line_count} lines")
+    endif()
+    set(expected_stages Prefill Decode Prefill Decode Decode)
+    foreach(summary_index RANGE 1 5)
+        list(GET summary_lines ${summary_index} summary_row)
+        math(EXPR stage_index "${summary_index} - 1")
+        list(GET expected_stages ${stage_index} expected_stage)
+        if(NOT summary_row MATCHES "^${expected_stage}\t")
+            message(FATAL_ERROR
+                "${backend} continuous stage ${summary_index} is not "
+                "${expected_stage}: ${summary_row}")
+        endif()
+    endforeach()
+
+    set(${output_variable} "${output_dir}" PARENT_SCOPE)
+endfunction()
+
 function(run_legacy_stage_backend backend config_name)
     set(output_dir
         "${BINARY_DIR}/test-output/${TEST_MODE}/legacy-${backend}")
@@ -374,8 +483,13 @@ function(require_data_container_stats output_dir expected_enabled)
     foreach(key IN ITEMS
             stored_column_count peak_stored_column_count
             dram_payload_bytes pim_payload_bytes resident_payload_bytes
-            peak_resident_payload_bytes payload_limit_bytes)
+            peak_resident_payload_bytes payload_limit_bytes
+            nonzero_payload_bytes content_fingerprint)
         string(JSON ${key} GET "${stats_json}" "${key}")
+    endforeach()
+    foreach(key IN ITEMS read write pheader gwrite comp readres)
+        string(JSON response_${key} GET
+            "${stats_json}" response_counts "${key}")
     endforeach()
     math(EXPR accounted_payload
         "${dram_payload_bytes} + ${pim_payload_bytes}")
@@ -388,13 +502,30 @@ function(require_data_container_stats output_dir expected_enabled)
         message(FATAL_ERROR
             "DataContainer peak statistics are below current occupancy")
     endif()
+    if(nonzero_payload_bytes GREATER resident_payload_bytes)
+        message(FATAL_ERROR
+            "DataContainer nonzero byte count exceeds resident payload")
+    endif()
     if(NOT expected_enabled AND
        (NOT stored_column_count EQUAL 0 OR
         NOT peak_stored_column_count EQUAL 0 OR
         NOT resident_payload_bytes EQUAL 0 OR
-        NOT peak_resident_payload_bytes EQUAL 0))
+        NOT peak_resident_payload_bytes EQUAL 0 OR
+        NOT nonzero_payload_bytes EQUAL 0 OR
+        NOT content_fingerprint STREQUAL "0" OR
+        NOT response_read EQUAL 0 OR
+        NOT response_write EQUAL 0 OR
+        NOT response_pheader EQUAL 0 OR
+        NOT response_gwrite EQUAL 0 OR
+        NOT response_comp EQUAL 0 OR
+        NOT response_readres EQUAL 0))
         message(FATAL_ERROR
             "Disabled DataContainer unexpectedly retained payload")
+    endif()
+    if(expected_enabled AND resident_payload_bytes GREATER 0 AND
+       content_fingerprint STREQUAL "0")
+        message(FATAL_ERROR
+            "Enabled DataContainer produced an empty content fingerprint")
     endif()
 
     string(JSON channel_count LENGTH "${stats_json}" channels)
@@ -621,6 +752,45 @@ elseif(TEST_MODE STREQUAL "memory-access-gemm")
         "ED ${EVENT_READ_COMMANDS}/${EVENT_WRITE_COMMANDS}; "
         "DataContainer enabled CA ${DC_CA_READ_COMMANDS}/${DC_CA_WRITE_COMMANDS}, "
         "ED ${DC_EVENT_READ_COMMANDS}/${DC_EVENT_WRITE_COMMANDS}")
+elseif(TEST_MODE STREQUAL "booksim2-smoke")
+    run_backend(simple simulation_event_driven.json simple_output)
+    run_backend(booksim2 simulation_booksim2_event_driven.json booksim_output)
+
+    require_identical_file(
+        "${simple_output}" "${booksim_output}" icnt_traffic.json
+        "Simple/BookSim logical interconnect traffic")
+    set(booksim_stats_file "${booksim_output}/booksim2_stats.json")
+    if(NOT EXISTS "${booksim_stats_file}")
+        message(FATAL_ERROR "BookSim run did not produce booksim2_stats.json")
+    endif()
+    file(READ "${booksim_stats_file}" booksim_stats)
+    foreach(key IN ITEMS
+            nodes flit_size_bytes booksim_cycles injected_packets
+            ejected_packets injected_payload_bytes ejected_payload_bytes)
+        string(JSON ${key} GET "${booksim_stats}" "${key}")
+    endforeach()
+    if(NOT nodes EQUAL 4 OR NOT flit_size_bytes EQUAL 16)
+        message(FATAL_ERROR
+            "Unexpected BookSim topology/flit geometry: "
+            "${nodes}/${flit_size_bytes}")
+    endif()
+    if(booksim_cycles LESS_EQUAL 0 OR injected_packets LESS_EQUAL 0 OR
+       NOT injected_packets EQUAL ejected_packets OR
+       NOT injected_payload_bytes EQUAL ejected_payload_bytes)
+        message(FATAL_ERROR
+            "BookSim packet accounting is incomplete: packets "
+            "${injected_packets}/${ejected_packets}, bytes "
+            "${injected_payload_bytes}/${ejected_payload_bytes}")
+    endif()
+    file(READ "${booksim_output}/test-process.log" booksim_log)
+    if(NOT booksim_log MATCHES "BookSim active" OR
+       NOT booksim_log MATCHES "BookSim packets injected/ejected")
+        message(FATAL_ERROR
+            "BookSim run did not report backend activation and packet flow")
+    endif()
+    message(STATUS
+        "BookSim full simulation passed: ${injected_packets} packets, "
+        "${injected_payload_bytes} payload bytes, ${booksim_cycles} cycles")
 elseif(TEST_MODE STREQUAL "iterative-decode")
     run_legacy_stage_backend(
         cycle-accurate simulation_legacy_stage_sequence_cycle_accurate.json)
@@ -637,6 +807,18 @@ elseif(TEST_MODE STREQUAL "iterative-decode")
     message(STATUS
         "Legacy and iterative Decode passed in CycleAccurate and "
         "EventDriven modes")
+elseif(TEST_MODE STREQUAL "continuous-batching")
+    run_continuous_batch_backend(
+        cycle-accurate simulation_continuous_batching_cycle_accurate.json
+        continuous_ca_output)
+    run_continuous_batch_backend(
+        event-driven simulation_continuous_batching_event_driven.json
+        continuous_ed_output)
+    require_identical_file(
+        "${continuous_ca_output}" "${continuous_ed_output}"
+        icnt_traffic.json "continuous-batching interconnect traffic")
+    message(STATUS
+        "Continuous batching passed in CycleAccurate and EventDriven modes")
 else()
     message(FATAL_ERROR "Unsupported TEST_MODE: ${TEST_MODE}")
 endif()

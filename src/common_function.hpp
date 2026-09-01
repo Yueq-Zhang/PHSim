@@ -854,6 +854,12 @@ public:
     /* Custom SysConfig */
     uint32_t max_batch_size;
     uint32_t max_active_reqs;  // max size of (ready_queue + running_queue) in scheduler
+    // "legacy" preserves the historical fixed batch. "continuous" rebuilds
+    // Prefill/Decode batches only at StageProgram boundaries.
+    std::string batch_scheduler = "legacy";
+    // Maximum sum of prompt tokens in one continuous Prefill batch. Zero
+    // keeps the historical behavior of imposing no token-count limit.
+    uint64_t max_prefill_batch_tokens = 0;
     uint32_t max_seq_len;
     uint32_t kv_cache_entry_size;
     uint64_t DRAM_act_buf_size;  // Size of Preset DRAM space for activation buffer in bytes
@@ -982,6 +988,11 @@ public:
     std::string icnt_config_path;
     uint32_t icnt_freq;
     uint32_t icnt_latency = 0;
+    uint32_t icnt_ctrl_size = 8;
+    // Simple-interconnect queue capacities in packets per node. A value of
+    // zero keeps the historical unbounded behavior.
+    uint32_t icnt_input_buffer_size = 0;
+    uint32_t icnt_output_buffer_size = 0;
 
     /* Sheduler SysConfig */
     std::string scheduler_type;
@@ -1581,6 +1592,14 @@ public:
     addr_type mapped_page_count() const {
         return static_cast<addr_type>(logical_to_physical_.size());
     }
+    uint64_t mapping_call_count() const { return mapping_call_count_; }
+    uint64_t changed_mapping_count() const { return changed_mapping_count_; }
+    uint64_t mapping_pair_xor() const { return mapping_pair_xor_; }
+    uint64_t mapping_pair_sum() const { return mapping_pair_sum_; }
+    uint64_t page_table_fingerprint() const;
+    const std::vector<uint64_t>& mapping_calls_by_channel() const {
+        return mapping_calls_by_channel_;
+    }
 
     // Fixed virtual-memory page and hash-unit sizes in bytes.
     static constexpr addr_type PAGE_SIZE_BYTES = 4096ull * 1024;  // 4MB
@@ -1594,6 +1613,11 @@ private:
     std::unordered_map<addr_type, addr_type> logical_to_physical_;
     std::vector<bool> physical_used_;            // 物理页是否已使用
     addr_type next_free_physical_page_ = 0;
+    uint64_t mapping_call_count_ = 0;
+    uint64_t changed_mapping_count_ = 0;
+    uint64_t mapping_pair_xor_ = 0;
+    uint64_t mapping_pair_sum_ = 0;
+    std::vector<uint64_t> mapping_calls_by_channel_;
     static constexpr addr_type INVALID_PAGE = ~0ull;
 
     // DRAM 结构参数
@@ -1675,6 +1699,12 @@ void cleanup_two_level_mapper();
 
 bool is_enabled();
 addr_type mapped_page_count();
+uint64_t mapping_call_count();
+uint64_t changed_mapping_count();
+uint64_t mapping_pair_xor();
+uint64_t mapping_pair_sum();
+uint64_t page_table_fingerprint();
+std::vector<uint64_t> mapping_calls_by_channel();
 
 // Map a logical address to a physical address; return it unchanged when disabled.
 addr_type map_logical_address(addr_type logical_addr);
