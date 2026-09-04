@@ -336,7 +336,6 @@ public:
     void bind_system(Client* client, PIM* dram, EventDrivenDram* event_driven_dram,
                      MyInterconnect* icnt,
                      const std::vector<std::unique_ptr<MyCore>>& cores);
-    void sync_accelerated_cycles(cycle_type core_cycle, cycle_type dram_delta, cycle_type icnt_delta);
     private:
     Stage iterative_decode_stage() const;
     void complete_request(const Ptr<InferRequest>& request);

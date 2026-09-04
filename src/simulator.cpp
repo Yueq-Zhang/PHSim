@@ -230,6 +230,48 @@ void Simulator::update_req_stat(MemoryAccessType t, uint64_t &read_cnt, uint64_t
 
 void Simulator::launch_model(Ptr<Model> model) {_model = std::move(model);}
 
+void Simulator::advance_accelerated_time(cycle_type target_core_cycle) {
+    if (target_core_cycle < _core_cycles) {
+        throw std::logic_error(
+            "Accelerated time cannot move backwards from core cycle " +
+            std::to_string(_core_cycles) + " to " +
+            std::to_string(target_core_cycle));
+    }
+    if (target_core_cycle == _core_cycles) {
+        return;
+    }
+
+    const cycle_type delta_core_cycles = target_core_cycle - _core_cycles;
+    const cycle_type delta_dram_cycles = static_cast<cycle_type>(
+        delta_core_cycles *
+        (static_cast<double>(_config.dram_freq) / _config.core_freq));
+    const cycle_type delta_icnt_cycles = static_cast<cycle_type>(
+        delta_core_cycles *
+        (static_cast<double>(_config.icnt_freq) / _config.core_freq));
+
+    _core_cycles = target_core_cycle;
+    _core_time = static_cast<double>(_core_cycles) * _core_period;
+    _dram_time = _core_time;
+    _icnt_time = _core_time;
+
+    for (auto& core : _cores) {
+        core->set_core_cycle(_core_cycles);
+    }
+    _client->set_client_cycle(_core_cycles);
+    _scheduler->set_scheduler_cycles(_core_cycles);
+
+    // CycleAccurate keeps a local wrapper counter. EventDriven schedules from
+    // the simulator's absolute DRAM cycle, so only the active mode is updated.
+    if (_dram_mode == DramMode::CYCLE_ACCURATE) {
+        assert(_dram != nullptr);
+        _dram->set_dram_cycles(delta_dram_cycles);
+    } else {
+        assert(_event_driven_dram != nullptr);
+    }
+    _dram_cycle_count += delta_dram_cycles;
+    _icnt->set_icnt_cycles(delta_icnt_cycles);
+}
+
 void Simulator::cycle() {
     double g_core_time_sec = 0.0;
     double g_sched_client_time_sec = 0.0;
@@ -359,28 +401,17 @@ void Simulator::cycle() {
                             _scheduler->compute_estimated_cycle();
                             const cycle_type estimated_cycle =
                                 _scheduler->get_estimated_all_cycle();
-                            if (estimated_cycle > 0){
+                            if (estimated_cycle > _core_cycles) {
                                 spdlog::info("Applying naive acceleration: jumping from cycle {} to estimated cycle {}", _core_cycles, estimated_cycle);
-                                // Update CORE, DRAM, interconnect cycles to estimated_cycle
-                                cycle_type delta_core_cycles = estimated_cycle - _core_cycles;
-                                _core_cycles = estimated_cycle;
-                                cycle_type delta_dram_cycle = delta_core_cycles * (static_cast<double>(_config.dram_freq) / _config.core_freq);
-                                cycle_type delta_icnt_cycle = delta_core_cycles * (static_cast<double>(_config.icnt_freq) / _config.core_freq);
+                                advance_accelerated_time(estimated_cycle);
                                 _scheduler->update_stats_last_tile(core_id, *finished_tile);
                                 _scheduler->refresh_status();
-                                _core_time = _core_cycles * _core_period;
-                                _dram_time = _core_time;
-                                _icnt_time = _core_time;
-                                _scheduler->sync_accelerated_cycles(_core_cycles, delta_dram_cycle, delta_icnt_cycle);
-
-                                for (int core_id = 0; core_id < _n_cores; core_id++) {
-                                    _cores[core_id]->set_core_cycle(_core_cycles);
-                                }
-                                _client->set_client_cycle(_core_cycles);
-                                cycle_type estimated_dram_cycle = delta_core_cycles * (_config.dram_freq / _config.core_freq);
-                                cycle_type estimated_icnt_cycle = delta_core_cycles * (_config.icnt_freq / _config.core_freq);
-                                _dram->set_dram_cycles(estimated_dram_cycle);
-                                _icnt->set_icnt_cycles(estimated_icnt_cycle);
+                            } else {
+                                spdlog::info(
+                                    "Naive prediction {} is not ahead of current cycle {}; retiring the sampled operation without a jump",
+                                    estimated_cycle, _core_cycles);
+                                _scheduler->update_stats_last_tile(core_id, *finished_tile);
+                                _scheduler->refresh_status();
                             }
                         }
                     }
@@ -415,25 +446,8 @@ void Simulator::cycle() {
                                 std::string red = "\033[1;31m";
                                 std::string reset = "\033[0m";
                                 spdlog::info("{}Applying Loop_wise acceleration: jumping from cycle {} to estimated cycle {} {}", red, _core_cycles, estimated_cycle, reset);
-                                // Update CORE, DRAM, interconnect cycles to estimated_cycle
-                                cycle_type delta_core_cycles = estimated_cycle - _core_cycles;
-                                _core_cycles = estimated_cycle;
-                                cycle_type delta_dram_cycle = delta_core_cycles * (static_cast<double>(_config.dram_freq) / _config.core_freq);
-                                cycle_type delta_icnt_cycle = delta_core_cycles * (static_cast<double>(_config.icnt_freq) / _config.core_freq);
                                 _scheduler->_active_operation_stats[_scheduler->_operation_id].remain_tiles = 0;
-                                _core_time = (double)_core_cycles * _core_period;
-                                _dram_time = _core_time;
-                                _icnt_time = _core_time;
-                                _scheduler->sync_accelerated_cycles(_core_cycles, delta_dram_cycle, delta_icnt_cycle);
-                                /*
-                                for (int c = 0; c < _n_cores; c++) {
-                                    _cores[c]->set_core_cycle(_core_cycles);
-                                }
-                                _client->set_client_cycle(_core_cycles);
-                                _scheduler->set_scheduler_cycles(_core_cycles);
-                                _dram->set_dram_cycles(delta_dram_cycle);
-                                _icnt->set_icnt_cycles(delta_icnt_cycle);
-                                */
+                                advance_accelerated_time(estimated_cycle);
                                 _scheduler->update_stats_last_tile(core_id, *finished_tile);
                                 _scheduler->refresh_status();
                             }

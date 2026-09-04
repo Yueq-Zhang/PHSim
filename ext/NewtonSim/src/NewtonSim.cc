@@ -5,6 +5,8 @@
 #include "dram_system.h"
 #include "../../../src/common_function.hpp"
 
+#include <algorithm>
+
 namespace dramsim3 {
 NewtonSim::NewtonSim(const std::string &config_file, const std::string &output_dir)
     : config_(new Config(config_file, output_dir)) {
@@ -202,6 +204,19 @@ bool NewtonSim::IsEmpty(uint32_t channel) const {
     //           << ") : " << std::to_string(empty) << std::endl;
     return empty;
 };
+
+bool NewtonSim::HasPendingTransactions() const {
+    if (!pending_read_q_.empty() || !pending_write_q_.empty() ||
+        !pending_pim_q_.empty()) {
+        return true;
+    }
+    return std::any_of(
+        response_queues_.begin(), response_queues_.end(),
+        [](const ResponseQueue& queue) {
+            return queue.NumReserved != 0 || !queue.isEmpty();
+        });
+}
+
 void *NewtonSim::Top(uint32_t channel) const {
     // printf("TOP channel= %d\n", channel);
     return response_queues_[channel].top();

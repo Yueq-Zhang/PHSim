@@ -39,6 +39,7 @@ public:
     void log_stage_stat();
     void log_data_container_stat() const;
     void log_virtual_memory_stat() const;
+    void advance_accelerated_time(cycle_type target_core_cycle);
 
     const SysConfig& _config;
 

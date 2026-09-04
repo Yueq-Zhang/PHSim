@@ -112,6 +112,12 @@ function(run_iterative_decode_backend backend config_name output_variable)
         message(FATAL_ERROR
             "${backend} iterative Decode did not finish cleanly")
     endif()
+    if(simulator_stdout MATCHES "EventDriven (READ|WRITE) row-state mismatch" OR
+       simulator_stderr MATCHES "EventDriven (READ|WRITE) row-state mismatch")
+        message(FATAL_ERROR
+            "${backend} iterative Decode corrupted EventDriven DRAM row "
+            "state; see ${output_dir}/test-process.log")
+    endif()
 
     string(REGEX MATCHALL
         "Scheduler:: Request 0 generated token [12]/2"
@@ -374,6 +380,12 @@ function(run_legacy_stage_backend backend config_name)
         message(FATAL_ERROR
             "${backend} legacy stage sequence failed; see "
             "${output_dir}/test-process.log")
+    endif()
+    if(simulator_stdout MATCHES "EventDriven (READ|WRITE) row-state mismatch" OR
+       simulator_stderr MATCHES "EventDriven (READ|WRITE) row-state mismatch")
+        message(FATAL_ERROR
+            "${backend} legacy stage sequence corrupted EventDriven DRAM row "
+            "state; see ${output_dir}/test-process.log")
     endif()
     if(simulator_stdout MATCHES "generated token [0-9]+/[0-9]+")
         message(FATAL_ERROR
@@ -715,7 +727,7 @@ elseif(TEST_MODE STREQUAL "ca-ed-consistency")
             "${CA_READ_COMMANDS} vs ${EVENT_READ_COMMANDS}")
     endif()
 
-    if(NOT CA_TOTAL_CYCLES EQUAL 205 OR NOT CA_PIM_CYCLES EQUAL 0)
+    if(NOT CA_TOTAL_CYCLES EQUAL 230 OR NOT CA_PIM_CYCLES EQUAL 0)
         message(FATAL_ERROR
             "CA/ED Add timing baseline changed: cycles/PIM cycles "
             "${CA_TOTAL_CYCLES}/${CA_PIM_CYCLES}")

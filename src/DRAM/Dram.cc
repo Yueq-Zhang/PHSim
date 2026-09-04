@@ -81,7 +81,9 @@ PIM::PIM(const SysConfig& config, DramDataContainer* data_container)
     */
 }
 
-bool PIM::running() { return false; }
+bool PIM::running() {
+    return _mem != nullptr && _mem->HasPendingTransactions();
+}
 
 void PIM::cycle() {
     _mem->ClockTick();

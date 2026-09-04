@@ -2879,17 +2879,3 @@ void MyScheduler::bind_system(Client* client, PIM* dram,
         _cores.push_back(core.get());
     }
 }
-
-void MyScheduler::sync_accelerated_cycles(cycle_type core_cycle, cycle_type dram_delta, cycle_type icnt_delta) {
-    assert(_dram != nullptr);
-    assert(_icnt != nullptr);
-
-    for (auto* core : _cores) {
-        core->set_core_cycle(core_cycle);
-    }
-
-    _client->set_client_cycle(core_cycle);
-    set_scheduler_cycles(core_cycle);
-    _dram->set_dram_cycles(dram_delta);
-    _icnt->set_icnt_cycles(icnt_delta);
-}

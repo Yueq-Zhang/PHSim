@@ -1467,9 +1467,7 @@ EventDrivenDram::EventDrivenDram(const SysConfig& config,
                                  DramDataContainer* data_container)
     : dramsim3_config_(std::make_unique<dramsim3::Config>(
           config.memory_config_path_, config.output_path_)),
-      _data_container(data_container),
-      _serialize_pim_after_physical_rw(
-          config.batch_scheduler == "continuous") {
+      _data_container(data_container) {
     // PIM completion callback
     std::function<void(uint64_t)> pim_callback = [&](uint64_t addr) {
         auto channel_index = MyAddressAllocator::get_channel_index(addr);
@@ -2118,7 +2116,6 @@ void EventDrivenDram::schedule_pending_event_transaction(uint32_t cid) {
     if (_last_transaction_schedule_cycle[cid] == transaction_cycle) {
         return;
     }
-    _last_transaction_schedule_cycle[cid] = transaction_cycle;
 
     const bool physical_queue_empty = channel->execute_queue.empty() &&
                                       channel->activate_queue.empty() &&
@@ -2140,13 +2137,25 @@ void EventDrivenDram::schedule_pending_event_transaction(uint32_t cid) {
          queue_to_schedule = QueueClass::WRITE_Q;
     }
     else if (!_pim_queue[cid].empty() && _read_queue[cid].empty() &&
-             _write_buffer[cid].empty() &&
-             (!_serialize_pim_after_physical_rw || physical_queue_empty)) {
+             _write_buffer[cid].empty() && physical_queue_empty) {
+         // PIM PRE/ACT commands change the row state of every bank in the
+         // channel.  They must not overtake already-materialized physical
+         // READ/WRITE commands, regardless of the batch scheduling mode.
          queue_to_schedule = QueueClass::PIM_Q;
     }
     else {
         queue_to_schedule = QueueClass::READ_Q;
     }
+
+    const bool queue_has_work =
+        (queue_to_schedule == QueueClass::READ_Q && !_read_queue[cid].empty()) ||
+        (queue_to_schedule == QueueClass::WRITE_Q &&
+         !_write_buffer[cid].empty() && !_pending_write_events[cid].empty()) ||
+        (queue_to_schedule == QueueClass::PIM_Q && !_pim_queue[cid].empty());
+    if (!queue_has_work) {
+        return;
+    }
+    _last_transaction_schedule_cycle[cid] = transaction_cycle;
 
     switch (queue_to_schedule) {
         case QueueClass::READ_Q:
@@ -2333,7 +2342,6 @@ void EventDrivenDram::schedule_pending_operation(uint32_t cid, cycle_type curren
         recompute_next_wakeup(cid, current_cycle);
         return;
     }
-    _last_transaction_schedule_cycle[cid] = current_cycle;
 
     const bool physical_queue_empty = channel->execute_queue.empty() &&
                                       channel->activate_queue.empty() &&
@@ -2349,19 +2357,45 @@ void EventDrivenDram::schedule_pending_operation(uint32_t cid, cycle_type curren
         }
     }
 
+    QueueClass queue_to_schedule;
     if (_rw_dependency_lock[cid]) {
-        issue_pending_read_event(cid);
+        queue_to_schedule = QueueClass::READ_Q;
     }
     else if (_write_draining[cid] > 0) {
-        issue_pending_write_event(cid);
+        queue_to_schedule = QueueClass::WRITE_Q;
     }
     else if (!_pim_queue[cid].empty() && _read_queue[cid].empty() &&
-             _write_buffer[cid].empty() &&
-             (!_serialize_pim_after_physical_rw || physical_queue_empty)) {
-        issue_pending_pim_event(cid);
+             _write_buffer[cid].empty() && physical_queue_empty) {
+        // A channel-wide PIM row transition cannot overlap normal commands
+        // whose row-hit decision was made against the previous bank state.
+        queue_to_schedule = QueueClass::PIM_Q;
     }
     else {
-        issue_pending_read_event(cid);
+        queue_to_schedule = QueueClass::READ_Q;
+    }
+
+    const bool queue_has_work =
+        (queue_to_schedule == QueueClass::READ_Q && !_read_queue[cid].empty()) ||
+        (queue_to_schedule == QueueClass::WRITE_Q &&
+         !_write_buffer[cid].empty() && !_pending_write_events[cid].empty()) ||
+        (queue_to_schedule == QueueClass::PIM_Q && !_pim_queue[cid].empty());
+    if (queue_has_work) {
+        _last_transaction_schedule_cycle[cid] = current_cycle;
+        switch (queue_to_schedule) {
+            case QueueClass::READ_Q:
+                issue_pending_read_event(cid);
+                break;
+            case QueueClass::WRITE_Q:
+                issue_pending_write_event(cid);
+                break;
+            case QueueClass::PIM_Q:
+                issue_pending_pim_event(cid);
+                break;
+            default:
+                throw std::logic_error(
+                    "Unknown EventDriven DRAM queue class on channel " +
+                    std::to_string(cid));
+        }
     }
     recompute_next_wakeup(cid, current_cycle);
 }

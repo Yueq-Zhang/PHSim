@@ -327,6 +327,52 @@ void test_implemented_configuration_capabilities() {
     }
 }
 
+void test_acceleration_method_validation() {
+    for (const std::string& method : {"naive", "Loop_wise", "Proportional"}) {
+        try {
+            phsim::ConfigValidator::ValidateAccelerationMethod(
+                true, method, "inference.json");
+        } catch (const std::exception& error) {
+            ++failures;
+            std::cerr << "  FAIL: valid acceleration method '" << method
+                      << "' was rejected: " << error.what() << '\n';
+        }
+    }
+
+    try {
+        phsim::ConfigValidator::ValidateAccelerationMethod(
+            false, "", "inference.json");
+        std::cout << "  PASS: disabled acceleration accepts an omitted method\n";
+    } catch (const std::exception& error) {
+        ++failures;
+        std::cerr << "  FAIL: disabled acceleration rejected an omitted method: "
+                  << error.what() << '\n';
+    }
+
+    for (const std::string& method : {"", "loop_wise", "unknown"}) {
+        try {
+            phsim::ConfigValidator::ValidateAccelerationMethod(
+                true, method, "inference.json");
+            ++failures;
+            std::cerr << "  FAIL: invalid acceleration method '" << method
+                      << "' was accepted\n";
+        } catch (const std::invalid_argument& error) {
+            const std::string message = error.what();
+            if (message.find("naive") != std::string::npos &&
+                message.find("Loop_wise") != std::string::npos &&
+                message.find("Proportional") != std::string::npos) {
+                std::cout << "  PASS: invalid acceleration method '" << method
+                          << "' reports the supported values\n";
+            } else {
+                ++failures;
+                std::cerr << "  FAIL: acceleration diagnostic omitted supported "
+                             "values: "
+                          << message << '\n';
+            }
+        }
+    }
+}
+
 void test_client_cycle_width() {
     InferRequest request{};
     request.arrival_cycle =
@@ -351,6 +397,7 @@ int main() {
     test_dram_frequency_consistency();
     test_pim_bank_organization_consistency();
     test_implemented_configuration_capabilities();
+    test_acceleration_method_validation();
     test_client_cycle_width();
 
     if (failures == 0) {

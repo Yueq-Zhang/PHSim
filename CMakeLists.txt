@@ -353,6 +353,35 @@ if(BUILD_TESTING)
     target_link_libraries(runtime_guard_test PRIVATE dramsim3 format)
     add_test(NAME runtime_guard_test COMMAND runtime_guard_test)
 
+    add_test(
+        NAME legacy_acceleration_backend_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -P ${PROJECT_SOURCE_DIR}/tests/legacy_acceleration_backend_test.cmake
+    )
+    set_tests_properties(
+        legacy_acceleration_backend_test PROPERTIES TIMEOUT 240)
+
+    add_executable(
+        activation_layout_test
+        tests/activation_layout_test.cpp
+        src/tensor/BTensor.cc
+        src/tensor/MyTensor.cpp
+        src/DRAM/DramDataContainer.cpp
+    )
+    target_include_directories(
+        activation_layout_test PRIVATE
+        "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/ext"
+    )
+    target_compile_definitions(
+        activation_layout_test PRIVATE
+        PH_SIM_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    )
+    target_link_libraries(activation_layout_test PRIVATE dramsim3 format)
+    add_test(NAME activation_layout_test COMMAND activation_layout_test)
+
     add_executable(
         request_generator_test
         tests/request_generator_test.cpp

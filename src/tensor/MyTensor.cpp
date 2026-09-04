@@ -581,7 +581,7 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes(std::vector<std
                         uint32_t end_col = indexes.back()[1];
 
                         uint32_t start_col_slice = std::floor(start_col/column_slice_size);
-                        uint32_t end_col_slice = std::ceil(end_col/column_slice_size);
+                        uint32_t end_col_slice = end_col / column_slice_size;
 
                         std::unordered_map<uint32_t, std::vector<uint32_t>> column_slice_burst_offsets;
                         for (uint32_t i = start_col_slice; i <= end_col_slice; ++i) {
@@ -591,7 +591,8 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes(std::vector<std
                         assert(column_slice_size % dram_burst_num == 0);
                         for (uint32_t col_burst_index = start_col/dram_burst_num; col_burst_index <= end_col/dram_burst_num; col_burst_index++) {
                             uint32_t col_slice_id = col_burst_index / burst_times_per_col_slice;
-                            column_slice_burst_offsets[col_slice_id].push_back(col_burst_index);
+                            column_slice_burst_offsets[col_slice_id].push_back(
+                                col_burst_index % burst_times_per_col_slice);
                         }
 
                         uint32_t column_slice_burst_offset;     // burst offset for previous column slice
@@ -599,7 +600,7 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes(std::vector<std
                         // 下面是加载过程，按照行方向进行加载，如果遇到了column slice边界在后面换??
                         for (uint32_t col_slice_id = start_col_slice; col_slice_id <= end_col_slice; ++col_slice_id) {
                             column_slice_burst_offset = col_slice_id * std::ceil(static_cast<double>(_dims[0]) / MyAddressAllocator::dram_channels) * burst_times_per_col_slice; // 前序切片??跳过offset数量
-                            if (col_slice_id == end_col_slice) {
+                            if (col_slice_id == (_dims[1] - 1) / column_slice_size) {
                                 current_slice_row_burst_times = last_column_slice_burst_times; // 当前slice对应的是??后一个列切片，其长度小于等于column_slice
                             }
                             else {
@@ -612,7 +613,22 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes(std::vector<std
                                 }
                             }
                         }
-                        assert(burst_offsets.size() == std::ceil(static_cast<double>(end_col-start_col)/dram_burst_num) * std::ceil(static_cast<double>(end_row-start_row)/MyAddressAllocator::dram_channels));
+                        const uint64_t expected_col_burst_count =
+                            end_col / dram_burst_num -
+                            start_col / dram_burst_num + 1;
+                        const uint64_t expected_row_group_count =
+                            end_row / MyAddressAllocator::dram_channels -
+                            start_row / MyAddressAllocator::dram_channels + 1;
+                        assert(burst_offsets.size() ==
+                               expected_col_burst_count *
+                                   expected_row_group_count);
+#ifndef NDEBUG
+                        const std::unordered_set<uint32_t>
+                            unique_burst_offsets(
+                                burst_offsets.begin(), burst_offsets.end());
+                        assert(unique_burst_offsets.size() ==
+                               burst_offsets.size());
+#endif
                     }
                 }
                 else if(_dims.size() == 3) {

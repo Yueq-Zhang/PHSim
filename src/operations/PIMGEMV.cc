@@ -313,6 +313,24 @@ void PIMGEMV::calculate_my_loops() {
         _pim_inner_loop[1] = std::ceil(static_cast<double>(_inner_loop[1]) / pim_gemv_granularity) * pim_gemv_granularity;
         _pim_inner_loop[2] = _matrix_dim[1];
 
+        // Reject an unsupported Decode shape before checking the internal
+        // tiling invariants below.  In Debug builds the invariants are asserts,
+        // so validating the user-controlled dimensions first preserves the
+        // actionable configuration diagnostic.
+        const uint64_t complete_bank_group_width =
+            static_cast<uint64_t>(column_interleave) *
+            MyAddressAllocator::total_banks;
+        if (complete_bank_group_width == 0 ||
+            _matrix_dim[1] < complete_bank_group_width) {
+            throw std::invalid_argument(fmt::format(
+                "PIM Decode weight output dimension {} is too small for "
+                "column_interleave={} and total_banks={}; require at least {} "
+                "output elements or use a non-PIM Decode backend",
+                _matrix_dim[1], column_interleave,
+                MyAddressAllocator::total_banks,
+                complete_bank_group_width));
+        }
+
         // Split M and K based on the input buffer capacity, to make sure fully utilization of one column
         // Get the max batch size based on the column_interleave and output buffer size
         assert(column_interleave * MyAddressAllocator::precision_psum <= pim_output_buffer_size);
@@ -389,20 +407,6 @@ void PIMGEMV::calculate_my_loops() {
             assert(_pim_inner_loop[1] * column_interleave >= MyAddressAllocator::page_size_bytes / MyAddressAllocator::precision_weight);
         }
         uint32_t column_inner_loop_per_bank = std::floor(static_cast<double>(pim_output_buffer_size) / _my_outputs[0]->_precision / column_interleave) * column_interleave;
-
-        const uint64_t complete_bank_group_width =
-            static_cast<uint64_t>(column_interleave) *
-            MyAddressAllocator::total_banks;
-        if (complete_bank_group_width == 0 ||
-            _matrix_dim[1] < complete_bank_group_width) {
-            throw std::invalid_argument(fmt::format(
-                "PIM Decode weight output dimension {} is too small for "
-                "column_interleave={} and total_banks={}; require at least {} "
-                "output elements or use a non-PIM Decode backend",
-                _matrix_dim[1], column_interleave,
-                MyAddressAllocator::total_banks,
-                complete_bank_group_width));
-        }
 
         _pim_inner_loop[2] = std::min(std::floor(static_cast<double>(_matrix_dim[1])/complete_bank_group_width) *column_interleave,
             static_cast<double>(column_inner_loop_per_bank)); 

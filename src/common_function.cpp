@@ -303,6 +303,8 @@ void SysConfig::initialize_PIM_config(std::string pim_config) {
 void SysConfig::validate_configuration_contracts() {
     using phsim::ConfigValidator;
 
+    ConfigValidator::ValidateAccelerationMethod(
+        accelerate_ctrl, accelerate_method, inference_config_path_);
     ConfigValidator::ValidateFrequency(
         dram_freq, mem_config.tCK, pim_config_path, memory_config_path_);
     ConfigValidator::ValidateChannels(
@@ -1972,12 +1974,16 @@ std::vector<uint32_t> MyAddressAllocator::activation_allocate_in_sequence(std::v
         }
     }
     else { // dims.size() == 2 or higher dims size = 3, flatten to 2D dim
-        dims.back() = std::ceil(static_cast<double>(dims[0]) / (dram_burst_size/precision)) * (dram_burst_size/precision);  // align the last dim to channel burst size
-        uint32_t dim = 1;
+        const uint64_t elements_per_channel_burst =
+            dram_burst_size / precision;
+        dims.back() = static_cast<uint32_t>(
+            ceil_div_u64(dims.back(), elements_per_channel_burst) *
+            elements_per_channel_burst);  // align the last dim to channel burst size
+        uint64_t dim = 1;
         for (size_t i = 0; i + 1 < dims.size(); i++) {
             dim *= dims[i];
         }
-        dim = std::ceil(static_cast<double>(dim)/dram_channels) * dram_channels;
+        dim = ceil_div_u64(dim, dram_channels) * dram_channels;
         size = size * dim * dims.back();
     }
 

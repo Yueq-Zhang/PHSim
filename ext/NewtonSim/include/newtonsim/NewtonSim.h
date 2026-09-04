@@ -47,6 +47,7 @@ class NewtonSim {
                                    const std::string& name) const;
 
     // added for ONNXim
+    bool HasPendingTransactions() const;
     bool IsEmpty(uint32_t channel) const;
     void *Top(uint32_t channel) const;
     void Pop(uint32_t channel);

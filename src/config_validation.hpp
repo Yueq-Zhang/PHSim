@@ -25,6 +25,31 @@ public:
         }
     }
 
+    static void ValidateAccelerationMethod(
+        bool acceleration_enabled, const std::string& method,
+        const std::string& config_path = {}) {
+        if (!acceleration_enabled && method.empty()) {
+            return;
+        }
+        if (method == "naive" || method == "Loop_wise" ||
+            method == "Proportional") {
+            return;
+        }
+
+        std::ostringstream message;
+        if (method.empty()) {
+            message << "Missing accelerate_method";
+        } else {
+            message << "Unsupported accelerate_method='" << method << "'";
+        }
+        if (!config_path.empty()) {
+            message << " in '" << config_path << "'";
+        }
+        message << "; supported methods are 'naive', 'Loop_wise', and "
+                   "'Proportional'";
+        throw std::invalid_argument(message.str());
+    }
+
     static uint32_t ValidateRequestSize(
         uint32_t configured_request_size_bytes, uint32_t burst_length,
         uint32_t bus_width_bits, const std::string& pim_config_path = {},

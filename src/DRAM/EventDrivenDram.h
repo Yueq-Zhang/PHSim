@@ -615,7 +615,6 @@ public:
 
     std::unique_ptr<dramsim3::Config> dramsim3_config_;
     DramDataContainer* _data_container;
-    bool _serialize_pim_after_physical_rw;
     std::unique_ptr<MemorySystem> _memsys;
     std::function<void(uint64_t req_id)> pim_callback_;
 

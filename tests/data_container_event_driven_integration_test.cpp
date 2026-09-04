@@ -177,6 +177,10 @@ public:
         dram_.pop(channel);
     }
 
+    cycle_type current_cycle(uint32_t channel) const {
+        return cycles_.at(channel);
+    }
+
 private:
     void advance(uint32_t channel) {
         ++cycles_.at(channel);
@@ -186,6 +190,29 @@ private:
     EventDrivenDram& dram_;
     std::vector<cycle_type> cycles_;
 };
+
+void consume_response(EventDrivenHarness& harness, uint32_t channel,
+                      MemoryAccess* response, MemoryAccess* expected);
+
+void test_idle_check_preserves_transaction_slot(
+    EventDrivenDram& dram, EventDrivenHarness& harness,
+    const SysConfig& config) {
+    begin_case("event_driven_idle_check_preserves_transaction_slot");
+    const uint32_t channel = 0;
+    dram.schedule_pending_operation(channel, harness.current_cycle(channel));
+
+    MemoryAccess read = make_request(
+        make_active_path_address(channel, 17), MemoryAccessType::READ, config);
+    harness.push(read);
+
+    auto* bank = dram._memsys->dram_channels[channel]
+                     ->dram_ranks[0]
+                     ->dram_bankgroups[0]
+                     ->dram_banks[0];
+    expect(bank->pending_activate,
+           "an empty idle check must not block same-cycle transaction admission");
+    consume_response(harness, channel, harness.wait_one(channel), &read);
+}
 
 void consume_response(EventDrivenHarness& harness, uint32_t channel,
                       MemoryAccess* response, MemoryAccess* expected) {
@@ -533,6 +560,7 @@ int main() {
             EventDrivenDram dram(config, DRAMDataContainer::storage.get());
             EventDrivenHarness harness(dram, config.dram_channels);
 
+            test_idle_check_preserves_transaction_slot(dram, harness, config);
             test_seeded_read(harness, config);
             test_write_then_read(harness, config);
             test_merged_reads(harness, config);
@@ -567,7 +595,7 @@ int main() {
 
     if (failures == 0) {
         std::cout
-            << "RESULT PASS: 11 EventDriven DataContainer integration cases\n";
+            << "RESULT PASS: 12 EventDriven DataContainer integration cases\n";
         return 0;
     }
 

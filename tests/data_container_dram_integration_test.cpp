@@ -188,6 +188,46 @@ void test_seeded_read(PIM& dram, const SysConfig& config) {
     consume_response(dram, 0, response, &read);
 }
 
+void test_running_tracks_request_lifecycle(PIM& dram,
+                                           const SysConfig& config) {
+    begin_case("cycle_accurate_running_lifecycle");
+    expect(!dram.running(),
+           "CycleAccurate backend should be idle before a request is submitted");
+
+    const addr_type address = make_active_path_address(0, 7);
+    MemoryAccess read = make_request(address, MemoryAccessType::READ, config);
+    dram.cycle();
+    uint32_t waited = 0;
+    while (dram.is_full(0, &read)) {
+        if (++waited > kMaxDramCyclesPerRequest) {
+            throw std::runtime_error(
+                "DRAM request remained full beyond cycle limit");
+        }
+        dram.cycle();
+    }
+    dram.push(0, &read);
+    expect(dram.running(),
+           "CycleAccurate backend should report an accepted in-flight request");
+
+    MemoryAccess* response = nullptr;
+    for (uint32_t cycle = 0; cycle < kMaxDramCyclesPerRequest; ++cycle) {
+        dram.cycle();
+        if (!dram.is_empty(0)) {
+            response = dram.top(0);
+            break;
+        }
+    }
+    if (response == nullptr) {
+        throw std::runtime_error("DRAM response exceeded cycle limit");
+    }
+    expect(dram.running(),
+           "CycleAccurate backend should remain running until its response is consumed");
+
+    consume_response(dram, 0, response, &read);
+    expect(!dram.running(),
+           "CycleAccurate backend should become idle after its final response is consumed");
+}
+
 void test_write_then_read(PIM& dram, const SysConfig& config) {
     begin_case("cycle_accurate_write_then_read");
     const addr_type address = make_active_path_address(0, 2);
@@ -377,6 +417,7 @@ int main() {
         PIM dram(config, DRAMDataContainer::storage.get());
 
         test_seeded_read(dram, config);
+        test_running_tracks_request_lifecycle(dram, config);
         test_write_then_read(dram, config);
         test_channel_isolation(dram, config);
         test_empty_write_payload_is_ignored(dram, config);
@@ -393,7 +434,7 @@ int main() {
     }
 
     if (failures == 0) {
-        std::cout << "RESULT PASS: 6 CycleAccurate DataContainer integration cases\n";
+        std::cout << "RESULT PASS: 7 CycleAccurate DataContainer integration cases\n";
         return 0;
     }
 

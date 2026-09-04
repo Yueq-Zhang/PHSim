@@ -78,6 +78,12 @@ if(NOT invalid_pim_output MATCHES
         "Undersized PIM Decode diagnostic omitted the invalid and required "
         "dimensions; see ${invalid_pim_output_dir}/test-process.log")
 endif()
+if(invalid_pim_output MATCHES "Assertion.*failed")
+    message(FATAL_ERROR
+        "Undersized PIM Decode reached an internal assertion before the "
+        "configuration diagnostic; see "
+        "${invalid_pim_output_dir}/test-process.log")
+endif()
 
 message(STATUS
     "Sub-burst H16 LayerNorm completed and undersized PIM Decode was rejected")
