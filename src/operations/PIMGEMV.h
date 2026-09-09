@@ -38,7 +38,7 @@ private:
     uint32_t column_interleave;
     uint32_t weight_rows_per_bank_row;
 
-    uint32_t sram_size_needed();
+    uint64_t sram_size_needed();
     uint32_t pim_buffer_size_needed();
     uint32_t pim_input_buffer_size_needed();
     uint32_t pim_output_buffer_size_needed();

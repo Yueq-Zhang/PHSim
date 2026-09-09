@@ -6,8 +6,6 @@
     "dram_channels": 8,
     "dram_req_size": 64,
 
-    "pim_parallel_bank_accesses": 16,
-
     "PU_location": "bank",
     "dual_bank": true,
 

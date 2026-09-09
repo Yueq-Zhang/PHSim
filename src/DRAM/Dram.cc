@@ -85,6 +85,23 @@ bool PIM::running() {
     return _mem != nullptr && _mem->HasPendingTransactions();
 }
 
+void PIM::advance_cycle(cycle_type, size_t unstable_length,
+                        size_t sample_length, double instruction_ratio) {
+    cycle();
+    if (unstable_length != 0) {
+        receive_predicting_config(unstable_length, sample_length,
+                                  instruction_ratio);
+    }
+}
+
+void PIM::synchronize_cycles(cycle_type skipped_cycles) {
+    set_dram_cycles(skipped_cycles);
+}
+
+void PIM::prepare_request(MemoryAccess*, cycle_type) {}
+
+void PIM::schedule_pending_work(uint32_t, cycle_type) {}
+
 void PIM::cycle() {
     _mem->ClockTick();
     _cycles++;
@@ -298,6 +315,10 @@ void PIM::print_stat() {
     std::ofstream command_out(
         Config::system_config.log_dir + "/proportional_command_compensation.json",
         std::ofstream::out);
+    if (!command_out.is_open()) {
+        throw std::runtime_error(
+            "Cannot open proportional command compensation statistics file");
+    }
     command_out << "{";
     static const std::array<const char*, 21> command_counters = {
         "num_read_cmds", "num_write_cmds", "num_act_cmds", "num_pre_cmds",
@@ -792,7 +813,8 @@ void PIM::mark_proportional_command_warmup_complete(double warmup_weight) {
         _command_warmup_weight, 1.0 - _command_warmup_weight);
 }
 
-void PIM::apply_estimated_time(cycle_type skipped_dram_cycles) {
+void PIM::apply_estimated_time(cycle_type skipped_dram_cycles,
+                               bool /*physical_tail_pending*/) {
     if (skipped_dram_cycles == 0) return;
     const auto scale = [skipped_dram_cycles](uint64_t measured,
                                              uint64_t sampled) -> uint64_t {

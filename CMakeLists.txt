@@ -34,6 +34,7 @@ file(GLOB_RECURSE OPERATION_SRC_FILES
 add_executable(
         NMC_Simulator src/main.cpp
         src/common_function.hpp
+        src/clock_math.hpp
         src/dram_geometry.hpp
 
         src/operations/Operation.h
@@ -58,19 +59,13 @@ add_executable(
         src/Scheduler/MyScheduler.hpp
         src/Scheduler/MyScheduler.cpp
 
-        src/Interconnect/Interconnect.h
-        src/Interconnect/Interconnect.cc
         src/Interconnect/MyInterconnect.hpp
         src/Interconnect/MyInterconnect.cpp
 
         src/Model/Model.cc
 
-        src/Core/Core.h
-        src/Core/Core.cc
         src/Core/Sram.h
         src/Core/Sram.cc
-        src/Core/SystolicWS.cc
-        src/Core/SystolicWS.h
 
         src/Core/MyCore.hpp
         src/Core/MyCore.cpp
@@ -97,6 +92,11 @@ target_link_libraries(NMC_Simulator dramsim3 booksim2)
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(clock_math_test tests/clock_math_test.cpp)
+    target_include_directories(
+        clock_math_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    add_test(NAME clock_math_test COMMAND clock_math_test)
+
     add_test(
         NAME dramsim3_build_output_location_test
         COMMAND ${CMAKE_COMMAND}

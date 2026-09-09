@@ -44,12 +44,19 @@ function(run_backend backend config_name output_variable)
             "${backend} simulation did not release every MemoryAccess")
     endif()
 
-    foreach(required_file IN ITEMS _summary.tsv icnt_traffic.json)
+    foreach(required_file IN ITEMS _summary.tsv icnt_traffic.json log.txt)
         if(NOT EXISTS "${output_dir}/${required_file}")
             message(FATAL_ERROR
                 "${backend} simulation did not produce ${required_file}")
         endif()
     endforeach()
+
+    file(READ "${output_dir}/log.txt" simulator_log)
+    if(NOT simulator_log MATCHES "Configuration validated" OR
+       NOT simulator_log MATCHES "Finish the simulation")
+        message(FATAL_ERROR
+            "${backend} log.txt does not contain startup and completion records")
+    endif()
 
     file(STRINGS "${output_dir}/_summary.tsv" summary_lines)
     list(LENGTH summary_lines summary_line_count)
@@ -727,7 +734,10 @@ elseif(TEST_MODE STREQUAL "ca-ed-consistency")
             "${CA_READ_COMMANDS} vs ${EVENT_READ_COMMANDS}")
     endif()
 
-    if(NOT CA_TOTAL_CYCLES EQUAL 230 OR NOT CA_PIM_CYCLES EQUAL 0)
+    # Exact rational scheduling activates coincident Core/DRAM/ICNT edges in
+    # the same timestamp instead of letting floating-point accumulation choose
+    # an arbitrary order.
+    if(NOT CA_TOTAL_CYCLES EQUAL 233 OR NOT CA_PIM_CYCLES EQUAL 0)
         message(FATAL_ERROR
             "CA/ED Add timing baseline changed: cycles/PIM cycles "
             "${CA_TOTAL_CYCLES}/${CA_PIM_CYCLES}")
@@ -798,7 +808,7 @@ elseif(TEST_MODE STREQUAL "memory-access-gemm")
         # allocation up keeps the following activation in a distinct row, so
         # all 276 logical reads now reach DRAM instead of eight being merged
         # through the former address overlap.
-        if(NOT ${prefix}_TOTAL_CYCLES EQUAL 914 OR
+        if(NOT ${prefix}_TOTAL_CYCLES EQUAL 912 OR
            NOT ${prefix}_READ_BYTES EQUAL 8832 OR
            NOT ${prefix}_WRITE_BYTES EQUAL 2048 OR
            NOT ${prefix}_PIM_REQUESTS EQUAL 0 OR

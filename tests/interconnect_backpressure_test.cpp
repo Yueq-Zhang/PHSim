@@ -47,6 +47,8 @@ void test_simple_unbounded_default() {
     configure_simple(config, 0, 0);
     MyInterconnect interconnect(config);
     auto accesses = make_accesses(64);
+    require(!interconnect.running(),
+            "an empty Simple interconnect must be idle");
     for (auto& access : accesses) {
         require(!interconnect.is_full(0, &access),
                 "zero Simple input capacity must remain unbounded");
@@ -54,6 +56,8 @@ void test_simple_unbounded_default() {
     }
     require(!interconnect.is_full(0, &accesses.front()),
             "unbounded Simple input must not become full");
+    require(interconnect.running(),
+            "queued Simple input packets must keep the interconnect running");
 }
 
 void test_simple_finite_backpressure() {
@@ -61,9 +65,13 @@ void test_simple_finite_backpressure() {
     configure_simple(config, 2, 1);
     MyInterconnect interconnect(config);
     auto accesses = make_accesses(3);
+    require(!interconnect.running(),
+            "an empty finite Simple interconnect must be idle");
 
     interconnect.push(0, 1, &accesses[0]);
     interconnect.push(0, 1, &accesses[1]);
+    require(interconnect.running(),
+            "queued finite Simple input packets must be reported as active");
     require(interconnect.is_full(0, &accesses[2]),
             "finite Simple input must report full at capacity");
     bool rejected = false;
@@ -76,6 +84,8 @@ void test_simple_finite_backpressure() {
 
     interconnect.cycle();
     interconnect.cycle();
+    require(interconnect.running(),
+            "a buffered Simple output packet must keep the interconnect active");
     require(interconnect.top(1) == &accesses[0],
             "Simple interconnect must preserve packet order");
     interconnect.push(0, 1, &accesses[2]);
@@ -94,6 +104,8 @@ void test_simple_finite_backpressure() {
     require(interconnect.top(1) == &accesses[2],
             "Simple backpressure must not drop packets");
     interconnect.pop(1);
+    require(!interconnect.running(),
+            "a fully drained Simple interconnect must return to idle");
 }
 
 void drain_booksim(booksim2::Interconnect& interconnect, int destination,

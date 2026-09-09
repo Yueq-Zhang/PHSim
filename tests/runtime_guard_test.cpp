@@ -1,9 +1,12 @@
 #include "common_function.hpp"
 #include "Client/Client.h"
+#include "operations/NormalizationValidation.hpp"
+#include "operations/SramTilingValidation.hpp"
 
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -373,6 +376,87 @@ void test_acceleration_method_validation() {
     }
 }
 
+void test_json_configuration_schema() {
+    using phsim::JsonFieldSpec;
+    using phsim::JsonValueKind;
+    const std::initializer_list<JsonFieldSpec> schema = {
+        {"count", JsonValueKind::UnsignedInteger, true},
+        {"enabled", JsonValueKind::Boolean, false},
+    };
+
+    try {
+        phsim::ConfigValidator::ValidateJsonObject(
+            nlohmann::json{{"count", 2}, {"enabled", true}}, "test",
+            "test.json", schema);
+        std::cout << "  PASS: valid JSON configuration schema is accepted\n";
+    } catch (const std::exception& error) {
+        ++failures;
+        std::cerr << "  FAIL: valid JSON configuration was rejected: "
+                  << error.what() << '\n';
+    }
+
+    for (const auto& invalid : {
+             nlohmann::json{{"count", 2}, {"typo", true}},
+             nlohmann::json{{"enabled", true}},
+             nlohmann::json{{"count", "two"}},
+             nlohmann::json{{"count",
+                             static_cast<uint64_t>(
+                                 std::numeric_limits<uint32_t>::max()) + 1}}}) {
+        try {
+            phsim::ConfigValidator::ValidateJsonObject(
+                invalid, "test", "test.json", schema);
+            ++failures;
+            std::cerr << "  FAIL: invalid JSON configuration was accepted\n";
+        } catch (const std::invalid_argument&) {
+            std::cout << "  PASS: invalid JSON configuration is rejected\n";
+        }
+    }
+
+    try {
+        (void)load_config("__phsim_missing_configuration__.json");
+        ++failures;
+        std::cerr << "  FAIL: missing JSON configuration file was accepted\n";
+    } catch (const std::runtime_error& error) {
+        if (std::string(error.what()).find(
+                "__phsim_missing_configuration__.json") !=
+            std::string::npos) {
+            std::cout << "  PASS: missing JSON configuration reports its path\n";
+        } else {
+            ++failures;
+            std::cerr << "  FAIL: missing JSON diagnostic omitted its path\n";
+        }
+    }
+}
+
+void test_feature_compatibility_validation() {
+    try {
+        phsim::ConfigValidator::ValidateFeatureCompatibility(
+            false, true, true, "Proportional", false);
+        std::cout << "  PASS: supported virtual-memory acceleration is accepted\n";
+    } catch (const std::exception& error) {
+        ++failures;
+        std::cerr << "  FAIL: supported feature combination rejected: "
+                  << error.what() << '\n';
+    }
+
+    for (const auto& combination : {
+             std::tuple<bool, bool, bool, std::string, bool>{
+                 true, false, true, "Proportional", false},
+             {false, true, true, "Loop_wise", false},
+             {true, false, false, "", true}}) {
+        try {
+            phsim::ConfigValidator::ValidateFeatureCompatibility(
+                std::get<0>(combination), std::get<1>(combination),
+                std::get<2>(combination), std::get<3>(combination),
+                std::get<4>(combination));
+            ++failures;
+            std::cerr << "  FAIL: incompatible feature combination was accepted\n";
+        } catch (const std::invalid_argument&) {
+            std::cout << "  PASS: incompatible feature combination is rejected\n";
+        }
+    }
+}
+
 void test_client_cycle_width() {
     InferRequest request{};
     request.arrival_cycle =
@@ -387,6 +471,197 @@ void test_client_cycle_width() {
     }
 }
 
+void test_layernorm_dimension_validation() {
+    try {
+        phsim::ValidateLayerNormInputDimensions(
+            {2, 16}, {16}, "layernorm_test", 0);
+        std::cout << "  PASS: valid two-dimensional LayerNorm input is accepted\n";
+    } catch (const std::exception& error) {
+        ++failures;
+        std::cerr << "  FAIL: valid LayerNorm dimensions were rejected: "
+                  << error.what() << '\n';
+    }
+
+    try {
+        phsim::ValidateLayerNormInputDimensions(
+            {16}, {16}, "layernorm_test", 0);
+        ++failures;
+        std::cerr << "  FAIL: one-dimensional LayerNorm input was accepted\n";
+    } catch (const std::invalid_argument& error) {
+        if (std::string(error.what()).find("[tokens, hidden_size]") !=
+            std::string::npos) {
+            std::cout << "  PASS: LayerNorm input rank mismatch is rejected clearly\n";
+        } else {
+            ++failures;
+            std::cerr << "  FAIL: LayerNorm rank diagnostic omitted dimensions: "
+                      << error.what() << '\n';
+        }
+    }
+
+    try {
+        phsim::ValidateLayerNormInputDimensions(
+            {2, 3, 4}, {4}, "layernorm_test", 1);
+        ++failures;
+        std::cerr << "  FAIL: three-dimensional LayerNorm input was accepted\n";
+    } catch (const std::invalid_argument&) {
+        std::cout << "  PASS: unsupported three-dimensional LayerNorm input is rejected\n";
+    }
+
+    try {
+        phsim::ValidateLayerNormInputDimensions(
+            {2, 8}, {16}, "layernorm_test", 3);
+        ++failures;
+        std::cerr << "  FAIL: mismatching LayerNorm hidden size was accepted\n";
+    } catch (const std::invalid_argument& error) {
+        const std::string message = error.what();
+        if (message.find("input 3") != std::string::npos &&
+            message.find("hidden_size") != std::string::npos &&
+            message.find("[2, 8]") != std::string::npos &&
+            message.find("[16]") != std::string::npos) {
+            std::cout << "  PASS: LayerNorm hidden-size mismatch is rejected clearly\n";
+        } else {
+            ++failures;
+            std::cerr << "  FAIL: LayerNorm mismatch diagnostic omitted values: "
+                      << message << '\n';
+        }
+    }
+}
+
+void test_layernorm_parameter_dimension_validation() {
+    try {
+        const uint32_t one_dimensional =
+            phsim::ValidateLayerNormParameterDimensions(
+                {16}, {16}, "layernorm_test");
+        if (one_dimensional != 16) {
+            throw std::runtime_error("unexpected LayerNorm parameter size");
+        }
+        const uint32_t size_bytes =
+            phsim::ValidateLayerNormParameterSizeBytes(
+                one_dimensional, 2, "layernorm_test");
+        if (size_bytes != 32) {
+            throw std::runtime_error("unexpected LayerNorm parameter byte size");
+        }
+        std::cout << "  PASS: valid LayerNorm gamma/beta shapes are accepted\n";
+    } catch (const std::exception& error) {
+        ++failures;
+        std::cerr << "  FAIL: valid LayerNorm parameters were rejected: "
+                  << error.what() << '\n';
+    }
+
+    for (const auto& invalid_shapes : {
+             std::pair<std::vector<uint32_t>, std::vector<uint32_t>>{
+                 {}, {}},
+             {{3, 4}, {3, 4}},
+             {{16}, {8}},
+             {{0}, {0}}}) {
+        try {
+            (void)phsim::ValidateLayerNormParameterDimensions(
+                invalid_shapes.first, invalid_shapes.second,
+                "layernorm_test");
+            ++failures;
+            std::cerr << "  FAIL: invalid LayerNorm gamma/beta shapes were accepted\n";
+        } catch (const std::invalid_argument&) {
+            std::cout << "  PASS: invalid LayerNorm gamma/beta shapes are rejected\n";
+        }
+    }
+
+    for (const auto& invalid_size : {
+             std::pair<uint32_t, uint32_t>{16, 0},
+             {std::numeric_limits<uint32_t>::max(), 2}}) {
+        try {
+            (void)phsim::ValidateLayerNormParameterSizeBytes(
+                invalid_size.first, invalid_size.second, "layernorm_test");
+            ++failures;
+            std::cerr << "  FAIL: invalid LayerNorm parameter byte size was accepted\n";
+        } catch (const std::invalid_argument&) {
+            std::cout << "  PASS: zero LayerNorm parameter precision is rejected\n";
+        } catch (const std::overflow_error&) {
+            std::cout << "  PASS: overflowing LayerNorm parameter byte size is rejected\n";
+        }
+    }
+}
+
+void test_sram_tiling_guards() {
+    if (phsim::AvailablePingPongSramBytes(8) != 4096) {
+        ++failures;
+        std::cerr << "  FAIL: ping-pong SRAM capacity conversion is incorrect\n";
+    } else {
+        std::cout << "  PASS: ping-pong SRAM capacity uses KiB and bytes consistently\n";
+    }
+
+    std::vector<uint32_t> inner{5, 16};
+    std::vector<uint32_t> outer{1};
+    phsim::HalveSramTileDimensionAndDoubleCount(
+        inner, 0, outer, 0, "guard_test", 5000, 4096);
+    if (inner[0] != 3 || outer[0] != 2) {
+        ++failures;
+        std::cerr << "  FAIL: SRAM tile split did not preserve ceil-halving\n";
+    } else {
+        std::cout << "  PASS: SRAM tile split preserves the existing ceil-halving policy\n";
+    }
+
+    try {
+        std::vector<uint32_t> minimum_inner{1, 128};
+        std::vector<uint32_t> minimum_outer{8};
+        phsim::HalveSramTileDimensionAndDoubleCount(
+            minimum_inner, 0, minimum_outer, 0, "guard_test",
+            832, 512, "one token remains");
+        ++failures;
+        std::cerr << "  FAIL: oversized minimum SRAM tile did not throw\n";
+    } catch (const std::invalid_argument& error) {
+        const std::string message = error.what();
+        if (message.find("minimum tile cannot fit in SRAM") !=
+                std::string::npos &&
+            message.find("832 bytes") != std::string::npos &&
+            message.find("512 bytes") != std::string::npos) {
+            std::cout << "  PASS: oversized minimum SRAM tile fails clearly\n";
+        } else {
+            ++failures;
+            std::cerr << "  FAIL: SRAM capacity diagnostic omitted values: "
+                      << message << '\n';
+        }
+    }
+
+    try {
+        const std::vector<uint32_t> current{16, 8, 4};
+        const std::vector<uint32_t> next{16, 8, 4};
+        const std::vector<uint32_t> outer_counts{2, 2, 2};
+        (void)phsim::SelectShrinkableSramDimension(
+            current, next, {0, 1, 2}, outer_counts, "guard_test",
+            8192, 4096, "all dimensions reached their minimum granularity");
+        ++failures;
+        std::cerr << "  FAIL: non-progressing aligned SRAM tile did not throw\n";
+    } catch (const std::invalid_argument&) {
+        std::cout << "  PASS: non-progressing aligned SRAM tile fails clearly\n";
+    }
+
+    try {
+        const std::vector<uint32_t> current{64, 32, 16};
+        const std::vector<uint32_t> next{64, 16, 8};
+        const std::vector<uint32_t> outer_counts{2, 1, 1};
+        const size_t selected = phsim::SelectShrinkableSramDimension(
+            current, next, {0, 1, 2}, outer_counts, "guard_test",
+            8192, 4096);
+        if (selected != 1) {
+            throw std::runtime_error("unexpected SRAM split dimension");
+        }
+        std::cout << "  PASS: aligned tiling skips a stalled dimension and continues shrinking\n";
+    } catch (const std::exception& error) {
+        ++failures;
+        std::cerr << "  FAIL: aligned tiling did not select another shrinkable dimension: "
+                  << error.what() << '\n';
+    }
+
+    try {
+        uint32_t count = std::numeric_limits<uint32_t>::max();
+        phsim::DoubleSramTileCountOrThrow(count, "guard_test", 0);
+        ++failures;
+        std::cerr << "  FAIL: SRAM tile-count overflow did not throw\n";
+    } catch (const std::overflow_error&) {
+        std::cout << "  PASS: SRAM tile-count overflow is rejected\n";
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -398,7 +673,12 @@ int main() {
     test_pim_bank_organization_consistency();
     test_implemented_configuration_capabilities();
     test_acceleration_method_validation();
+    test_json_configuration_schema();
+    test_feature_compatibility_validation();
     test_client_cycle_width();
+    test_layernorm_dimension_validation();
+    test_layernorm_parameter_dimension_validation();
+    test_sram_tiling_guards();
 
     if (failures == 0) {
         std::cout << "RESULT PASS: runtime guard checks\n";

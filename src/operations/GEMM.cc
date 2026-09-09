@@ -1,4 +1,5 @@
 #include "GEMM.h"
+#include "SramTilingValidation.hpp"
 
 #include <boost/core/demangle.hpp>
 
@@ -55,7 +56,7 @@ std::vector<Ptr<MyTensor>> GEMM::get_my_outputs(std::vector<Ptr<MyTensor>> input
             // 验证input dim
             auto input_dims = _my_inputs[i]->get_dims();
             assert(*input_dims.rbegin() == *(weight_dims.rbegin() + 1)); // validate input dimension.
-            // spdlog::info("GEMM input index: {} / input size: {}", i, inputs[i]->get_dims());
+            // spdlog::debug("GEMM input index: {} / input size: {}", i, inputs[i]->get_dims());
             // 计算output dim
             std::vector<uint32_t> output_dims = {0, 0};
             *(output_dims.rbegin() + 1) = *(_my_inputs[i]->get_dims().rbegin() + 1);
@@ -68,7 +69,7 @@ std::vector<Ptr<MyTensor>> GEMM::get_my_outputs(std::vector<Ptr<MyTensor>> input
 
         initialize_my_tiles(); // 之后开始完成tile的初始化过程
 
-        //spdlog::info("GEMM operation with {} batches of total [{}, {}] activation and weight [{}, {}]", _batch_size,
+        //spdlog::debug("GEMM operation with {} batches of total [{}, {}] activation and weight [{}, {}]", _batch_size,
         //     _m_batch_dim.back(), _my_weights[0]->get_dims()[0], _my_weights[0]->get_dims()[0], _my_weights[0]->get_dims()[1]);
         /*
         uint32_t input_dim = _my_inputs[0]->get_dims()[0];
@@ -88,8 +89,8 @@ std::vector<Ptr<MyTensor>> GEMM::get_my_outputs(std::vector<Ptr<MyTensor>> input
         calculate_my_loops();  // 基于SRAM的大小，计算inner_loop 和 outer_loop, 存储在op中
         initialize_my_tiles(); // 之后开始完成tile的初始化过程
 
-        spdlog::info("GEMM = input0 : {} * input1: {} = output0 : {}", input0_dims, input1_dims, output_dims);
-        // spdlog::info("outer loop : {} / inner loop : {}", _outer_loop, _inner_loop);
+        spdlog::debug("GEMM = input0 : {} * input1: {} = output0 : {}", input0_dims, input1_dims, output_dims);
+        // spdlog::debug("outer loop : {} / inner loop : {}", _outer_loop, _inner_loop);
         */
     }
     else if (matrix_tensor_type == TensorType::KCache or matrix_tensor_type == TensorType::VCache) {
@@ -97,7 +98,7 @@ std::vector<Ptr<MyTensor>> GEMM::get_my_outputs(std::vector<Ptr<MyTensor>> input
         assert(output_tensor_type == TensorType::ACT);
         for (size_t i = 0; i < inputs.size(); ++i) {
             _my_inputs[i] = inputs[i];
-            // spdlog::info("GEMM input index: {} / input size: {}", i, inputs[i]->get_dims());
+            // spdlog::debug("GEMM input index: {} / input size: {}", i, inputs[i]->get_dims());
         }
 
         if (matrix_tensor_type == TensorType::KCache) { // QKT进行MatMul的计算的结果是三维情况，[Head, lin, lin]
@@ -106,7 +107,7 @@ std::vector<Ptr<MyTensor>> GEMM::get_my_outputs(std::vector<Ptr<MyTensor>> input
                 auto K_dims = _my_weights[i]->get_dims();
                 std::vector<uint32_t> output_dims = {MyAddressAllocator::h, Q_dims[0], K_dims[0]};
                 _my_outputs[i] = std::make_shared<MyTensor>(_name + "_output", output_dims, output_tensor_type, false);
-                // spdlog::info("The dimension of Batch {} QKT operation: input Tensor {} and {}, output Tensor {}",i, Q_dims,K_dims,output_dims);
+                // spdlog::debug("The dimension of Batch {} QKT operation: input Tensor {} and {}, output Tensor {}",i, Q_dims,K_dims,output_dims);
             }
         }
         else if (matrix_tensor_type == TensorType::VCache) {
@@ -115,12 +116,12 @@ std::vector<Ptr<MyTensor>> GEMM::get_my_outputs(std::vector<Ptr<MyTensor>> input
                 auto V_dims = _my_weights[i]->get_dims();
                 std::vector<uint32_t> output_dims = {S_dims[S_dims.size() - 2], MyAddressAllocator::h * MyAddressAllocator::d_k};
                 _my_outputs[i] = std::make_shared<MyTensor>(_name + "_output", output_dims, output_tensor_type, false);
-                // spdlog::info("The dimension of Batch {} SV operation: input Tensor {} and {}, output Tensor {}",i, S_dims,V_dims,output_dims);
+                // spdlog::debug("The dimension of Batch {} SV operation: input Tensor {} and {}, output Tensor {}",i, S_dims,V_dims,output_dims);
             }
         }
         calculate_attention_loops();  // 基于SRAM的大小，计算inner_loop 和 outer_loop, 存储在op中; 每个Loop优先完成单个Attention的计算过程
         initialize_my_tiles(); // 之后开始完成tile的初始化过程
-        // spdlog::info("outer loop : {} / inner loop : {}", _outer_loop, _inner_loop);
+        // spdlog::debug("outer loop : {} / inner loop : {}", _outer_loop, _inner_loop);
         /*
         auto input0_dims = _my_inputs[0]->get_dims();
         auto input1_dims = _my_inputs[1]->get_dims();
@@ -129,16 +130,16 @@ std::vector<Ptr<MyTensor>> GEMM::get_my_outputs(std::vector<Ptr<MyTensor>> input
         if (matrix_tensor_type == TensorType::KCache) {  // QKT进行MatMul的计算的结果是三维情况，[Head, lin, lin]
             output_dims={MyAddressAllocator::h, input0_dims[0], input1_dims[0]};   //
             _my_outputs[0] = std::make_shared<MyTensor>(_name + "_output", output_dims, output_tensor_type, false);
-            spdlog::info("The dimension of QKT operation: input Tensor {} and {}, output Tensor {}",input0_dims,input1_dims,output_dims);
+            spdlog::debug("The dimension of QKT operation: input Tensor {} and {}, output Tensor {}",input0_dims,input1_dims,output_dims);
         }
         else if (matrix_tensor_type == TensorType::VCache) { // SV的输入是三维 + 2维，计算的结果是二维情况 [lin, Demb]
             output_dims={input0_dims[input0_dims.size() - 2], MyAddressAllocator::h * MyAddressAllocator::d_k};
             _my_outputs[0] = std::make_shared<MyTensor>(_name + "_output", output_dims, output_tensor_type, false);
-            spdlog::info("The dimension of SV operation: input Tensor {} and {}, output Tensor {}",input0_dims,input1_dims,output_dims);
+            spdlog::debug("The dimension of SV operation: input Tensor {} and {}, output Tensor {}",input0_dims,input1_dims,output_dims);
         }
         */
     }
-    spdlog::info("The Compilation for Operation {} is Finished", _name);
+    spdlog::debug("The Compilation for Operation {} is Finished", _name);
 
      return _my_outputs;
 }
@@ -218,11 +219,11 @@ void GEMM::initialize_my_tiles() {
                         }
                     }
                 }
-                // spdlog::info("Tiles for Batch {} head {} is finished", batch, H);
+                // spdlog::debug("Tiles for Batch {} head {} is finished", batch, H);
             }
         }
     }
-    // spdlog::info("GEMM operation::initialize {} tiles for outer_loop {}", _tiles.size(), _outer_loop);
+    // spdlog::debug("GEMM operation::initialize {} tiles for outer_loop {}", _tiles.size(), _outer_loop);
 }
 
 
@@ -283,7 +284,7 @@ Tile GEMM::initialize_my_instructions(uint32_t B, uint32_t M, uint32_t K, uint32
     // -- bias --
     // 如果有bias(相应的weight)，且K=0(即刚开始计算), K来自outer loop，需要首先读取Bias Tensor的数据，生成相应的MOVIN指令
     if (_my_inputs.size() == 3 && K == 0) {
-        // spdlog::info("Load bias element from {} to {} for N = {} outer loop", n_outer_offset, n_outer_offset + n_inner, N);
+        // spdlog::debug("Load bias element from {} to {} for N = {} outer loop", n_outer_offset, n_outer_offset + n_inner, N);
         auto bias_tensor =_my_inputs[2];
         // 构建二维数组，用于存储计算过程中所需的indexes, 由于Bias的规模较小，直接完成所有的Bias加载
         std::vector<std::vector<uint32_t>> bias_indexes;
@@ -299,10 +300,10 @@ Tile GEMM::initialize_my_instructions(uint32_t B, uint32_t M, uint32_t K, uint32
         auto bias_addrs = bias_tensor->generate_addrs_based_on_indexes(bias_indexes);
 
         if (bias_addrs.empty()) {
-            spdlog::info("zero load for activation n: {} / bias tensor dim: {}", n_outer_offset, bias_tensor->get_dims());
+            spdlog::debug("zero load for activation n: {} / bias tensor dim: {}", n_outer_offset, bias_tensor->get_dims());
         } else {
             std::string movin_info = fmt::format("Load Bias with the n = {}-{}",bias_indexes.front()[0], bias_indexes.back()[0]);
-            // spdlog::info("{} addrs have been generated for {} / bias tensor with dims {}", bias_addrs.size(), n_outer_offset, bias_tensor->get_dims());
+            // spdlog::debug("{} addrs have been generated for {} / bias tensor with dims {}", bias_addrs.size(), n_outer_offset, bias_tensor->get_dims());
             tile.instructions.push_back(Instruction{
                 .opcode = Opcode::MOVIN,
                 .dest_addr = sram_accumulation_base + n_inner * MyAddressAllocator::precision_weight,
@@ -342,7 +343,7 @@ Tile GEMM::initialize_my_instructions(uint32_t B, uint32_t M, uint32_t K, uint32
 
                     auto activation_addrs = activation_tensor->generate_addrs_based_on_indexes(activation_indexes);
                     if (activation_addrs.empty()) {
-                        spdlog::info(
+                        spdlog::debug(
                             "zero load for activation m: {} {} / k: "
                             "{} {} / activation tensor dim: {}",
                             m_outer_offset, m_inner_offset, k_outer_offset, k_inner_offset,
@@ -373,7 +374,7 @@ Tile GEMM::initialize_my_instructions(uint32_t B, uint32_t M, uint32_t K, uint32
                     auto weight_addrs = weight_tensor->generate_addrs_based_on_indexes(weight_indexes);
 
                     if (weight_addrs.empty()) {
-                        spdlog::info(
+                        spdlog::debug(
                             "operation name : {} / "
                             "zero load for weight k: {} {} / n: {} {} "
                             "/ weight tensor dim: {} / is transposed: {}",
@@ -414,8 +415,8 @@ Tile GEMM::initialize_my_instructions(uint32_t B, uint32_t M, uint32_t K, uint32
                     });
                 }
                 else {
-                    spdlog::info("Computation jump: current m_start = {}, k_start = {}, n_start = {}",  m_outer_offset + m_inner_offset, k_outer_offset + k_inner_offset, n_outer_offset + n_inner_offset);
-                    spdlog::info("activation dims {}, weight dim {}", activation_tensor->get_dims(), weight_tensor->get_dims());
+                    spdlog::debug("Computation jump: current m_start = {}, k_start = {}, n_start = {}",  m_outer_offset + m_inner_offset, k_outer_offset + k_inner_offset, n_outer_offset + n_inner_offset);
+                    spdlog::debug("activation dims {}, weight dim {}", activation_tensor->get_dims(), weight_tensor->get_dims());
                 }
 
                 // -- store --
@@ -453,8 +454,8 @@ Tile GEMM::initialize_my_instructions(uint32_t B, uint32_t M, uint32_t K, uint32
         weight_tensor->unset_transposed();
     }
 
-    // spdlog::info("{} instructions generated from tile {}",
-    // t.instructions.size(), t.optype); spdlog::info("outer loop {}, inner loop
+    // spdlog::debug("{} instructions generated from tile {}",
+    // t.instructions.size(), t.optype); spdlog::debug("outer loop {}, inner loop
     // {}", _outer_loop, _inner_loop);
 
     return tile;
@@ -512,7 +513,7 @@ Tile GEMM::initialize_my_DASH_instructions(uint32_t B, uint32_t M, uint32_t K, u
 
     // 对于K=0的Tile，初始阶段需要加载Bias
     if (_my_weights.size() == 2 && K == 0) {
-        //spdlog::info("Load n = {}-{} Bias for N = {} outer loop", n_outer_offset, n_outer_offset + n_inner, N);
+        //spdlog::debug("Load n = {}-{} Bias for N = {} outer loop", n_outer_offset, n_outer_offset + n_inner, N);
         auto bias_tensor =_my_weights[1];
         std::vector<std::vector<uint32_t>> bias_indexes;  // 按照顺序，生成相应的index
         for (uint32_t n_inner_offset = 0; n_inner_offset < n_inner; n_inner_offset += loop_size) { // n_inner_offset: L1 tile start index in each L2 tile
@@ -529,7 +530,7 @@ Tile GEMM::initialize_my_DASH_instructions(uint32_t B, uint32_t M, uint32_t K, u
         auto bias_addrs = bias_tensor->generate_addrs_based_on_indexes(bias_indexes);
 
         if (bias_addrs.empty() && !should_store) {
-            spdlog::info("zero load for activation n: {} / bias tensor dim: {}", n_outer_offset, bias_tensor->get_dims());
+            spdlog::debug("zero load for activation n: {} / bias tensor dim: {}", n_outer_offset, bias_tensor->get_dims());
         } else {
             std::string movin_info = fmt::format("Load Bias with the n = {}-{}",bias_indexes.front()[0], bias_indexes.back()[0]);
             tile.instructions.push_back(Instruction{
@@ -548,7 +549,7 @@ Tile GEMM::initialize_my_DASH_instructions(uint32_t B, uint32_t M, uint32_t K, u
         for (uint32_t k_inner_offset = 0; k_inner_offset < k_inner; k_inner_offset += loop_size) {
             for (uint32_t m_inner_offset = 0; m_inner_offset < m_inner; m_inner_offset += loop_size) {
 
-                // spdlog::info("Current m_offset = {}, k_offset = {}, n_offset = {}", m_outer_offset + m_inner_offset, k_outer_offset + k_inner_offset, n_outer_offset + n_inner_offset);
+                // spdlog::debug("Current m_offset = {}, k_offset = {}, n_offset = {}", m_outer_offset + m_inner_offset, k_outer_offset + k_inner_offset, n_outer_offset + n_inner_offset);
                 uint32_t m_tile_index =  std::ceil((double)(m_outer_offset + m_inner_offset) / _config.core_height);
                 uint32_t k_tile_index =  std::ceil((double)(k_outer_offset + k_inner_offset) / _config.core_width);
                 uint32_t n_tile_index =  std::ceil((double)(n_outer_offset + n_inner_offset) / _config.core_width);
@@ -588,7 +589,7 @@ Tile GEMM::initialize_my_DASH_instructions(uint32_t B, uint32_t M, uint32_t K, u
 
                     /*
                     if (activation_indexes.size()>1) {
-                        spdlog::info("Load Activation with the begin m = {}-{} and k = {}-{}",
+                        spdlog::debug("Load Activation with the begin m = {}-{} and k = {}-{}",
                         m_outer_offset + m_inner_offset, std::min(m_outer_offset + m_inner_offset + loop_size, M_max),
                         k_outer_offset + k_inner_offset, std::min( k_outer_offset + k_inner_offset + loop_size, K_max));
                     }
@@ -596,7 +597,7 @@ Tile GEMM::initialize_my_DASH_instructions(uint32_t B, uint32_t M, uint32_t K, u
                     std::vector<addr_type> activation_addrs;
                     uint32_t activation_index_size = 0;
                     if (activation_indexes.empty()) {
-                        spdlog::info("No valid activation tiles to load.");
+                        spdlog::debug("No valid activation tiles to load.");
                     }
                     else {
                         for (const auto& [batch_id, indexes] : activation_indexes) {
@@ -610,10 +611,10 @@ Tile GEMM::initialize_my_DASH_instructions(uint32_t B, uint32_t M, uint32_t K, u
                     // auto activation_addrs = activation_tensors[batch_index]->generate_addrs_based_on_indexes(activation_indexes);
 
                     if (activation_addrs.empty()) {
-                        spdlog::info("zero load for activation m: {}, {} / k: {}, {}",m_outer_offset, m_inner_offset, k_outer_offset, k_inner_offset);
+                        spdlog::debug("zero load for activation m: {}, {} / k: {}, {}",m_outer_offset, m_inner_offset, k_outer_offset, k_inner_offset);
                         // assert(0);
                     } else {
-                        // spdlog::info("Load Activation with the begin m = {}-{} and k = {}-{}",activation_indexes.front()[0], activation_indexes.back()[0], activation_indexes.front()[1], activation_indexes.back()[1]);
+                        // spdlog::debug("Load Activation with the begin m = {}-{} and k = {}-{}",activation_indexes.front()[0], activation_indexes.back()[0], activation_indexes.front()[1], activation_indexes.back()[1]);
                         std::string movin_info = fmt::format("Load Activation with the begin m = {}-{} and k = {}-{}",
                             m_outer_offset + m_inner_offset, std::min(m_outer_offset + m_inner_offset + loop_size, M_max),
                             k_outer_offset + k_inner_offset, std::min( k_outer_offset + k_inner_offset + loop_size, M_max));
@@ -662,16 +663,16 @@ Tile GEMM::initialize_my_DASH_instructions(uint32_t B, uint32_t M, uint32_t K, u
 
                     auto weight_addrs = weight_tensor->generate_addrs_based_on_indexes(weight_indexes);
                     if (weight_addrs.empty()) {
-                        spdlog::info(
+                        spdlog::debug(
                             "operation name : {} / zero load for weight k: {} {} / n: {} {} / weight tensor dim: {} / is transposed: {}",
                             get_name(), k_outer_offset, k_inner_offset, n_outer_offset,
                             n_inner_offset, weight_tensor->get_dims(),
                             weight_tensor->_is_transposed);
-                        //spdlog::info("inner loop {}, outer loop {}, act_size {}, wgt_size {}", _inner_loop, _outer_loop, activation_tensor->get_dims(), weight_tensor->get_dims());
+                        //spdlog::debug("inner loop {}, outer loop {}, act_size {}, wgt_size {}", _inner_loop, _outer_loop, activation_tensor->get_dims(), weight_tensor->get_dims());
                     }
                     else {
-                        // spdlog::info("Load weight with the begin index {} and end index {}", weight_indexes.front(), weight_indexes.back());
-                        // spdlog::info("Load weight with K = {}-{}, N = {}-{}", weight_indexes.front()[0], weight_indexes.back()[0], weight_indexes.front()[1], weight_indexes.back()[1]);
+                        // spdlog::debug("Load weight with the begin index {} and end index {}", weight_indexes.front(), weight_indexes.back());
+                        // spdlog::debug("Load weight with K = {}-{}, N = {}-{}", weight_indexes.front()[0], weight_indexes.back()[0], weight_indexes.front()[1], weight_indexes.back()[1]);
                         std::string movin_info = fmt::format("Load weight with the begin index {} and end index {}", weight_indexes.front(), weight_indexes.back());
                         spdlog::debug("Generate {} addrs for weight load", weight_addrs.size());
                         // MyAddressAllocator::check_addrs(weight_addrs);
@@ -702,9 +703,9 @@ Tile GEMM::initialize_my_DASH_instructions(uint32_t B, uint32_t M, uint32_t K, u
                     });
                 }
                 else {
-                    spdlog::info("Computation jump: M_max = {}, K_max = {}, N_max = {}, current m_start = {}, k_start = {}, n_start = {}", M_max, K_max, N_max,
+                    spdlog::debug("Computation jump: M_max = {}, K_max = {}, N_max = {}, current m_start = {}, k_start = {}, n_start = {}", M_max, K_max, N_max,
                     m_outer_offset + m_inner_offset, k_outer_offset + k_inner_offset, n_outer_offset + n_inner_offset);
-                    // spdlog::info("activation dims {}, weight dim {}", activation_tensor->get_dims(), weight_tensor->get_dims());
+                    // spdlog::debug("activation dims {}, weight dim {}", activation_tensor->get_dims(), weight_tensor->get_dims());
                 }
 
                 // -- store --
@@ -736,17 +737,17 @@ Tile GEMM::initialize_my_DASH_instructions(uint32_t B, uint32_t M, uint32_t K, u
                     }
 
                     if (output_indexes.size() > 1) {
-                        // spdlog::info("Load Activation with the begin m = {}-{} and n = {}-{}",
+                        // spdlog::debug("Load Activation with the begin m = {}-{} and n = {}-{}",
                         // m_outer_offset + m_inner_offset, std::min(m_outer_offset + m_inner_offset + loop_size, M_max),
                         // n_outer_offset + n_inner_offset, std::min( n_outer_offset + n_inner_offset + loop_size, N_max));
-                        // spdlog::info("Previous batch boundary is {}", previous_batch_boundary);
+                        // spdlog::debug("Previous batch boundary is {}", previous_batch_boundary);
                     }
 
                     // Output Address generation
                     std::vector<addr_type> output_addrs;
                     uint32_t output_index_size = 0;
                     if (output_indexes.empty()) {
-                        spdlog::info("No valid output tiles to store.");
+                        spdlog::debug("No valid output tiles to store.");
                     } else {
                         for (const auto& [batch_id, indexes] : output_indexes) {
                             output_index_size += indexes.size();
@@ -817,7 +818,7 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
 
     // Head index被利用在k的索引生成
     if (weight_tensor->_tensor_type == TensorType::KCache) {  // QKT
-        // spdlog::info("Initialize the QKT computation of head {}", head_index);
+        // spdlog::debug("Initialize the QKT computation of head {}", head_index);
         uint32_t q_head_index = head_index;
         uint32_t kv_head_index = MyAddressAllocator::get_kv_head_index(q_head_index);
 
@@ -859,9 +860,9 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
 
                         auto activation_addrs = activation_tensor->generate_addrs_based_on_indexes(activation_indexes);
                         if (activation_addrs.empty()) {
-                            spdlog::info("zero load for Q m: {} {} / k: {} {} / activation tensor dim: {}",m_outer_offset, m_inner_offset, q_k_outer_offset, k_inner_offset, activation_tensor->get_dims());
+                            spdlog::debug("zero load for Q m: {} {} / k: {} {} / activation tensor dim: {}",m_outer_offset, m_inner_offset, q_k_outer_offset, k_inner_offset, activation_tensor->get_dims());
                         } else {
-                            // spdlog::info("QKT operation for the Q Matrix m = {}-{} and k = {}-{}",activation_indexes.front()[0], activation_indexes.back()[0], activation_indexes.front()[1], activation_indexes.back()[1]);
+                            // spdlog::debug("QKT operation for the Q Matrix m = {}-{} and k = {}-{}",activation_indexes.front()[0], activation_indexes.back()[0], activation_indexes.front()[1], activation_indexes.back()[1]);
                             std::string movin_info = fmt::format("Load Q matrix with the begin index {} and end index {}", activation_indexes.front(), activation_indexes.back());
                             tile.instructions.push_back(Instruction{
                                 .opcode = Opcode::MOVIN,
@@ -891,11 +892,11 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
                         }
                         auto weight_addrs = weight_tensor->generate_addrs_based_on_indexes(weight_indexes); // 对于K Cache，地址生成过程中可以基于index计算所属Head
                         if (weight_addrs.empty()) {
-                            spdlog::info("operation name : {} / zero load for weight k: {} {} / n: {} {} / weight tensor dim: {} / is transposed: {}",
+                            spdlog::debug("operation name : {} / zero load for weight k: {} {} / n: {} {} / weight tensor dim: {} / is transposed: {}",
                                 get_name(), kcache_k_outer_offset, k_inner_offset, n_outer_offset,n_inner_offset, weight_tensor->get_dims(),weight_tensor->_is_transposed);
                         }
                         else {
-                            // spdlog::info("QKT operation for the K Cache with n = {}-{}, k = {}-{}", weight_indexes.front()[0], weight_indexes.back()[0], weight_indexes.front()[1], weight_indexes.back()[1]);
+                            // spdlog::debug("QKT operation for the K Cache with n = {}-{}, k = {}-{}", weight_indexes.front()[0], weight_indexes.back()[0], weight_indexes.front()[1], weight_indexes.back()[1]);
                             std::string movin_info = fmt::format("Load K Cache with the begin index {} and end index {}", weight_indexes.front(), weight_indexes.back());
                             tile.instructions.push_back(Instruction{
                                 .opcode = Opcode::MOVIN,
@@ -912,7 +913,7 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
                     // -- compute --
                     if ((m_outer_offset + m_inner_offset) < M_max and (k_inner * K + k_inner_offset) < K_max and (n_outer_offset + n_inner_offset) < N_max) {
                         std::string gemm_info = fmt::format("GEMM Computation tile index: M={}, K={}, N={}", m_tile_index, k_tile_index, n_tile_index);
-                        // spdlog::info(gemm_info);
+                        // spdlog::debug(gemm_info);
                         tile.instructions.push_back(Instruction{
                             .opcode = (m_inner_offset == 0 ? Opcode::GEMM_PRELOAD : Opcode::GEMM),
                             .dest_addr = sram_accumulation_offset,
@@ -925,8 +926,8 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
                         });
                     }
                     else {
-                        spdlog::info("Computation jump: current m_start = {}, k_start = {}, n_start = {}",  m_outer_offset + m_inner_offset, q_k_outer_offset + k_inner_offset, n_outer_offset + n_inner_offset);
-                        spdlog::info("activation dims {}, weight dim {}", activation_tensor->get_dims(), weight_tensor->get_dims());
+                        spdlog::debug("Computation jump: current m_start = {}, k_start = {}, n_start = {}",  m_outer_offset + m_inner_offset, q_k_outer_offset + k_inner_offset, n_outer_offset + n_inner_offset);
+                        spdlog::debug("activation dims {}, weight dim {}", activation_tensor->get_dims(), weight_tensor->get_dims());
                     }
 
                     // -- Store --
@@ -944,7 +945,7 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
                         auto output_addrs = output_tensor->generate_addrs_based_on_indexes_attention(output_indexes, head_index);
                         if (!output_addrs.empty()) {
                             std::string movout_info = fmt::format("Store QKT result of head {} with M = {}-{}, N = {}-{}", head_index, output_indexes.front()[0], output_indexes.back()[0], output_indexes.front()[1], output_indexes.back()[1]);
-                            // spdlog::info(movout_info);
+                            // spdlog::debug(movout_info);
                             tile.instructions.push_back(Instruction{
                                 .opcode = Opcode::MOVOUT,
                                 .dest_addr = sram_accumulation_offset,
@@ -960,7 +961,7 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
         }
     }
     else if (weight_tensor->_tensor_type == TensorType::VCache) {
-        // spdlog::info("Initialize the SV computation of head {}", head_index);
+        // spdlog::debug("Initialize the SV computation of head {}", head_index);
         uint32_t q_head_index = head_index;
         uint32_t kv_head_index = MyAddressAllocator::get_kv_head_index(q_head_index);
         uint32_t M_max = activation_tensor->_dims[1]; // Lin
@@ -1000,11 +1001,11 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
                         }
                         auto activation_addrs = activation_tensor->generate_addrs_based_on_indexes_attention(activation_indexes, head_index);
                         if (activation_addrs.empty()) {
-                            spdlog::info("zero load for Q m: {} {} / k: {} {} / activation tensor dim: {}",m_outer_offset, m_inner_offset, k_outer_offset, k_inner_offset, activation_tensor->get_dims());
+                            spdlog::debug("zero load for Q m: {} {} / k: {} {} / activation tensor dim: {}",m_outer_offset, m_inner_offset, k_outer_offset, k_inner_offset, activation_tensor->get_dims());
                         } else {
-                            //spdlog::info("SV operation for the S Matrix m = {}-{} and k = {}-{}",activation_indexes.front()[0], activation_indexes.back()[0], activation_indexes.front()[1], activation_indexes.back()[1]);
+                            //spdlog::debug("SV operation for the S Matrix m = {}-{} and k = {}-{}",activation_indexes.front()[0], activation_indexes.back()[0], activation_indexes.front()[1], activation_indexes.back()[1]);
                             std::string movin_info = fmt::format("Load S matrix for head {} with the begin index {} and end index {}", head_index, activation_indexes.front(), activation_indexes.back());
-                            // spdlog::info(movin_info);
+                            // spdlog::debug(movin_info);
                             tile.instructions.push_back(Instruction{
                                 .opcode = Opcode::MOVIN,
                                 .dest_addr = sram_activation_offset,
@@ -1033,13 +1034,13 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
                         }
                         auto weight_addrs = weight_tensor->generate_addrs_based_on_indexes(weight_indexes); // 对于K Cache，地址生成过程中可以基于index计算所属Head
                         if (weight_addrs.empty()) {
-                            spdlog::info("operation name : {} / zero load for weight k: {} {} / n: {} {} / weight tensor dim: {} / is transposed: {}",
+                            spdlog::debug("operation name : {} / zero load for weight k: {} {} / n: {} {} / weight tensor dim: {} / is transposed: {}",
                                 get_name(), k_outer_offset, k_inner_offset, vcache_n_outer_offset,n_inner_offset, weight_tensor->get_dims(),weight_tensor->_is_transposed);
                         }
                         else {
-                            // spdlog::info("SV operation for the V Cache with k = {}-{}, n = {}-{}", weight_indexes.front()[0], weight_indexes.back()[0], weight_indexes.front()[1], weight_indexes.back()[1]);
+                            // spdlog::debug("SV operation for the V Cache with k = {}-{}, n = {}-{}", weight_indexes.front()[0], weight_indexes.back()[0], weight_indexes.front()[1], weight_indexes.back()[1]);
                             std::string movin_info = fmt::format("Load V Cache for head {} with the begin index {} and end index {}", head_index, weight_indexes.front(), weight_indexes.back());
-                            // spdlog::info(movin_info);
+                            // spdlog::debug(movin_info);
                             tile.instructions.push_back(Instruction{
                                 .opcode = Opcode::MOVIN,
                                 .dest_addr = sram_weight_offset,
@@ -1055,7 +1056,7 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
                     // -- compute --
                     if ((m_outer_offset + m_inner_offset) < M_max and (k_outer_offset + k_inner_offset) < K_max and (n_inner * N + n_inner_offset) < N_max) {
                         std::string gemm_info = fmt::format("GEMM Computation tile index: M={}, K={}, N={}", m_tile_index, k_tile_index, n_tile_index);
-                        // spdlog::info(gemm_info);
+                        // spdlog::debug(gemm_info);
                         tile.instructions.push_back(Instruction{
                             .opcode = (m_inner_offset == 0 ? Opcode::GEMM_PRELOAD : Opcode::GEMM),
                             .dest_addr = sram_accumulation_offset,
@@ -1068,8 +1069,8 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
                         });
                     }
                     else {
-                        spdlog::info("Computation jump: current m_start = {}, k_start = {}, n_start = {}",  m_outer_offset + m_inner_offset, k_outer_offset + k_inner_offset, output_n_outer_offset + n_inner_offset);
-                        spdlog::info("activation dims {}, weight dim {}", activation_tensor->get_dims(), weight_tensor->get_dims());
+                        spdlog::debug("Computation jump: current m_start = {}, k_start = {}, n_start = {}",  m_outer_offset + m_inner_offset, k_outer_offset + k_inner_offset, output_n_outer_offset + n_inner_offset);
+                        spdlog::debug("activation dims {}, weight dim {}", activation_tensor->get_dims(), weight_tensor->get_dims());
                     }
 
                     // -- Store --
@@ -1087,7 +1088,7 @@ Tile GEMM::initialize_my_attention_instructions(uint32_t B, uint32_t head_index,
                         auto gen_output_addrs = output_tensor->generate_addrs_based_on_indexes_attention(output_indexes, head_index);
                         if (!gen_output_addrs.empty()) {
                             std::string movout_info = fmt::format("Store SV result of head {} with M = {}-{}, N = {}-{}", head_index, output_indexes.front()[0], output_indexes.back()[0], output_indexes.front()[1], output_indexes.back()[1]);
-                            // spdlog::info(movout_info);
+                            // spdlog::debug(movout_info);
                             tile.instructions.push_back(Instruction{
                                 .opcode = Opcode::MOVOUT,
                                 .dest_addr = sram_accumulation_offset,
@@ -1160,7 +1161,7 @@ Tile GEMM::initialize_my_DASH_instructions_activation_first(uint32_t B, uint32_t
 
     // 对于K=0的Tile，初始阶段需要加载Bias
     if (_my_inputs.size() == 3 && K == 0) {
-        spdlog::info("Load n = {}-{} Bias for N = {} outer loop", n_outer_offset, n_outer_offset + n_inner, N);
+        spdlog::debug("Load n = {}-{} Bias for N = {} outer loop", n_outer_offset, n_outer_offset + n_inner, N);
         auto bias_tensor =_my_inputs[2];
 
         std::vector<std::vector<uint32_t>> bias_indexes;  // 按照顺序，生成相应的index
@@ -1178,11 +1179,11 @@ Tile GEMM::initialize_my_DASH_instructions_activation_first(uint32_t B, uint32_t
         // 将index进行计算，转换为加载地址
         auto bias_addrs = bias_tensor->generate_addrs_based_on_indexes(bias_indexes);
         if (bias_addrs.size() == 0) {
-            spdlog::info("zero load for activation n: {} / bias tensor dim: {}", n_outer_offset, bias_tensor->get_dims());
+            spdlog::debug("zero load for activation n: {} / bias tensor dim: {}", n_outer_offset, bias_tensor->get_dims());
             assert(0);
         } else {
-            // spdlog::info("{} addrs have been generated for {} / bias tensor with dims {}", bias_addrs.size(), n_outer_offset, bias_tensor->get_dims());
-            spdlog::info("Load Bias with N = {}-{}", bias_indexes.front(), bias_indexes.back());
+            // spdlog::debug("{} addrs have been generated for {} / bias tensor with dims {}", bias_addrs.size(), n_outer_offset, bias_tensor->get_dims());
+            spdlog::debug("Load Bias with N = {}-{}", bias_indexes.front(), bias_indexes.back());
             tile.instructions.push_back(Instruction{
                 .opcode = Opcode::MOVIN,
                 .dest_addr = sram_accumulation_base,  // 将bias加载至sram_accumulation_base中，用于完成累加操作
@@ -1197,7 +1198,7 @@ Tile GEMM::initialize_my_DASH_instructions_activation_first(uint32_t B, uint32_t
     for (uint32_t n_inner_offset = 0; n_inner_offset < n_inner; n_inner_offset += loop_size) {
         for (uint32_t k_inner_offset = 0; k_inner_offset < k_inner; k_inner_offset += loop_size) {
             for (uint32_t m_inner_offset = 0; m_inner_offset < m_inner; m_inner_offset += loop_size) {
-                // spdlog::info("Current m_offset = {}, k_offset = {}, n_offset = {}", m_outer_offset + m_inner_offset, k_outer_offset + k_inner_offset, n_outer_offset + n_inner_offset);
+                // spdlog::debug("Current m_offset = {}, k_offset = {}, n_offset = {}", m_outer_offset + m_inner_offset, k_outer_offset + k_inner_offset, n_outer_offset + n_inner_offset);
                 // SRAM activation L1 tile offset
                 addr_type sram_activation_offset = sram_activation_base + (m_inner_offset * k_inner + k_inner_offset) * MyAddressAllocator::precision_activation;
                 // SRAM wgt L1 tile offset
@@ -1237,13 +1238,13 @@ Tile GEMM::initialize_my_DASH_instructions_activation_first(uint32_t B, uint32_t
                     auto activation_addrs = activation_tensor->generate_addrs_based_on_indexes(activation_indexes);
 
                     if (activation_addrs.size() == 0) {
-                        spdlog::info(
+                        spdlog::debug(
                             "zero load for activation m: {} {} / k: {} {} / activation tensor dim: {}",
                             m_outer_offset, m_inner_offset, k_outer_offset, k_inner_offset,
                             activation_tensor->get_dims());
                         assert(0);
                     } else {
-                        // spdlog::info("Load Activation with the begin m = {}-{} and k = {}-{}", activation_indexes.front()[0], activation_indexes.back()[0], activation_indexes.front()[1], activation_indexes.back()[1]);
+                        // spdlog::debug("Load Activation with the begin m = {}-{} and k = {}-{}", activation_indexes.front()[0], activation_indexes.back()[0], activation_indexes.front()[1], activation_indexes.back()[1]);
                         // "Load weight with K = {}-{}, N = {}-{}", weight_indexes.front()[0], weight_indexes.front()[1], weight_indexes.back()[0], weight_indexes.back()[1]
                         tile.instructions.push_back(Instruction{
                         .opcode = Opcode::MOVIN,
@@ -1275,18 +1276,18 @@ Tile GEMM::initialize_my_DASH_instructions_activation_first(uint32_t B, uint32_t
                     auto gen_weight_addrs = weight_tensor->generate_addrs_based_on_indexes(weight_indexes);
 
                     if (gen_weight_addrs.size() == 0) {
-                        spdlog::info(
+                        spdlog::debug(
                             "operation name : {} / zero load for weight k: {} {} / n: {} {} / weight tensor dim: {} / is transposed: {}",
                             get_name(), k_outer_offset, k_inner_offset, n_outer_offset,
                             n_inner_offset, weight_tensor->get_dims(),
                             weight_tensor->_is_transposed);
-                        spdlog::info("inner loop {}, outer loop {}, act_size {}, wgt_size {}",
+                        spdlog::debug("inner loop {}, outer loop {}, act_size {}, wgt_size {}",
                                      _inner_loop, _outer_loop, activation_tensor->get_dims(),
                                      weight_tensor->get_dims());
                         assert(0);
                     } else {
-                        // spdlog::info("Load weight with the begin index {} and end index {}", weight_indexes.front(), weight_indexes.back());
-                        spdlog::info("Load weight with K = {}-{}, N = {}-{}", weight_indexes.front()[0], weight_indexes.back()[0], weight_indexes.front()[1], weight_indexes.back()[1]);
+                        // spdlog::debug("Load weight with the begin index {} and end index {}", weight_indexes.front(), weight_indexes.back());
+                        spdlog::debug("Load weight with K = {}-{}, N = {}-{}", weight_indexes.front()[0], weight_indexes.back()[0], weight_indexes.front()[1], weight_indexes.back()[1]);
                         // MyAddressAllocator::check_addrs(gen_weight_addrs);
 
                         tile.instructions.push_back(Instruction{
@@ -1331,7 +1332,7 @@ Tile GEMM::initialize_my_DASH_instructions_activation_first(uint32_t B, uint32_t
                     }
                     // 将index进行计算，转换为加载地址
                     auto output_addrs = output_tensor->generate_addrs_based_on_indexes(output_indexes);
-                    spdlog::info("Store GEMM result with M = {}-{}, N = {}-{}", output_indexes.front()[0], output_indexes.back()[0], output_indexes.front()[1], output_indexes.back()[1]);
+                    spdlog::debug("Store GEMM result with M = {}-{}, N = {}-{}", output_indexes.front()[0], output_indexes.back()[0], output_indexes.front()[1], output_indexes.back()[1]);
                     // MyAddressAllocator::check_addrs(output_addrs);
                     tile.instructions.push_back(Instruction{
                         .opcode = Opcode::MOVOUT,
@@ -1365,10 +1366,10 @@ void GEMM::calculate_my_loops() {
     uint32_t N = matrix_dims.back();
 
     if (_batch_size > 1) {
-        spdlog::info("GEMM Operation for {} batches with concat size of {}", _batch_size, M);
+        spdlog::debug("GEMM Operation for {} batches with concat size of {}", _batch_size, M);
     }
     else {
-        spdlog::info("GEMM Operation for single batches with concat size of {}",M);
+        spdlog::debug("GEMM Operation for single batches with concat size of {}",M);
     }
 
     _outer_loop.assign(3, 1);
@@ -1388,7 +1389,9 @@ void GEMM::calculate_my_loops() {
     // larger_dims: [1, 12, 64, 15] => _prod_batches: 12
     // Calculate the number of iterations for GEMM by multiplying all dimensions except the last two.
 
-    while (sram_size_needed() > _config.spad_size KB / 2)  // double ping-pong buffer
+    const uint64_t available_sram_bytes =
+        phsim::AvailablePingPongSramBytes(_config.spad_size);
+    while (sram_size_needed() > available_sram_bytes)  // double ping-pong buffer
     {
         // max_element return iterator
         // divide max_element dimension to 1/2,
@@ -1400,34 +1403,31 @@ void GEMM::calculate_my_loops() {
         // auto max_el = max_element(_inner_loop.begin(), _inner_loop.end());
         // int max_value_index = max_el - _inner_loop.begin();
 
-        std::vector<int> priority = {2, 0, 1}; // 优先 dim2, dim0, dim1
-        int max_value_index = priority[0];
-        for (int idx : priority) {
-            if (_inner_loop[idx] > _inner_loop[max_value_index]) {
-                max_value_index = idx;
-            }
-        }
-        _outer_loop[max_value_index] *= 2;
-
-        if (max_value_index == 0) {
-            _inner_loop[0] = std::ceil((static_cast<double>(M) / _outer_loop[0]) / _config.core_height) * _config.core_height;
-        }
-        else if (max_value_index == 1) {
-            _inner_loop[1] = std::ceil((static_cast<double>(K) / _outer_loop[1]) / _config.core_height) * _config.core_height;
-        }
-        else if (max_value_index == 2){
-            _inner_loop[2] = std::ceil((static_cast<double>(N) / _outer_loop[2]) / _config.core_width) * _config.core_width;
-        }
-        else {
-            throw std::runtime_error("GEMM::calculate_my_loops: invalid value index");
-        }
+        const std::vector<uint32_t> next_dimensions{
+            phsim::CalculateAlignedSramTileDimension(
+                M, static_cast<uint64_t>(_outer_loop[0]) * 2ULL,
+                _config.core_height),
+            phsim::CalculateAlignedSramTileDimension(
+                K, static_cast<uint64_t>(_outer_loop[1]) * 2ULL,
+                _config.core_height),
+            phsim::CalculateAlignedSramTileDimension(
+                N, static_cast<uint64_t>(_outer_loop[2]) * 2ULL,
+                _config.core_width)};
+        const size_t dimension = phsim::SelectShrinkableSramDimension(
+            _inner_loop, next_dimensions, {2, 0, 1}, _outer_loop,
+            "GEMM '" + _name + "'", sram_size_needed(),
+            available_sram_bytes,
+            "minimum dimensions are constrained by core height/width");
+        phsim::ApplySramDimensionSplit(
+            _inner_loop, next_dimensions, _outer_loop, dimension,
+            "GEMM '" + _name + "'");
         /*
         _outer_loop[max_el - _inner_loop.begin()] *= 2;
         *max_el = ((*max_el) & 1) + ((*max_el) >> 1);  // ceil(*max_el / 2)
         */
-        assert(_inner_loop[0] * _outer_loop[0] >= M);
-        assert(_inner_loop[1] * _outer_loop[1] >= K);
-        assert(_inner_loop[2] * _outer_loop[2] >= N);
+        assert(static_cast<uint64_t>(_inner_loop[0]) * _outer_loop[0] >= M);
+        assert(static_cast<uint64_t>(_inner_loop[1]) * _outer_loop[1] >= K);
+        assert(static_cast<uint64_t>(_inner_loop[2]) * _outer_loop[2] >= N);
     }
 
     if (_is_transposed) {
@@ -1440,9 +1440,9 @@ void GEMM::calculate_my_loops() {
     _outer_loop[1] = std::ceil(double(K)/_inner_loop[1]);
     _outer_loop[2] = std::ceil(double(N)/_inner_loop[2]);
 
-    spdlog::info("GEMM inner loop: {}, outer loop: {}", _inner_loop, _outer_loop);
+    spdlog::debug("GEMM inner loop: {}, outer loop: {}", _inner_loop, _outer_loop);
     // todo: if _inner_loop cannot fill the sram, extra batching is needed for
-    // spdlog::info("sram utilization of tile {}: {}", get_name(), (float)sram_size_needed() / (float)_config.spad_size);
+    // spdlog::debug("sram utilization of tile {}: {}", get_name(), (float)sram_size_needed() / (float)_config.spad_size);
 }
 
 
@@ -1465,9 +1465,9 @@ void GEMM::calculate_my_loops_prime() {
     uint32_t N = matrix_dims.back();
 
     if (_batch_size > 1) {
-        spdlog::info("GEMM Operation for {} batches with concat size of {}", _batch_size, M);
+        spdlog::debug("GEMM Operation for {} batches with concat size of {}", _batch_size, M);
     } else {
-        spdlog::info("GEMM Operation for single batch with size {}", M);
+        spdlog::debug("GEMM Operation for single batch with size {}", M);
     }
 
     _outer_loop.assign(3, 1);
@@ -1499,49 +1499,55 @@ void GEMM::calculate_my_loops_prime() {
     };
 
     // -------- Tile调整循环 --------
-    while (sram_size_needed() > _config.spad_size KB / 2) {
-        /*
-        auto max_el = std::max_element(_inner_loop.begin(), _inner_loop.end());
-        int index = max_el - _inner_loop.begin();
-        */
-        std::vector<int> priority = {0, 2, 1}; // 优先 dim2, dim0, dim1
-        int max_value_index = priority[0];
-        for (int idx : priority) {
-            if (_inner_loop[idx] > _inner_loop[max_value_index]) {
-                max_value_index = idx;
-            }
-        }
-        int index = max_value_index;
+    const uint64_t available_sram_bytes =
+        phsim::AvailablePingPongSramBytes(_config.spad_size);
+    while (sram_size_needed() > available_sram_bytes) {
+        std::vector<uint32_t> next_outer_loop = _outer_loop;
+        std::vector<uint32_t> next_dimensions = _inner_loop;
 
-        if (index == 0) {
-            // ===== M维：保持二分策略 =====
-            _outer_loop[0] *= 2;
-            _inner_loop[0] = std::ceil((double)M / _outer_loop[0] / _config.core_height) * _config.core_height;
-        }
-        else {
-            // ===== K / N维：最大质因子策略 =====
-            uint32_t dim_size = (index == 1) ? K : N;
-            // 当前tile尺寸
-            uint32_t current_tile = dim_size / _outer_loop[index];
-            if (current_tile == 0) current_tile = 1;
-            uint32_t factor = get_largest_prime_factor(current_tile);
-            // 防止卡死（例如=1）
-            if (factor <= 1) factor = 2;
-            _outer_loop[index] *= factor;
-            // 最小粒度约束
-            uint32_t base;
-            if (index == 1) {
-                base = _config.core_width;   // K维
-            } else {
-                base = _config.core_height;  // N维
+        const std::vector<uint32_t> totals{M, K, N};
+        const std::vector<uint32_t> alignments{
+            _config.core_height, _config.core_width, _config.core_height};
+        for (size_t dimension = 0; dimension < _inner_loop.size();
+             ++dimension) {
+            uint32_t factor = 2;
+            if (dimension != 0) {
+                uint32_t current_tile =
+                    totals[dimension] / _outer_loop[dimension];
+                if (current_tile == 0) {
+                    current_tile = 1;
+                }
+                factor = get_largest_prime_factor(current_tile);
+                if (factor <= 1) {
+                    factor = 2;
+                }
             }
-            _inner_loop[index] =  std::max((uint32_t)(std::ceil((double)dim_size / _outer_loop[index] / base) * base),base);
+
+            if (_outer_loop[dimension] >
+                std::numeric_limits<uint32_t>::max() / factor) {
+                continue;
+            }
+            next_outer_loop[dimension] *= factor;
+            next_dimensions[dimension] =
+                phsim::CalculateAlignedSramTileDimension(
+                    totals[dimension], next_outer_loop[dimension],
+                    alignments[dimension]);
         }
+
+        const size_t dimension =
+            phsim::SelectShrinkableSramDimensionWithCounts(
+                _inner_loop, next_dimensions, {0, 2, 1}, _outer_loop,
+                next_outer_loop, "GEMM '" + _name + "'",
+                sram_size_needed(), available_sram_bytes,
+                "minimum dimensions are constrained by core height/width");
+        phsim::ApplySramDimensionSplitWithCount(
+            _inner_loop, next_dimensions, _outer_loop, next_outer_loop,
+            dimension, "GEMM '" + _name + "'");
 
         // 安全检查
-        assert(_inner_loop[0] * _outer_loop[0] >= M);
-        assert(_inner_loop[1] * _outer_loop[1] >= K);
-        assert(_inner_loop[2] * _outer_loop[2] >= N);
+        assert(static_cast<uint64_t>(_inner_loop[0]) * _outer_loop[0] >= M);
+        assert(static_cast<uint64_t>(_inner_loop[1]) * _outer_loop[1] >= K);
+        assert(static_cast<uint64_t>(_inner_loop[2]) * _outer_loop[2] >= N);
     }
 
     // 转置处理
@@ -1555,7 +1561,7 @@ void GEMM::calculate_my_loops_prime() {
     _outer_loop[1] = std::ceil((double)K / _inner_loop[1]);
     _outer_loop[2] = std::ceil((double)N / _inner_loop[2]);
 
-    spdlog::info("GEMM inner loop: {}, outer loop: {}, Spad Size: {} KB", _inner_loop, _outer_loop, sram_size_needed()/1024);
+    spdlog::debug("GEMM inner loop: {}, outer loop: {}, Spad Size: {} KB", _inner_loop, _outer_loop, sram_size_needed()/1024);
 }
 
 
@@ -1575,14 +1581,14 @@ void GEMM::calculate_attention_loops() {
             K = MyAddressAllocator::d_k;
             N = input1_dims[input1_dims.size() - 2]; // Lin
             gemm_attetion_type = "QKT";
-            spdlog::info("Current Attention Operation for QKT, GEMM: M = {}, K = {}, N = {}", M, K, N);
+            spdlog::debug("Current Attention Operation for QKT, GEMM: M = {}, K = {}, N = {}", M, K, N);
         }
         else if(_my_weights[0]->_tensor_type == TensorType::VCache) {
             M = input0_dims[input0_dims.size() - 2];
             K = input1_dims[input1_dims.size() - 2];
             N = MyAddressAllocator::d_k;
             gemm_attetion_type = "SV";
-            spdlog::info("Current Attention Operation for SV, GEMM: M = {}, K = {}, N = {}", M, K, N);
+            spdlog::debug("Current Attention Operation for SV, GEMM: M = {}, K = {}, N = {}", M, K, N);
         }
         else {
             assert(0);
@@ -1593,7 +1599,9 @@ void GEMM::calculate_attention_loops() {
         _inner_loop[1] = std::ceil((static_cast<double>(K) / _outer_loop[1]) / _config.core_height) * _config.core_height;  // inner_loop基于Tile大小向上取整
         _inner_loop[2] = std::ceil((static_cast<double>(N) / _outer_loop[2]) / _config.core_width) * _config.core_width;
 
-        while (sram_size_needed() > _config.spad_size KB / 2) {  // double ping-pong buffer
+        const uint64_t available_sram_bytes =
+            phsim::AvailablePingPongSramBytes(_config.spad_size);
+        while (sram_size_needed() > available_sram_bytes) {  // double ping-pong buffer
             // max_element return iterator
             // divide max_element dimension to 1/2,
             // increment outer_loop to 1
@@ -1601,27 +1609,32 @@ void GEMM::calculate_attention_loops() {
             // Reduce the dimension by half (rounded up) and double of the outer loop count.
             // Repeat this process until the SRAM usage of tile meets requirements
 
-            auto max_el = max_element(_inner_loop.begin(), _inner_loop.end());
-            int max_value_index = max_el - _inner_loop.begin();
-            _outer_loop[max_value_index] *= 2;  // 这里使outer loop每次+2，可能需要修改逻辑将×3的部分提取出来
-
-            if (max_value_index == 0) {
-                _inner_loop[0] = std::ceil(((double)M / _outer_loop[0]) / _config.core_height) * _config.core_height;
-            }
-            else if (max_value_index == 1) {
-                _inner_loop[1] = std::ceil(((double)K / _outer_loop[1]) / _config.core_height) * _config.core_height;
-            }
-            else if (max_value_index == 2){
-                _inner_loop[2] = std::ceil(((double)N / _outer_loop[2]) / _config.core_width) * _config.core_width;
-            }
-            else {
-                throw std::runtime_error("GEMM::calculate_my_loops: invalid value index");
-            }
-            assert(_inner_loop[0] * _outer_loop[0] >= M);
-            assert(_inner_loop[1] * _outer_loop[1] >= K);
-            assert(_inner_loop[2] * _outer_loop[2] >= N);
+            const std::vector<uint32_t> next_dimensions{
+                phsim::CalculateAlignedSramTileDimension(
+                    M, static_cast<uint64_t>(_outer_loop[0]) * 2ULL,
+                    _config.core_height),
+                phsim::CalculateAlignedSramTileDimension(
+                    K, static_cast<uint64_t>(_outer_loop[1]) * 2ULL,
+                    _config.core_height),
+                phsim::CalculateAlignedSramTileDimension(
+                    N, static_cast<uint64_t>(_outer_loop[2]) * 2ULL,
+                    _config.core_width)};
+            const size_t dimension = phsim::SelectShrinkableSramDimension(
+                _inner_loop, next_dimensions, {0, 1, 2}, _outer_loop,
+                "attention GEMM '" + _name + "'", sram_size_needed(),
+                available_sram_bytes,
+                "minimum dimensions are constrained by core height/width");
+            phsim::ApplySramDimensionSplit(
+                _inner_loop, next_dimensions, _outer_loop, dimension,
+                "attention GEMM '" + _name + "'");
+            assert(static_cast<uint64_t>(_inner_loop[0]) *
+                       _outer_loop[0] >= M);
+            assert(static_cast<uint64_t>(_inner_loop[1]) *
+                       _outer_loop[1] >= K);
+            assert(static_cast<uint64_t>(_inner_loop[2]) *
+                       _outer_loop[2] >= N);
         }
-        spdlog::info("GEMM for Batch {} attention operation {} with inner loop: {}, outer loop: {}", i, gemm_attetion_type, _inner_loop, _outer_loop);
+        spdlog::debug("GEMM for Batch {} attention operation {} with inner loop: {}, outer loop: {}", i, gemm_attetion_type, _inner_loop, _outer_loop);
         // push back current batch, copy value, has no influence
         _inner_loop_attn.push_back(_inner_loop);
         _outer_loop_attn.push_back(_outer_loop);
@@ -1642,14 +1655,14 @@ void GEMM::calculate_attention_loops() {
         K = MyAddressAllocator::d_k;
         N = input1_dims[input1_dims.size() - 2]; // Lin
         matmul_attetion_type = "QKT";
-        spdlog::info("Current Attention Operation for QKT, GEMM: M = {}, K = {}, N = {}", M, K, N);
+        spdlog::debug("Current Attention Operation for QKT, GEMM: M = {}, K = {}, N = {}", M, K, N);
     }
     else if(_my_inputs[1]->_tensor_type == TensorType::VCache) {
         M = input0_dims[input0_dims.size() - 2];
         K = input1_dims[input1_dims.size() - 2];
         N = MyAddressAllocator::d_k;
         matmul_attetion_type = "SV";
-        spdlog::info("Current Attention Operation for SV, GEMM: M = {}, K = {}, N = {}", M, K, N);
+        spdlog::debug("Current Attention Operation for SV, GEMM: M = {}, K = {}, N = {}", M, K, N);
     }
     else {
         assert(0);
@@ -1693,29 +1706,29 @@ void GEMM::calculate_attention_loops() {
         assert(_inner_loop[2] * _outer_loop[2] >= N);
     }
 
-    spdlog::info("GEMM for attention operation {} with inner loop: {}, outer loop: {}", matmul_attetion_type, _inner_loop, _outer_loop);
+    spdlog::debug("GEMM for attention operation {} with inner loop: {}, outer loop: {}", matmul_attetion_type, _inner_loop, _outer_loop);
     */
 }
 
 
 // bias is loaded to the accumulation space
-uint32_t GEMM::sram_size_needed() {
+uint64_t GEMM::sram_size_needed() {
     // 计算过程中，各计算维度需要对齐到硬件核宽，确保数据通路效率.
-    auto n = _inner_loop[0];
+    uint64_t n = _inner_loop[0];
     if (n % _config.core_width != 0) {
         n += _config.core_width - n % _config.core_width;
     }
-    auto k = _inner_loop[1];
+    uint64_t k = _inner_loop[1];
     if (k % _config.core_width != 0) {
         k += _config.core_width - k % _config.core_width;
     }
-    auto m = _inner_loop[2];
+    uint64_t m = _inner_loop[2];
     if (m % _config.core_height != 0) {
         m += _config.core_height - m % _config.core_height;
     }
 
     if (_my_weights.size() == 2) {
-        auto bias_dim = _my_weights[1]->get_dims()[0];
+        uint64_t bias_dim = _my_weights[1]->get_dims()[0];
         return (n * k) * _my_inputs[0]->_precision + (k * m) * _my_weights[0]->_precision + bias_dim * _my_weights[1]->_precision;
     }
     else {

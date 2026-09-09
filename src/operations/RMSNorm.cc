@@ -1,4 +1,5 @@
 #include "RMSNorm.h"
+#include "SramTilingValidation.hpp"
 
 RMSNorm::RMSNorm(std::string name, std::vector<Ptr<MyTensor>> weights) : Operation(name) {
     assert(!weights.empty());
@@ -21,7 +22,7 @@ std::vector<Ptr<MyTensor>> RMSNorm::get_my_outputs(std::vector<Ptr<MyTensor>> in
     for (size_t i = 0; i < inputs.size(); ++i) {
         _my_inputs[i] = inputs[i];
         auto input_dims = _my_inputs[i]->get_dims();
-        spdlog::info("RMSNorm input index: {} / input size: {}", i, inputs[i]->get_dims());
+        spdlog::debug("RMSNorm input index: {} / input size: {}", i, inputs[i]->get_dims());
 
         auto input_dim_riter = input_dims.rbegin();
         for (auto weight_dim_riter = _weight_dim.rbegin(); weight_dim_riter != _weight_dim.rend(); ++weight_dim_riter) {
@@ -107,7 +108,7 @@ Tile RMSNorm::initialize_my_instructions(uint32_t N) {
             std::vector<addr_type> activation_addrs = _my_inputs[batch_index]->generate_addrs_based_on_indexes(activation_indexes);
 
             if (activation_addrs.empty()) {
-                spdlog::info("zero load for RMSNorm activation / activation tensor dim: {}", _my_inputs[batch_index]->get_dims());
+                spdlog::debug("zero load for RMSNorm activation / activation tensor dim: {}", _my_inputs[batch_index]->get_dims());
             } else {
                 std::string movin_info = fmt::format("Load Activation of row {} for RMSNorm computation", row_idx);
                 tile.instructions.push_back(Instruction{
@@ -170,7 +171,7 @@ Tile RMSNorm::initialize_my_instructions(uint32_t N) {
             std::vector<addr_type> activation_addrs = _my_inputs[batch_index]->generate_addrs_based_on_indexes(activation_indexes);
 
             if (activation_addrs.empty()) {
-                spdlog::info("zero load for RMSNorm activation / activation tensor dim: {}", _my_inputs[batch_index]->get_dims());
+                spdlog::debug("zero load for RMSNorm activation / activation tensor dim: {}", _my_inputs[batch_index]->get_dims());
             } else {
                 std::string movin_info = fmt::format("Load Activation of row {} for RMSNorm computation", row_idx);
                 tile.instructions.push_back(Instruction{
@@ -224,19 +225,23 @@ void RMSNorm::calculate_my_loops() {
 
     _inner_loop[0] = input_dims[0];
 
-    while (sram_size_needed() > _config.spad_size KB / 2) {
-        _outer_loop[0] *= 2;
-        _inner_loop[0] = (_inner_loop[0] & 1) + (_inner_loop[0] >> 1);
+    const uint64_t available_sram_bytes =
+        phsim::AvailablePingPongSramBytes(_config.spad_size);
+    while (sram_size_needed() > available_sram_bytes) {
+        phsim::HalveSramTileDimensionAndDoubleCount(
+            _inner_loop, 0, _outer_loop, 0, "RMSNorm '" + _name + "'",
+            sram_size_needed(), available_sram_bytes);
     }
 
-    spdlog::info("RMSNorm for {} batches, inner loop: {}, outer loop: {}", _batch_size, _inner_loop, _outer_loop);
+    spdlog::debug("RMSNorm for {} batches, inner loop: {}, outer loop: {}", _batch_size, _inner_loop, _outer_loop);
 }
 
-uint32_t RMSNorm::sram_size_needed() {
-    auto n = _inner_loop[0];
-    auto k = _prod_weight_dim;
+uint64_t RMSNorm::sram_size_needed() {
+    uint64_t n = _inner_loop[0];
+    uint64_t k = _prod_weight_dim;
     if (k % _config.vector_core_width != 0) {
         k += _config.vector_core_width - k % _config.vector_core_width;
     }
-    return n * 3 * k * MyAddressAllocator::precision_activation + k * MyAddressAllocator::precision_weight;
+    return n * 3ULL * k * MyAddressAllocator::precision_activation +
+           k * MyAddressAllocator::precision_weight;
 }

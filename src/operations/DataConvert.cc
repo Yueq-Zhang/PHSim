@@ -1,4 +1,5 @@
 #include "DataConvert.h"
+#include "SramTilingValidation.hpp"
 
 namespace {
 bool layout_has_physical_channel_index(AllocationScheme scheme) {
@@ -36,7 +37,7 @@ std::vector<Ptr<MyTensor>> DataConvert::get_my_outputs(std::vector<Ptr<MyTensor>
 
     calculate_my_loops();
     initialize_my_tiles();
-    spdlog::info("DataConvert operation {} converts layout {} -> {}", _name,
+    spdlog::debug("DataConvert operation {} converts layout {} -> {}", _name,
                  static_cast<int>(_src_scheme), static_cast<int>(_dst_scheme));
     return _my_outputs;
 }
@@ -51,16 +52,25 @@ void DataConvert::calculate_my_loops() {
     _inner_loop[0] = std::min(M, _config.core_height);
     _inner_loop[1] = std::min(N, _config.core_width);
 
-    while (sram_size_needed() > _config.spad_size KB / 2 && _inner_loop[0] > 1) {
-        _inner_loop[0] = (_inner_loop[0] + 1) / 2;
+    const uint64_t available_sram_bytes =
+        phsim::AvailablePingPongSramBytes(_config.spad_size);
+    while (sram_size_needed() > available_sram_bytes && _inner_loop[0] > 1) {
+        _inner_loop[0] = phsim::HalveSramTileDimensionOrThrow(
+            _inner_loop[0], "DataConvert '" + _name + "'",
+            sram_size_needed(), available_sram_bytes, _inner_loop);
     }
-    while (sram_size_needed() > _config.spad_size KB / 2 && _inner_loop[1] > 1) {
-        _inner_loop[1] = (_inner_loop[1] + 1) / 2;
+    while (sram_size_needed() > available_sram_bytes && _inner_loop[1] > 1) {
+        _inner_loop[1] = phsim::HalveSramTileDimensionOrThrow(
+            _inner_loop[1], "DataConvert '" + _name + "'",
+            sram_size_needed(), available_sram_bytes, _inner_loop);
     }
+    phsim::ValidateSramTileFits(
+        sram_size_needed(), available_sram_bytes,
+        "DataConvert '" + _name + "'", _inner_loop);
 
     _outer_loop[0] = std::ceil(static_cast<double>(M) / _inner_loop[0]);
     _outer_loop[1] = std::ceil(static_cast<double>(N) / _inner_loop[1]);
-    spdlog::info("DataConvert inner loop: {}, outer loop: {}", _inner_loop, _outer_loop);
+    spdlog::debug("DataConvert inner loop: {}, outer loop: {}", _inner_loop, _outer_loop);
 }
 
 void DataConvert::initialize_my_tiles() {
@@ -128,6 +138,7 @@ Tile DataConvert::initialize_my_instructions(uint32_t M, uint32_t N) {
     return tile;
 }
 
-uint32_t DataConvert::sram_size_needed() {
-    return 2 * _inner_loop[0] * _inner_loop[1] * MyAddressAllocator::precision_weight;
+uint64_t DataConvert::sram_size_needed() {
+    return 2ULL * _inner_loop[0] * _inner_loop[1] *
+           MyAddressAllocator::precision_weight;
 }

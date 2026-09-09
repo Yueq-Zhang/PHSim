@@ -1,4 +1,5 @@
 #include "Gelu.h"
+#include "SramTilingValidation.hpp"
 
 Gelu::Gelu(std::string name) : Operation(name) {
 }
@@ -13,7 +14,7 @@ std::vector<Ptr<MyTensor>> Gelu::get_my_outputs(std::vector<Ptr<MyTensor>> input
     for (size_t i = 0; i < inputs.size(); ++i) {
         _my_inputs[i] = inputs[i];
         auto input_dims = _my_inputs[i]->get_dims();
-        spdlog::info("GeLU input index: {} / input size: {}", i, inputs[i]->get_dims());
+        spdlog::debug("GeLU input index: {} / input size: {}", i, inputs[i]->get_dims());
         _my_outputs[i] = std::make_shared<MyTensor>(_name + "_output", input_dims, TensorType::ACT, false);
     }
     calculate_my_loops();
@@ -35,15 +36,18 @@ void Gelu::calculate_my_loops() {
         _m_batch_dim.push_back(input_dims[0]); // 对应了各个Batch的所存在的区间
     }
 
-    _inner_loop.resize(1);
+    _inner_loop.resize(2);
     _outer_loop.assign(1, 1);
 
     _inner_loop[0] = input_dims[0];
     _inner_loop[1] = input_dims[1];
 
-    while (my_sram_size_needed() > _config.spad_size KB / 2) {
-        _outer_loop[0] *= 2;
-        _inner_loop[0] = (_inner_loop[0] & 1) + (_inner_loop[0] >> 1);
+    const uint64_t available_sram_bytes =
+        phsim::AvailablePingPongSramBytes(_config.spad_size);
+    while (my_sram_size_needed() > available_sram_bytes) {
+        phsim::HalveSramTileDimensionAndDoubleCount(
+            _inner_loop, 0, _outer_loop, 0, "GELU '" + _name + "'",
+            my_sram_size_needed(), available_sram_bytes);
     }
 
     /*
@@ -65,13 +69,13 @@ void Gelu::calculate_my_loops() {
 }
 
 
-uint32_t Gelu::my_sram_size_needed() {
-    auto n = _inner_loop[0];
-    auto k = _inner_loop[1];
+uint64_t Gelu::my_sram_size_needed() {
+    uint64_t n = _inner_loop[0];
+    uint64_t k = _inner_loop[1];
     if (k % _config.vector_core_width != 0) {
         k += _config.vector_core_width - k % _config.vector_core_width;
     }
-    return 2 * n * k * MyAddressAllocator::precision_activation;
+    return 2ULL * n * k * MyAddressAllocator::precision_activation;
 }
 
 
@@ -151,7 +155,7 @@ Tile Gelu::initialize_my_instructions(uint32_t N) {
 
             std::vector<addr_type> activation_addrs = _my_inputs[batch_index]->generate_addrs_based_on_indexes(activation_indexes);
             if (activation_addrs.empty()) {
-                spdlog::info("zero load for activation m: {} {} / k: {} {} / activation tensor dim: {}", _my_inputs[batch_index]->get_dims());
+                spdlog::debug("zero load for activation m: {} {} / k: {} {} / activation tensor dim: {}", _my_inputs[batch_index]->get_dims());
             }
             else {
                 tile.instructions.push_back(Instruction{
@@ -214,7 +218,7 @@ Tile Gelu::initialize_my_instructions(uint32_t N) {
             std::vector<addr_type> activation_addrs = _my_inputs[batch_index]->generate_addrs_based_on_indexes(activation_indexes);
 
             if (activation_addrs.empty()) {
-                spdlog::info("zero load for activation m: {} {} / k: {} {} / activation tensor dim: {}", _my_inputs[batch_index]->get_dims());
+                spdlog::debug("zero load for activation m: {} {} / k: {} {} / activation tensor dim: {}", _my_inputs[batch_index]->get_dims());
             }
             else {
                 std::string movin_info = fmt::format("Load Activation of row {} for LayerNorm computation", row_idx);
@@ -246,6 +250,6 @@ Tile Gelu::initialize_my_instructions(uint32_t N) {
             });
         }
     }
-    // spdlog::info("{} instructions generated from tile {}", tile.instructions.size(), tile.optype); spdlog::info("outer loop {}, inner loop {}", _outer_loop, _inner_loop);
+    // spdlog::debug("{} instructions generated from tile {}", tile.instructions.size(), tile.optype); spdlog::debug("outer loop {}, inner loop {}", _outer_loop, _inner_loop);
     return tile;
 }

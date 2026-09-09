@@ -1,4 +1,5 @@
 #include "SiLU.h"
+#include "SramTilingValidation.hpp"
 
 SiLU::SiLU(std::string name) : Operation(std::move(name)) {}
 
@@ -11,7 +12,7 @@ std::vector<Ptr<MyTensor>> SiLU::get_my_outputs(std::vector<Ptr<MyTensor>> input
     for (size_t i = 0; i < inputs.size(); ++i) {
         _my_inputs[i] = inputs[i];
         auto input_dims = _my_inputs[i]->get_dims();
-        spdlog::info("SiLU input index: {} / input size: {}", i, inputs[i]->get_dims());
+        spdlog::debug("SiLU input index: {} / input size: {}", i, inputs[i]->get_dims());
         _my_outputs[i] = std::make_shared<MyTensor>(_name + "_output", input_dims, output_tensor_type, false);
     }
 
@@ -38,19 +39,22 @@ void SiLU::calculate_my_loops() {
     _inner_loop[0] = input_dims[0];
     _inner_loop[1] = input_dims[1];
 
-    while (sram_size_needed() > _config.spad_size KB / 2) {
-        _outer_loop[0] *= 2;
-        _inner_loop[0] = (_inner_loop[0] & 1) + (_inner_loop[0] >> 1);
+    const uint64_t available_sram_bytes =
+        phsim::AvailablePingPongSramBytes(_config.spad_size);
+    while (sram_size_needed() > available_sram_bytes) {
+        phsim::HalveSramTileDimensionAndDoubleCount(
+            _inner_loop, 0, _outer_loop, 0, "SiLU '" + _name + "'",
+            sram_size_needed(), available_sram_bytes);
     }
 }
 
-uint32_t SiLU::sram_size_needed() {
-    auto n = _inner_loop[0];
-    auto k = _inner_loop[1];
+uint64_t SiLU::sram_size_needed() {
+    uint64_t n = _inner_loop[0];
+    uint64_t k = _inner_loop[1];
     if (k % _config.vector_core_width != 0) {
         k += _config.vector_core_width - k % _config.vector_core_width;
     }
-    return 2 * n * k * MyAddressAllocator::precision_activation;
+    return 2ULL * n * k * MyAddressAllocator::precision_activation;
 }
 
 void SiLU::initialize_my_tiles() {

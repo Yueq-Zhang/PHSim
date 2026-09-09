@@ -25,6 +25,7 @@ MyCore::MyCore(uint32_t id, const SysConfig& config):
     _mul_stall_cycle(0),
     _gelu_stall_cycle(0),
     _silu_stall_cycle(0),
+    _gemv_stall_cycle(0),
     _load_memory_cycle(0),
     _store_memory_cycle(0),
     _stat_vec_idle_cycle(0),
@@ -37,6 +38,7 @@ MyCore::MyCore(uint32_t id, const SysConfig& config):
     _stat_gelu_cycle(0),
     _stat_silu_cycle(0),
     _stat_softmax_cycle(0),
+    _stat_gemv_cycle(0),
     _accum_request_rr_cycle(0),
 
     _pim_pheader_count(0),
@@ -145,7 +147,7 @@ void MyCore::systolic_cycle() {
         Instruction &inst = _compute_pipeline.front();
         // update result stratch pad
         if (inst.dest_addr >= ACCUM_SPAD_BASE) {
-            // spdlog::info("Matrix instruction finished, instruction info {}, spad_id:{}", inst.repr(), inst.inst_information, inst.accum_spad_id);
+            // spdlog::debug("Matrix instruction finished, instruction info {}, spad_id:{}", inst.repr(), inst.inst_information, inst.accum_spad_id);
             _acc_spad.fill(inst.dest_addr, inst.accum_spad_id); // update accum_spad after instruction finished
         } else {
             assert(0);
@@ -204,7 +206,7 @@ void MyCore::ld_queue_cycle() {
             }
 
             if (front.skip==true or front.src_addrs.empty()) {
-                spdlog::info("Current load instruction has no src address, just reserve the dest_addr {}", front.dest_addr);
+                spdlog::debug("Current load instruction has no src address, just reserve the dest_addr {}", front.dest_addr);
                 buffer->reserve(front.dest_addr, buffer_id, front.size, 0); // remain burst times of cache block of SRAM
                 auto parent_tile = front.parent_tile.lock();
                 assert(parent_tile);
@@ -260,7 +262,7 @@ void MyCore::st_queue_cycle() {
         }
 
         if (front.skip==true or front.src_addrs.empty()) {
-            spdlog::info("Current store instruction has no Destination address");
+            spdlog::debug("Current store instruction has no Destination address");
             auto parent_tile = front.parent_tile.lock();
             assert(parent_tile);
             assert(parent_tile->remaining_accum_io > 0);
@@ -308,7 +310,7 @@ void MyCore::ex_queue_cycle() {
 Instruction MyCore::get_first_ready_ex_inst() {
     Instruction inst = _ex_inst_queue.front();
     if (can_issue_compute(inst)) {
-        // spdlog::info("The executed instruction {} is executed with src address {} and dest address {}", inst.print_optype(), inst.src_addrs, inst.dest_addr);
+        // spdlog::debug("The executed instruction {} is executed with src address {} and dest address {}", inst.print_optype(), inst.src_addrs, inst.dest_addr);
         _ex_inst_queue.pop();
         return std::move(inst);
     }
@@ -329,7 +331,7 @@ void MyCore::pim_queue_cycle() {
                     if (tile->pim_start_cycle == 0) {
                         tile->pim_start_cycle = _core_cycle;
                     }
-                    // spdlog::info("All MOVEIN Instruction is finished, Issued PIM instruction is PIM_Header");
+                    // spdlog::debug("All MOVEIN Instruction is finished, Issued PIM instruction is PIM_Header");
                     auto my_accesses = MemoryAccess::gen_pim_trace_from_instruction(front, generate_mem_access_id(), 0,
                         MemoryAccessType::P_HEADER,true, _id, _core_cycle, tile->spad_id, StagePlatform::PIM);
                     for (auto& access : my_accesses) {
@@ -341,7 +343,7 @@ void MyCore::pim_queue_cycle() {
                     _pim_pheader_count += my_accesses.size();
                 }
                 else {
-                    // spdlog::info("After {} Loads, PIM_Header in current tile can issued", tile->remaining_loads);
+                    // spdlog::debug("After {} Loads, PIM_Header in current tile can issued", tile->remaining_loads);
                     break;
                 }
             }
@@ -350,7 +352,7 @@ void MyCore::pim_queue_cycle() {
             }
         }
         else if (front.opcode == Opcode::PIM_GWRITE) {
-            //spdlog::info("After execute the PIM_Header, gwrite Instruction can executed");
+            //spdlog::debug("After execute the PIM_Header, gwrite Instruction can executed");
             if (auto tile = front.parent_tile.lock()) {
                 auto my_accesses = MemoryAccess::gen_pim_trace_from_instruction(front, generate_mem_access_id(), 0,
                     MemoryAccessType::GWRITE,true, _id, _core_cycle, tile->spad_id, StagePlatform::PIM);
@@ -371,10 +373,10 @@ void MyCore::pim_queue_cycle() {
         else if (front.opcode == Opcode::PIM_COMP) {
             if (auto tile = front.parent_tile.lock()) {
                 if (tile->remain_pim_gwrite!=0) {
-                    // spdlog::info("The PIM_GWRITE of current tile is not finished, {} Exist", tile->remain_pim_gwrite);
+                    // spdlog::debug("The PIM_GWRITE of current tile is not finished, {} Exist", tile->remain_pim_gwrite);
                     break;
                 }
-                // spdlog::info("After all the PIM input data was written by PIM_GWRITE, Begin PIM_COMP");
+                // spdlog::debug("After all the PIM input data was written by PIM_GWRITE, Begin PIM_COMP");
                 auto my_accesses = MemoryAccess::gen_pim_trace_from_instruction(front, generate_mem_access_id(), 0,
                     MemoryAccessType::COMP,true, _id, _core_cycle, tile->spad_id, StagePlatform::PIM);
                 for (auto& access : my_accesses) {
@@ -399,10 +401,10 @@ void MyCore::pim_queue_cycle() {
         else if (front.opcode == Opcode::PIM_COMP_HASH) {
             if (auto tile = front.parent_tile.lock()) {
                 if (tile->remain_pim_gwrite!=0) {
-                    // spdlog::info("The PIM_GWRITE of current tile is not finished, {} Exist", tile->remain_pim_gwrite);
+                    // spdlog::debug("The PIM_GWRITE of current tile is not finished, {} Exist", tile->remain_pim_gwrite);
                     break;
                 }
-                // spdlog::info("After all the PIM input data was written by PIM_GWRITE, Begin PIM_COMP");
+                // spdlog::debug("After all the PIM input data was written by PIM_GWRITE, Begin PIM_COMP");
                 auto my_accesses = MemoryAccess::gen_pim_trace_from_instruction(front, generate_mem_access_id(), 0,
                     MemoryAccessType::COMP_HASH,true, _id, _core_cycle, tile->spad_id, StagePlatform::PIM);
                 for (auto& access : my_accesses) {
@@ -430,10 +432,10 @@ void MyCore::pim_queue_cycle() {
         else if (front.opcode == Opcode::PIM_READRES) {
             if (auto tile = front.parent_tile.lock()) {
                 if (tile->remain_pim_comp!=0) {
-                    // spdlog::info("The PIM_COMP of current tile is not finished, {} Exist", tile->remain_pim_comp);
+                    // spdlog::debug("The PIM_COMP of current tile is not finished, {} Exist", tile->remain_pim_comp);
                     break;
                 }
-                // spdlog::info("After all the PIM COMP was Finished, Begin PIM_READERS");
+                // spdlog::debug("After all the PIM COMP was Finished, Begin PIM_READERS");
                 // bool prefetched = false;
                 Sram *buffer;
                 int buffer_id;
@@ -458,7 +460,7 @@ void MyCore::pim_queue_cycle() {
                 if (buffer->check_allocated(front.dest_addr, buffer_id)) {
                     for (auto i=0 ; i<my_accesses.size() ; i++) {
                         buffer->count_up(front.dest_addr, front.accum_spad_id);
-                        // spdlog::info("PIM Readers the READERS dest_addr of buffer is allocated on chip PSUM Accumulation, count up");
+                        // spdlog::debug("PIM Readers the READERS dest_addr of buffer is allocated on chip PSUM Accumulation, count up");
                     }
                 }
                 else{
@@ -499,7 +501,7 @@ bool MyCore::can_issue(Tile &next_tile) {
     for (auto tile : _tiles) {
         if (tile->spad_id == next_spad) {
             if ((tile->remaining_loads != 0) || (tile->remaining_computes != 0) || (tile->remain_pim_comp != 0) || (tile->remaining_accum_io != 0))  {
-                // spdlog::info("issue failed. accum true. spad id {}, remaining load = {}, remaining_computes = {}, remaining pim comp = {}",
+                // spdlog::debug("issue failed. accum true. spad id {}, remaining load = {}, remaining_computes = {}, remaining pim comp = {}",
                 // tile->spad_id, tile->remaining_loads, tile->remaining_computes, tile->remain_pim_comp);
                 return false;
             }
@@ -511,13 +513,13 @@ bool MyCore::can_issue(Tile &next_tile) {
         for (auto tile : _tiles) {
             if (tile->accum_spad_id == next_acc_spad) {
                 if (tile->remaining_accum_io != 0) {
-                    // spdlog::info("issue failed. accum false. acc spad id {}, remaining_accum_io number is {}", tile->accum_spad_id, tile->remaining_accum_io);
+                    // spdlog::debug("issue failed. accum false. acc spad id {}, remaining_accum_io number is {}", tile->accum_spad_id, tile->remaining_accum_io);
                     return false;
                 }
             }
         }
     }
-    // spdlog::info("issue succeeded. accum {}, spad id {}, acc spad id {}", next_tile.accum ? "true" : "false", next_spad, next_acc_spad);
+    // spdlog::debug("issue succeeded. accum {}, spad id {}, acc spad id {}", next_tile.accum ? "true" : "false", next_spad, next_acc_spad);
     if (_tiles.size() < 2) {
         return true;
     }
@@ -597,9 +599,9 @@ void MyCore::issue(Tile &in_tile) {
             }
             else {
                 // SRAM overflow
-                spdlog::info("sram size: {} / sram used: {}", _config.spad_size KB / 2,  buffer->get_current_size(buffer_id));
-                spdlog::info("instruction destination address {:x}", inst.dest_addr);
-                spdlog::info("failed to allocate {} on sram.", inst.size);
+                spdlog::debug("sram size: {} / sram used: {}", _config.spad_size KB / 2,  buffer->get_current_size(buffer_id));
+                spdlog::debug("instruction destination address {:x}", inst.dest_addr);
+                spdlog::debug("failed to allocate {} on sram.", inst.size);
                 buffer->print_all(buffer_id);
                 /*Invalid state */
                 assert(0);
@@ -637,11 +639,11 @@ void MyCore::issue(Tile &in_tile) {
             _ex_inst_queue.push(inst);
         }
     }
-    spdlog::info("Tile of Operation: {} issued for Core {}, Spad {} and Acc_Spad {}, contains {} Load, {} Execution and {} Store, {} Load trace and {} Write Trace",
+    spdlog::debug("Tile of Operation: {} issued for Core {}, Spad {} and Acc_Spad {}, contains {} Load, {} Execution and {} Store, {} Load trace and {} Write Trace",
         in_tile.optype, _id, _current_spad ,_current_acc_spad,
         tile->remaining_loads, tile->remaining_computes, tile->remaining_accum_io - tile->remaining_computes, load_trace, store_trace);
     if (tile->pim_tile) {
-        spdlog::info("Current Tile is a pim tile, contains {} PIM_GWRITE, {} PIM_COMP, {} PIM_READERS Trace",
+        spdlog::debug("Current Tile is a pim tile, contains {} PIM_GWRITE, {} PIM_COMP, {} PIM_READERS Trace",
             tile->remain_pim_gwrite, tile->remain_pim_comp, tile->remain_pim_readers);
     }
 
@@ -651,7 +653,7 @@ void MyCore::issue(Tile &in_tile) {
 bool MyCore::can_issue_pim() {return _pim_tiles.empty();}
 
 void MyCore::issue_pim(Tile &in_tile) {
-    spdlog::info("pim tile issued {}", in_tile.repr());
+    spdlog::debug("pim tile issued {}", in_tile.repr());
     auto tile = std::make_shared<Tile>(in_tile);
     tile->stat = TileStat(_core_cycle);
     if (tile->skip) {
@@ -695,11 +697,11 @@ void MyCore::issue_pim(Tile &in_tile) {
                 tile->remaining_loads++;
                 _ld_inst_queue_for_pim.push(inst);
             } else {
-                spdlog::info("check_allocated: {}", buffer->check_allocated(inst.dest_addr, buffer_id));
-                spdlog::info("check_remain: {}", buffer->check_remain(inst.size, buffer_id));
-                spdlog::info("sram size: {} / sram used: {}", _config.spad_size KB / 2, buffer->get_current_size(buffer_id));
-                spdlog::info("instruction destination address {:x}", inst.dest_addr);
-                spdlog::info("failed to allocate {} on sram.", inst.size);
+                spdlog::debug("check_allocated: {}", buffer->check_allocated(inst.dest_addr, buffer_id));
+                spdlog::debug("check_remain: {}", buffer->check_remain(inst.size, buffer_id));
+                spdlog::debug("sram size: {} / sram used: {}", _config.spad_size KB / 2, buffer->get_current_size(buffer_id));
+                spdlog::debug("instruction destination address {:x}", inst.dest_addr);
+                spdlog::debug("failed to allocate {} on sram.", inst.size);
                 buffer->print_all(buffer_id);
                 /*Invalid state */
                 assert(0);
@@ -723,7 +725,7 @@ void MyCore::issue_pim(Tile &in_tile) {
             _ex_inst_queue_for_pim.push(inst);
         }
     }
-    // spdlog::info("tile pushed to core._tiles {}", tile.repr());
+    // spdlog::debug("tile pushed to core._tiles {}", tile.repr());
     _pim_tiles.push_back(tile);
 }
 
@@ -795,11 +797,11 @@ void MyCore::push_memory_response(MemoryAccess *response) {
     else if (response->req_type == MemoryAccessType::P_HEADER || response->req_type == MemoryAccessType::GWRITE ||
         response->req_type == MemoryAccessType::COMP || response->req_type == MemoryAccessType::COMP_HASH) {
         // pim_header, pim_gwrite, pim_comp
-        // spdlog::info("Receive response of PIM Instruction : {}", memAccessTypeString(response->req_type));
+        // spdlog::debug("Receive response of PIM Instruction : {}", memAccessTypeString(response->req_type));
         _waiting_pim_reqs--;
     }
     else if (response->req_type == MemoryAccessType::READRES) {
-        // spdlog::info("Receive response of PIM Instruction : {}", memAccessTypeString(response->req_type));
+        // spdlog::debug("Receive response of PIM Instruction : {}", memAccessTypeString(response->req_type));
         _waiting_pim_reqs--;
         if (response->spad_address >= ACCUM_SPAD_BASE) {
             acc_spad->fill(response->spad_address, response->buffer_id);
@@ -809,13 +811,13 @@ void MyCore::push_memory_response(MemoryAccess *response) {
         }
     }
     else if (response->spad_address >= ACCUM_SPAD_BASE) {
-        // spdlog::info("{} response to accum_spad, cycle:{}", is_read ? "LOAD" : "GEMV",
+        // spdlog::debug("{} response to accum_spad, cycle:{}", is_read ? "LOAD" : "GEMV",
         //              _core_cycle);  // >>> gsheo: remove it before commit
         // case2: load bias to _accum_spad
         acc_spad->fill(response->spad_address, response->buffer_id);
     }
     else {
-        // spdlog::info("{} response to _spad, cycle:{}", is_read ? "LOAD" : "GEMV",
+        // spdlog::debug("{} response to _spad, cycle:{}", is_read ? "LOAD" : "GEMV",
         //              _core_cycle);  // >>> gsheo: remove it before commit
         // case3: load activation or weight to _spad
         spad->fill(response->spad_address, response->buffer_id);
@@ -839,11 +841,11 @@ bool MyCore::can_issue_compute(Instruction &inst) {
     }
     if (!result) {
         for (addr_type addr : inst.src_addrs) {
-            // spdlog::info("Core[{}] Dependency fail : {:x} , {} for {}", _id, addr,
+            // spdlog::debug("Core[{}] Dependency fail : {:x} , {} for {}", _id, addr,
             //              _spad.check_hit(addr, inst.spad_id), inst.repr());
         }
     }
-    // spdlog::info("can_issue_compute: {} {}", result ? "okay" : "nope", inst.repr());
+    // spdlog::debug("can_issue_compute: {} {}", result ? "okay" : "nope", inst.repr());
     return result;
 }
 
@@ -860,11 +862,11 @@ bool MyCore::pim_can_issue_compute(Instruction &inst) {
     }
     if (!result) {
         for (addr_type addr : inst.src_addrs) {
-            // spdlog::info("NeuPIMSCore[{}] Dependency fail : {:x} , {} for {}", _id, addr,
+            // spdlog::debug("NeuPIMSCore[{}] Dependency fail : {:x} , {} for {}", _id, addr,
             //              _spad.check_hit(addr, inst.spad_id), inst.repr());
         }
     }
-    // spdlog::info("can_issue_compute: {} {}", result ? "okay" : "nope", inst.repr());
+    // spdlog::debug("can_issue_compute: {} {}", result ? "okay" : "nope", inst.repr());
     return result;
 }
 
@@ -942,13 +944,13 @@ cycle_type MyCore::calculate_add_tree_iterations(uint32_t vector_size) {
 
 
 void MyCore::issue_ex_inst(Instruction inst) {
-    // spdlog::info("cycle:{}, {}", _core_cycle, inst.repr());
+    // spdlog::debug("cycle:{}, {}", _core_cycle, inst.repr());
     if (inst.opcode == Opcode::GEMM || inst.opcode == Opcode::GEMM_PRELOAD) { // Computation for Matrix Unit
         auto parent_tile = inst.parent_tile.lock();
         if (parent_tile == nullptr) {
             assert(0);
         }
-        // spdlog::info("COMPUTE Start cycle: {} inst:{}", _core_cycle, inst.repr());
+        // spdlog::debug("COMPUTE Start cycle: {} inst:{}", _core_cycle, inst.repr());
         // tile_m/tile_k/tile_n are tile indices in the current generator, not
         // dimensions.  Count padded MAC work performed by the physical array.
         parent_tile->stat.num_calculation +=
@@ -981,7 +983,7 @@ void MyCore::issue_ex_inst(Instruction inst) {
         }
         auto MU_compute_cycle = get_inst_compute_cycles(inst);
         inst.finish_cycle = inst.start_cycle + MU_compute_cycle;
-        // spdlog::info("finish_cycle: {}", inst.finish_cycle);
+        // spdlog::debug("finish_cycle: {}", inst.finish_cycle);
         _compute_pipeline.push(inst);
         _stat_systolic_inst_issue_count++;
     }
@@ -995,7 +997,7 @@ void MyCore::issue_ex_inst(Instruction inst) {
             parent_tile->stat.num_calculation +=
                 calculate_vector_op_iterations(inst.size) * _config.vector_core_width;
         }
-        // spdlog::info("COMPUTE Start cycle: {} inst:{}", _core_cycle, inst.repr());
+        // spdlog::debug("COMPUTE Start cycle: {} inst:{}", _core_cycle, inst.repr());
         std::queue<Instruction> *least_filled_vpu;
         cycle_type finish_cycle = std::numeric_limits<uint64_t>::max();
         for (auto &vector_pipeline : _vector_pipelines) {
@@ -1006,10 +1008,10 @@ void MyCore::issue_ex_inst(Instruction inst) {
             }
             if (vector_pipeline.back().finish_cycle < finish_cycle) {
                 least_filled_vpu = &vector_pipeline;
-                finish_cycle = _core_cycle;
+                finish_cycle = vector_pipeline.back().finish_cycle;
             }
         }
-        inst.start_cycle = finish_cycle;
+        inst.start_cycle = std::max(_core_cycle, finish_cycle);
         auto VU_compute_cycle = get_vector_compute_cycles(inst);
         inst.finish_cycle = inst.start_cycle + VU_compute_cycle;
         least_filled_vpu->push(inst);
@@ -1017,11 +1019,11 @@ void MyCore::issue_ex_inst(Instruction inst) {
 
     // Store the computation result
     if (_acc_spad.check_allocated(inst.dest_addr, inst.accum_spad_id)) { // if dest_addr is on sram, count up.
-        _acc_spad.count_up(inst.dest_addr, inst.accum_spad_id);        // spdlog::info("allocated: {}", inst.repr());
+        _acc_spad.count_up(inst.dest_addr, inst.accum_spad_id);        // spdlog::debug("allocated: {}", inst.repr());
     }
     else { // if dest_addr is not on sram, initialize an entry
-        _acc_spad.reserve(inst.dest_addr, inst.accum_spad_id, inst.size, 1);  // spdlog::info("reserve: {}", inst.repr());
-        // spdlog::info("reserve, dest_addr:{:x}, spad_id:{}, size:{}", inst.dest_addr, inst.accum_spad_id, inst.size);
+        _acc_spad.reserve(inst.dest_addr, inst.accum_spad_id, inst.size, 1);  // spdlog::debug("reserve: {}", inst.repr());
+        // spdlog::debug("reserve, dest_addr:{:x}, spad_id:{}, size:{}", inst.dest_addr, inst.accum_spad_id, inst.size);
     }
 
 
@@ -1073,22 +1075,22 @@ void MyCore::issue_ex_inst(Instruction inst) {
 
 
 void MyCore::print_stats() {
-    spdlog::info("---- Core [{}] : Stats ----", _id);
-    spdlog::info("Core [{}] : Read count {}, Write count {}",
+    spdlog::debug("---- Core [{}] : Stats ----", _id);
+    spdlog::debug("Core [{}] : Read count {}, Write count {}",
         _id, _read_count, _write_count);
     if (_id == 0) {
-        spdlog::info("Core [{}] : PIM_PHeader count {}, PIM_GWrite count {}, PIM_Comp count {}, PIM_Readers count {}",
+        spdlog::debug("Core [{}] : PIM_PHeader count {}, PIM_GWrite count {}, PIM_Comp count {}, PIM_Readers count {}",
             _id, _pim_pheader_count, _pim_gwrite_count, _pim_comp_count, _pim_readers_count);
     }
-    spdlog::info("Core [{}] : GEMM count {}, LayerNorm count {}, RMSNorm count {}, RoPE count {}, Softmax count {}, Add count {}, Mul count {}, Gelu count {}, SiLU count {}, GEMV count {}",
+    spdlog::debug("Core [{}] : GEMM count {}, LayerNorm count {}, RMSNorm count {}, RoPE count {}, Softmax count {}, Add count {}, Mul count {}, Gelu count {}, SiLU count {}, GEMV count {}",
         _id, _gemm_count, _layernorm_count, _rmsnorm_count, _rope_count, _softmax_count, _add_count, _mul_count, _gelu_count, _silu_count, _gemv_count);
-    spdlog::info("Core [{}] : GEMM cycle {}, LayerNorm cycle {}, RMSNorm cycle {}, RoPE cycle {}, Softmax cycle {}, Add cycle {}, Mul cycle {}, Gelu cycle {}, SiLU cycle {}, GEMV cycle {}",
+    spdlog::debug("Core [{}] : GEMM cycle {}, LayerNorm cycle {}, RMSNorm cycle {}, RoPE cycle {}, Softmax cycle {}, Add cycle {}, Mul cycle {}, Gelu cycle {}, SiLU cycle {}, GEMV cycle {}",
         _id, _stat_gemm_cycle, _stat_layernorm_cycle, _stat_rmsnorm_cycle, _stat_rope_cycle, _stat_softmax_cycle, _stat_add_cycle, _stat_mul_cycle, _stat_gelu_cycle, _stat_silu_cycle, _stat_gemv_cycle);
-    spdlog::info("Core [{}] : GEMM stall cycle {}, LayerNorm stall cycle {}, RMSNorm stall cycle {}, RoPE stall cycle {}, Softmax stall cycle {}, Add stall cycle {}, Mul stall cycle {}, Gelu stall cycle {}, SiLU stall cycle {}, GEMV stall cycle {}",
+    spdlog::debug("Core [{}] : GEMM stall cycle {}, LayerNorm stall cycle {}, RMSNorm stall cycle {}, RoPE stall cycle {}, Softmax stall cycle {}, Add stall cycle {}, Mul stall cycle {}, Gelu stall cycle {}, SiLU stall cycle {}, GEMV stall cycle {}",
         _id, _compute_memory_stall_cycle, _layernorm_stall_cycle, _rmsnorm_stall_cycle, _rope_stall_cycle, _softmax_stall_cycle, _add_stall_cycle, _mul_stall_cycle, _gelu_stall_cycle, _silu_stall_cycle, _gemv_stall_cycle);
-    spdlog::info("Core [{}] : Load stall cycle {}, Store stall cycle {}, Total memory stall {}, Idle cycle {}",
+    spdlog::debug("Core [{}] : Load stall cycle {}, Store stall cycle {}, Total memory stall {}, Idle cycle {}",
         _id, _load_memory_cycle, _store_memory_cycle,_stat_memory_cycle, _stat_idle_cycle);
-    spdlog::info(
+    spdlog::debug(
         "Core [{}] : Estimated workload tiles {}, Read count {}, Write count {}, Read bytes {}, Write bytes {}, Calculations {}",
         _id, _estimated_workload.tiles, _estimated_workload.memory_reads,
         _estimated_workload.memory_writes, _estimated_workload.memory_read_bytes,
@@ -1103,11 +1105,11 @@ void MyCore::print_stats() {
         : static_cast<double>(active_memory_stall) / accounted_cycles;
     const double idle_util = accounted_cycles == 0 ? 0.0
         : static_cast<double>(_stat_idle_cycle) / accounted_cycles;
-    spdlog::info(
+    spdlog::debug(
         "Core [{}] : Logical timing compute {}, active memory stall {}, idle {}, accounted {}, utilization compute/stall/idle {:.6f}/{:.6f}/{:.6f}",
         _id, _stat_compute_cycle, active_memory_stall, _stat_idle_cycle,
         accounted_cycles, compute_util, memory_stall_util, idle_util);
-    spdlog::info(
+    spdlog::debug(
         "Core [{}] : Estimated timing compute {}, memory {}, idle {}, load {}, store {}",
         _id, _estimated_timing.compute, _estimated_timing.memory,
         _estimated_timing.idle, _estimated_timing.load,
@@ -1115,6 +1117,9 @@ void MyCore::print_stats() {
     std::ofstream timing_out(
         Config::system_config.log_dir + "/core_timing.tsv",
         _id == 0 ? std::ofstream::out : std::ofstream::app);
+    if (!timing_out.is_open()) {
+        throw std::runtime_error("Cannot open core timing statistics file");
+    }
     if (_id == 0) {
         timing_out
             << "core\ttotal_cycle\taccounted_cycle\tcompute_cycle\tactive_memory_stall\tidle_cycle"
@@ -1142,7 +1147,7 @@ void MyCore::print_stats() {
                << '\t' << _mul_stall_cycle << '\t' << _gelu_stall_cycle
                << '\t' << _silu_stall_cycle << '\t' << _gemv_stall_cycle
                << '\n';
-    spdlog::info("Core [{}] : Total cycle: {}", _id, _core_cycle);
+    spdlog::debug("Core [{}] : Total cycle: {}", _id, _core_cycle);
 }
 
 void MyCore::apply_estimated_workload(const ProportionalWorkloadStat& workload) {
@@ -1400,7 +1405,7 @@ MyCore::TimingBreakdown MyCore::apply_estimated_timing(
         _estimated_timing.op_compute[op] += estimated.op_compute[op];
         _estimated_timing.op_stall[op] += estimated.op_stall[op];
     }
-    spdlog::info(
+    spdlog::debug(
         "Core [{}] timing compensation: sampled {}, post-sample/idle {}/{}, skipped work {}, global wait {} active/idle {}/{}, estimated compute/active-memory/idle {}/{}/{}",
         _id, sampled_cycles, post_sample_cycles, post_sample_idle,
         skipped_work_cycles, global_wait_cycles,
@@ -1484,9 +1489,12 @@ void MyCore::update_stats() {
         _stat_gemm_cycle++;
     } else {
         _stat_compute_cycle++;
-        // } else if (!_vector_pipeline.empty()) {
-        // when element in vector pipeline
+        // The core-level counter advances once per cycle, while the
+        // opcode-specific counters below accumulate active vector-unit cycles.
         for (auto &vector_pipeline : _vector_pipelines) {
+            if (vector_pipeline.empty()) {
+                continue;
+            }
             switch (vector_pipeline.front().opcode) {
                 case Opcode::LAYERNORM:
                     _stat_layernorm_cycle++;
@@ -1531,7 +1539,7 @@ void MyCore::pim_ld_queue_cycle() {
     // todo: ld_queue.cycle();
     while (!_ld_inst_queue_for_pim.empty()) {
         Instruction &front = _ld_inst_queue_for_pim.front();
-        // spdlog::info("{}", front.repr());
+        // spdlog::debug("{}", front.repr());
         if (front.opcode == Opcode::PIM_HEADER || front.opcode == Opcode::PIM_GWRITE ||
             front.opcode == Opcode::PIM_COMP || front.opcode == Opcode::PIM_COMP_HASH ||
             front.opcode == Opcode::PIM_READRES || front.opcode == Opcode::PIM_COMPS_READRES) {
@@ -1575,7 +1583,7 @@ void MyCore::pim_st_queue_cycle() {
             buffer = &_pim_spad;
             buffer_id = front.spad_id;
         }
-        // spdlog::info("{}", front.repr());
+        // spdlog::debug("{}", front.repr());
         if (buffer->check_hit(front.dest_addr, buffer_id) &&
             (front.opcode == Opcode::MOVOUT || front.opcode == Opcode::MOVOUT_POOL)) {
             auto accesses = MemoryAccess::from_instruction(
@@ -1617,7 +1625,7 @@ void MyCore::pim_ex_queue_cycle() {
 
 
 void MyCore::pim_issue_ex_inst(Instruction inst) {
-    // spdlog::info("cycle:{}, {}", _core_cycle, inst.repr());
+    // spdlog::debug("cycle:{}, {}", _core_cycle, inst.repr());
     if (inst.opcode == Opcode::GEMM || inst.opcode == Opcode::GEMM_PRELOAD) {
         // xxx: not yet for pim.
         assert(0);
@@ -1625,7 +1633,7 @@ void MyCore::pim_issue_ex_inst(Instruction inst) {
         if (parent_tile == nullptr) {
             assert(0);
         }
-        // spdlog::info("COMPUTE Start cycle: {} inst:{}", _core_cycle, inst.repr());
+        // spdlog::debug("COMPUTE Start cycle: {} inst:{}", _core_cycle, inst.repr());
         parent_tile->stat.num_calculation += inst.tile_m * inst.tile_n * inst.tile_k;
 
         if (inst.opcode == Opcode::GEMM_PRELOAD) {
@@ -1654,14 +1662,14 @@ void MyCore::pim_issue_ex_inst(Instruction inst) {
         }
 
         inst.finish_cycle = inst.start_cycle + get_inst_compute_cycles(inst);
-        // spdlog::info("finish_cycle: {}", inst.finish_cycle);
+        // spdlog::debug("finish_cycle: {}", inst.finish_cycle);
         _compute_pipeline.push(inst);
         _stat_systolic_inst_issue_count++;
     } else if (inst.opcode == Opcode::COMP || inst.opcode == Opcode::IM2COL ||
                inst.opcode == Opcode::LAYERNORM || inst.opcode == Opcode::RMSNORM || inst.opcode == Opcode::ROPE || inst.opcode == Opcode::SOFTMAX ||
                inst.opcode == Opcode::ADD || inst.opcode == Opcode::MUL || inst.opcode == Opcode::GELU || inst.opcode == Opcode::SILU ||
                inst.opcode == Opcode::DATA_CONVERT || inst.opcode == Opcode::DUMMY) {  // vector unit compute
-        // spdlog::info("COMPUTE Start cycle: {} inst:{}", _core_cycle, inst.repr());
+        // spdlog::debug("COMPUTE Start cycle: {} inst:{}", _core_cycle, inst.repr());
         std::queue<Instruction> *least_filled_vpu;
         cycle_type finish_cycle = std::numeric_limits<uint64_t>::max();
         for (auto &vector_pipeline : _vector_pipelines) {
@@ -1672,10 +1680,10 @@ void MyCore::pim_issue_ex_inst(Instruction inst) {
             }
             if (vector_pipeline.back().finish_cycle < finish_cycle) {
                 least_filled_vpu = &vector_pipeline;
-                finish_cycle = _core_cycle;
+                finish_cycle = vector_pipeline.back().finish_cycle;
             }
         }
-        inst.start_cycle = finish_cycle;
+        inst.start_cycle = std::max(_core_cycle, finish_cycle);
         inst.finish_cycle = inst.start_cycle + get_vector_compute_cycles(inst);
         least_filled_vpu->push(inst);
 
@@ -1694,14 +1702,14 @@ void MyCore::pim_issue_ex_inst(Instruction inst) {
     // if dest_addr is on sram, count up. -> wait for _compute_pipeline to
     // finish calculation
     if (_pim_acc_spad.check_allocated(inst.dest_addr, inst.accum_spad_id)) {
-        // spdlog::info("allocated: {}", inst.repr());
+        // spdlog::debug("allocated: {}", inst.repr());
         _pim_acc_spad.count_up(inst.dest_addr, inst.accum_spad_id);
     }
     // if dest_addr is not on sram, initialize. -> wait for
     // _compute_pipeline to finish calculation
     else {
-        // spdlog::info("reserve: {}", inst.repr());
-        // spdlog::info("reserve, dest_addr:{:x}, spad_id:{}, size:{}", inst.dest_addr,
+        // spdlog::debug("reserve: {}", inst.repr());
+        // spdlog::debug("reserve, dest_addr:{:x}, spad_id:{}, size:{}", inst.dest_addr,
         //  inst.accum_spad_id, inst.size);
         _pim_acc_spad.reserve(inst.dest_addr, inst.accum_spad_id, inst.size, 1);
     }

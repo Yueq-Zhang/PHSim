@@ -10,6 +10,7 @@ private:
     std::vector<uint32_t> _weight_dim;
     uint32_t _prod_batches;
     uint32_t _prod_weight_dim;
+    uint32_t _weight_size_bytes;
 
     std::vector<uint32_t> _inner_loop;
     std::vector<uint32_t> _outer_loop;
@@ -18,5 +19,7 @@ private:
     void initialize_my_tiles();
     Tile initialize_my_instructions(uint32_t N);
 
-    uint32_t sram_size_needed();
+    uint64_t aligned_hidden_size() const;
+    uint64_t spad_size_needed() const;
+    uint64_t accum_spad_size_needed() const;
 };

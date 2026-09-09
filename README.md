@@ -115,6 +115,13 @@ layers:
 Ready-to-edit system cases are provided under `configs/Cases/` for Nano, Tiny,
 Small, Base, Mobile, and Server configurations.
 
+Configuration parsing is strict: unknown JSON fields, missing required fields,
+wrong types, inconsistent duplicated DRAM values, and unsupported feature
+combinations fail before simulation. The output directory is created when
+needed. Add `"log_level": "debug"` to the compute configuration for detailed
+operator/tile scheduling logs; the default `info` level is written to both the
+terminal and `<output_path>/log.txt`.
+
 ### Important inference switches
 
 | Key | Meaning |

@@ -40,11 +40,70 @@ void SysConfig::initialize_from_config_path(std::string const sys_config_path, s
     initialize_inference_config(inference_config_path_);
     initialize_model_config(model_config_path_);
     validate_configuration_contracts();
+
+    spdlog::info(
+        "Configuration validated: model={}, backend={}, cores={}, "
+        "channels={}, dram_freq={} MHz, burst={} bytes, scheduler={}, "
+        "virtual_memory={}, data_container={}, acceleration={}, "
+        "decode_pruning={}",
+        model_name, dram_trace_simulation_mode ? "EventDriven" : "CycleAccurate",
+        num_cores, dram_channels, dram_freq, dram_req_size, batch_scheduler,
+        virtual_mem_hash_enable, dram_data_container_enable, accelerate_ctrl,
+        decode_pruning_enabled);
+    spdlog::debug(
+        "Configuration sources: compute={}, memory={}, PIM={}, "
+        "inference={}, model={}, requests={}, output={}",
+        system_config_path_, memory_config_path_, pim_config_path,
+        inference_config_path_, model_config_path_, request_dataset_path_,
+        output_path_);
 }
 
 
 void SysConfig::initialize_compute_die_system_config(std::string sys_config_path) {
     nlohmann::json config = load_config(sys_config_path);
+    using phsim::JsonFieldSpec;
+    using phsim::JsonValueKind;
+    phsim::ConfigValidator::ValidateJsonObject(
+        config, "compute", sys_config_path,
+        {
+            {"num_cores", JsonValueKind::UnsignedInteger, true},
+            {"core_type", JsonValueKind::String, true},
+            {"core_freq", JsonValueKind::UnsignedInteger, true},
+            {"core_width", JsonValueKind::UnsignedInteger, true},
+            {"core_height", JsonValueKind::UnsignedInteger, true},
+            {"__sram_size", JsonValueKind::UnsignedInteger, false},
+            {"sram_size", JsonValueKind::UnsignedInteger, false},
+            {"spad_size", JsonValueKind::UnsignedInteger, true},
+            {"accum_spad_size", JsonValueKind::UnsignedInteger, true},
+            {"sram_width", JsonValueKind::UnsignedInteger, true},
+            {"process_bit", JsonValueKind::UnsignedInteger, false},
+            {"vector_core_count", JsonValueKind::UnsignedInteger, true},
+            {"vector_core_width", JsonValueKind::UnsignedInteger, true},
+            {"add_latency", JsonValueKind::UnsignedInteger, true},
+            {"mul_latency", JsonValueKind::UnsignedInteger, true},
+            {"exp_latency", JsonValueKind::UnsignedInteger, true},
+            {"gelu_latency", JsonValueKind::UnsignedInteger, true},
+            {"add_tree_latency", JsonValueKind::UnsignedInteger, true},
+            {"scalar_sqrt_latency", JsonValueKind::UnsignedInteger, true},
+            {"scalar_add_latency", JsonValueKind::UnsignedInteger, true},
+            {"scalar_mul_latency", JsonValueKind::UnsignedInteger, true},
+            {"icnt_type", JsonValueKind::String, true},
+            {"icnt_latency", JsonValueKind::UnsignedInteger, true},
+            {"icnt_freq", JsonValueKind::UnsignedInteger, true},
+            {"icnt_ctrl_size", JsonValueKind::UnsignedInteger, false},
+            {"icnt_input_buffer_size", JsonValueKind::UnsignedInteger, false},
+            {"icnt_output_buffer_size", JsonValueKind::UnsignedInteger, false},
+            {"icnt_config_path", JsonValueKind::String, false},
+            {"precision", JsonValueKind::UnsignedInteger, true},
+            {"layout", JsonValueKind::String, false},
+            {"scheduler", JsonValueKind::String, true},
+            {"operation_log_output_path", JsonValueKind::String, false},
+            {"log_level", JsonValueKind::String, false},
+            {"precision_weight", JsonValueKind::UnsignedInteger, true},
+            {"precision_activation", JsonValueKind::UnsignedInteger, true},
+            {"precision_cache", JsonValueKind::UnsignedInteger, true},
+            {"precision_psum", JsonValueKind::UnsignedInteger, true},
+        });
 
     /* Core configs */
     num_cores = config["num_cores"];
@@ -57,12 +116,24 @@ void SysConfig::initialize_compute_die_system_config(std::string sys_config_path
             fmt::format("Not implemented core type {} ",
                 (std::string)config["core_type"]));
     core_freq = config["core_freq"];
+    phsim::ConfigValidator::ValidatePositiveValue(
+        "core_freq", core_freq, sys_config_path);
     core_width = config["core_width"];
     core_height = config["core_height"];
+    phsim::ConfigValidator::ValidatePositiveValue(
+        "num_cores", num_cores, sys_config_path);
+    phsim::ConfigValidator::ValidatePositiveValue(
+        "core_width", core_width, sys_config_path);
+    phsim::ConfigValidator::ValidatePositiveValue(
+        "core_height", core_height, sys_config_path);
 
     /* Vector configs */
     vector_core_count = config["vector_core_count"];
     vector_core_width = config["vector_core_width"];
+    phsim::ConfigValidator::ValidatePositiveValue(
+        "vector_core_count", vector_core_count, sys_config_path);
+    phsim::ConfigValidator::ValidatePositiveValue(
+        "vector_core_width", vector_core_width, sys_config_path);
     add_latency = config["add_latency"];
     mul_latency = config["mul_latency"];
     exp_latency = config["exp_latency"];
@@ -77,6 +148,10 @@ void SysConfig::initialize_compute_die_system_config(std::string sys_config_path
     sram_width = config["sram_width"];
     spad_size = config["spad_size"];
     accum_spad_size = config["accum_spad_size"];
+    phsim::ConfigValidator::ValidatePositiveValue(
+        "spad_size", spad_size, sys_config_path);
+    phsim::ConfigValidator::ValidatePositiveValue(
+        "accum_spad_size", accum_spad_size, sys_config_path);
 
     /* log config*/
     // The command-line output path is authoritative.  The legacy JSON field is
@@ -91,6 +166,8 @@ void SysConfig::initialize_compute_die_system_config(std::string sys_config_path
         throw std::runtime_error(
             fmt::format("Not implemented icnt type {} ", (std::string)config["icnt_type"]));
     icnt_freq = config["icnt_freq"];
+    phsim::ConfigValidator::ValidatePositiveValue(
+        "icnt_freq", icnt_freq, sys_config_path);
     phsim::ConfigValidator::ValidateRequiredField(
         config.contains("icnt_latency"), "icnt_latency", sys_config_path);
     icnt_latency = config["icnt_latency"];
@@ -145,15 +222,71 @@ void SysConfig::initialize_compute_die_system_config(std::string sys_config_path
     precision = config["precision"];
     layout = config.value("layout", std::string{"NHWC"});
     scheduler_type = config["scheduler"];
+    log_level = config.value("log_level", std::string{"info"});
+    if (log_level != "trace" && log_level != "debug" &&
+        log_level != "info" && log_level != "warn" &&
+        log_level != "error" && log_level != "critical" &&
+        log_level != "off") {
+        throw std::invalid_argument(
+            "log_level must be one of trace, debug, info, warn, error, "
+            "critical, or off");
+    }
 
     precision_weight= config["precision_weight"];
     precision_activation= config["precision_activation"];
     precision_cache = config["precision_cache"];
     precision_psum = config["precision_psum"];
+    for (const auto& value : {
+             std::pair<const char*, uint32_t>{"precision", precision},
+             {"precision_weight", precision_weight},
+             {"precision_activation", precision_activation},
+             {"precision_cache", precision_cache},
+             {"precision_psum", precision_psum}}) {
+        phsim::ConfigValidator::ValidatePositiveValue(
+            value.first, value.second, sys_config_path);
+    }
 }
 
 void SysConfig::initialize_inference_config(std::string inference_config_path) {
     nlohmann::json inference_config = load_config(inference_config_path);
+    using phsim::JsonFieldSpec;
+    using phsim::JsonValueKind;
+    phsim::ConfigValidator::ValidateJsonObject(
+        inference_config, "inference", inference_config_path,
+        {
+            {"max_batch_size", JsonValueKind::UnsignedInteger, true},
+            {"max_active_reqs", JsonValueKind::UnsignedInteger, true},
+            {"batch_scheduler", JsonValueKind::String, false},
+            {"max_seq_len", JsonValueKind::UnsignedInteger, true},
+            {"kv_cache_entry_size", JsonValueKind::UnsignedInteger, true},
+            {"allocation_scheme", JsonValueKind::String, true},
+            {"virtual_mem_hash_enable", JsonValueKind::Boolean, false},
+            {"dram_data_container_enable", JsonValueKind::Boolean, false},
+            {"dram_data_container_max_payload_mb", JsonValueKind::UnsignedInteger64, false},
+            {"test_single_op", JsonValueKind::Boolean, true},
+            {"test_single_op_name", JsonValueKind::String, true},
+            {"test_multi_layer", JsonValueKind::Boolean, true},
+            {"test_multi_layer_name", JsonValueKind::String, true},
+            {"accelerate_ctrl", JsonValueKind::Boolean, false},
+            {"accelerate_method", JsonValueKind::String, false},
+            {"accelerate_sample_ratio", JsonValueKind::Number, false},
+            {"attention_command_warmup_weight", JsonValueKind::Number, false},
+            {"softmax_warmup_rounds", JsonValueKind::UnsignedInteger, false},
+            {"softmax_sample_rounds", JsonValueKind::UnsignedInteger, false},
+            {"compile_time_tile_pruning", JsonValueKind::Boolean, false},
+            {"decode_pruning_enabled", JsonValueKind::Boolean, false},
+            {"decode_pruning_iterations", JsonValueKind::UnsignedInteger, false},
+            {"decode_pruning_sample_iterations", JsonValueKind::UnsignedInteger, false},
+            {"dram_trace_simulation_mode", JsonValueKind::Boolean, false},
+            {"record_dram_completion_trace", JsonValueKind::Boolean, false},
+            {"gen_request", JsonValueKind::Boolean, true},
+            {"gen_request_count", JsonValueKind::UnsignedInteger, true},
+            {"gen_request_input_size", JsonValueKind::UnsignedInteger, true},
+            {"gen_request_output_size", JsonValueKind::UnsignedInteger, false},
+            {"output_token_iteration_enable", JsonValueKind::Boolean, false},
+            {"gen_random_request", JsonValueKind::Boolean, true},
+            {"request_interval", JsonValueKind::UnsignedInteger, true},
+        });
 
     max_seq_len = inference_config["max_seq_len"];
     kv_cache_entry_size = inference_config["kv_cache_entry_size"];
@@ -165,12 +298,18 @@ void SysConfig::initialize_inference_config(std::string inference_config_path) {
         throw std::invalid_argument(
             "batch_scheduler must be either 'legacy' or 'continuous'");
     }
-    if (max_batch_size == 0 || max_active_reqs == 0) {
+    if (max_batch_size == 0 || max_active_reqs == 0 || max_seq_len == 0 ||
+        kv_cache_entry_size == 0) {
         throw std::invalid_argument(
-            "max_batch_size and max_active_reqs must be greater than zero");
+            "max_batch_size, max_active_reqs, max_seq_len, and "
+            "kv_cache_entry_size must be greater than zero");
     }
-
     allocation_scheme = inference_config["allocation_scheme"];
+    if (allocation_scheme != "NPU" && allocation_scheme != "NeuPIM" &&
+        allocation_scheme != "IANUS" && allocation_scheme != "DASH") {
+        throw std::invalid_argument(
+            "allocation_scheme must be one of NPU, NeuPIM, IANUS, or DASH");
+    }
     virtual_mem_hash_enable = inference_config.value("virtual_mem_hash_enable", false);
     dram_data_container_enable = inference_config.value("dram_data_container_enable", false);
     dram_data_container_max_payload_mb =
@@ -183,11 +322,29 @@ void SysConfig::initialize_inference_config(std::string inference_config_path) {
     // Multi Layer Test
     test_multi_layer = inference_config["test_multi_layer"];
     test_multi_layer_name  = inference_config["test_multi_layer_name"];
+    if (test_single_op && test_multi_layer) {
+        throw std::invalid_argument(
+            "test_single_op and test_multi_layer cannot both be enabled");
+    }
+    if (test_single_op && test_single_op_name.empty()) {
+        throw std::invalid_argument(
+            "test_single_op_name must not be empty when test_single_op=true");
+    }
+    if (test_multi_layer && test_multi_layer_name.empty()) {
+        throw std::invalid_argument(
+            "test_multi_layer_name must not be empty when "
+            "test_multi_layer=true");
+    }
 
     //Simulation Acceleration
     accelerate_ctrl = inference_config.value("accelerate_ctrl", false);
     accelerate_method = inference_config.value("accelerate_method", std::string{});
     accelerate_sample_ratio = inference_config.value("accelerate_sample_ratio", 0.25);
+    if (!std::isfinite(accelerate_sample_ratio) ||
+        accelerate_sample_ratio <= 0.0 || accelerate_sample_ratio > 1.0) {
+        throw std::invalid_argument(
+            "accelerate_sample_ratio must be finite and in the range (0, 1]");
+    }
     attention_command_warmup_weight =
         inference_config.value("attention_command_warmup_weight", 0.0);
     if (attention_command_warmup_weight < 0.0 ||
@@ -231,6 +388,39 @@ void SysConfig::initialize_inference_config(std::string inference_config_path) {
         inference_config.value("gen_request_output_size", 0U);
     output_token_iteration_enable =
         inference_config.value("output_token_iteration_enable", false);
+    gen_random_request = inference_config["gen_random_request"];
+    request_interval = inference_config["request_interval"];
+
+    if (gen_request && gen_request_count == 0) {
+        throw std::invalid_argument(
+            "gen_request_count must be greater than zero when "
+            "gen_request=true");
+    }
+    if (gen_request && !gen_random_request && gen_request_input_size == 0) {
+        throw std::invalid_argument(
+            "gen_request_input_size must be greater than zero for fixed "
+            "generated requests");
+    }
+    if (output_token_iteration_enable && gen_request && !gen_random_request &&
+        gen_request_output_size == 0) {
+        throw std::invalid_argument(
+            "gen_request_output_size must be greater than zero when output "
+            "token iteration is enabled");
+    }
+    if (output_token_iteration_enable && gen_request && !gen_random_request &&
+        static_cast<uint64_t>(gen_request_input_size) +
+                gen_request_output_size >
+            max_seq_len) {
+        throw std::invalid_argument(
+            "gen_request_input_size + gen_request_output_size cannot exceed "
+            "max_seq_len when output token iteration is enabled");
+    }
+    if (accelerate_ctrl && accelerate_method == "Proportional" &&
+        (softmax_warmup_rounds == 0 || softmax_sample_rounds == 0)) {
+        throw std::invalid_argument(
+            "Proportional acceleration requires non-zero "
+            "softmax_warmup_rounds and softmax_sample_rounds");
+    }
 
     if (batch_scheduler == "continuous" &&
         (!output_token_iteration_enable || test_single_op ||
@@ -239,14 +429,25 @@ void SysConfig::initialize_inference_config(std::string inference_config_path) {
             "batch_scheduler='continuous' requires full-model "
             "output_token_iteration_enable=true");
     }
-
-    gen_random_request = inference_config["gen_random_request"];
-    request_interval = inference_config["request_interval"];
 }
 
 
 void SysConfig::initialize_model_config(std::string model_config_path) {
     nlohmann::json model_config = load_config(model_config_path);
+    using phsim::JsonValueKind;
+    phsim::ConfigValidator::ValidateJsonObject(
+        model_config, "model", model_config_path,
+        {
+            {"model_name", JsonValueKind::String, true},
+            {"model_params_b", JsonValueKind::Number, true},
+            {"model_vocab_size", JsonValueKind::UnsignedInteger, true},
+            {"model_n_layer", JsonValueKind::UnsignedInteger, true},
+            {"model_n_head", JsonValueKind::UnsignedInteger, true},
+            {"model_n_kv_head", JsonValueKind::UnsignedInteger, false},
+            {"model_n_embd", JsonValueKind::UnsignedInteger, true},
+            {"n_tp", JsonValueKind::UnsignedInteger, true},
+            {"n_pp", JsonValueKind::UnsignedInteger, false},
+        });
     /* GPT configs */
     model_name = model_config["model_name"];
     model_params_b = model_config["model_params_b"];
@@ -255,6 +456,13 @@ void SysConfig::initialize_model_config(std::string model_config_path) {
     model_n_head = model_config["model_n_head"];
     model_n_kv_head = model_config.contains("model_n_kv_head") ? model_config["model_n_kv_head"].get<uint32_t>() : model_n_head;
     model_n_embd = model_config["model_n_embd"];
+    n_tp = model_config["n_tp"];
+    if (model_n_layer == 0 || model_n_head == 0 || model_n_embd == 0 ||
+        n_tp == 0) {
+        throw std::invalid_argument(
+            "model_n_layer, model_n_head, model_n_embd, and n_tp must be "
+            "greater than zero");
+    }
     if (model_n_kv_head == 0 || model_n_head % model_n_kv_head != 0) {
         throw std::runtime_error(fmt::format("Invalid model_n_kv_head {} for model_n_head {}",
             model_n_kv_head, model_n_head));
@@ -263,13 +471,40 @@ void SysConfig::initialize_model_config(std::string model_config_path) {
         throw std::runtime_error(fmt::format("Invalid model_n_embd {} for model_n_head {}",
             model_n_embd, model_n_head));
     }
-    /* parallelism config */
-    n_tp = model_config["n_tp"];
+    if (model_n_head % n_tp != 0 || model_n_embd % n_tp != 0) {
+        throw std::invalid_argument(fmt::format(
+            "Invalid tensor parallelism n_tp {} for model_n_head {} and "
+            "model_n_embd {}",
+            n_tp, model_n_head, model_n_embd));
+    }
 }
 
 
 void SysConfig::initialize_PIM_config(std::string pim_config) {
     nlohmann::json mem_config = load_config(pim_config);
+    using phsim::JsonValueKind;
+    phsim::ConfigValidator::ValidateJsonObject(
+        mem_config, "PIM", pim_config,
+        {
+            {"dram_type", JsonValueKind::String, true},
+            {"dram_freq", JsonValueKind::UnsignedInteger, true},
+            {"DRAM_act_buf_size_MB", JsonValueKind::UnsignedInteger64, true},
+            {"dram_channels", JsonValueKind::UnsignedInteger, true},
+            {"dram_req_size", JsonValueKind::UnsignedInteger, true},
+            {"PU_location", JsonValueKind::String, true},
+            {"dual_bank", JsonValueKind::Boolean, true},
+            {"pim_PE_num", JsonValueKind::UnsignedInteger, true},
+            {"pim_input_buffer_size", JsonValueKind::UnsignedInteger, true},
+            {"pim_output_buffer_size", JsonValueKind::UnsignedInteger, true},
+            {"hybrid_bonding_bw_area_ratio", JsonValueKind::Number, true},
+            {"pim_pu_area", JsonValueKind::Number, true},
+            {"pim_controller_area_overhead", JsonValueKind::Number, true},
+            {"pim_buffer_area_per_kb", JsonValueKind::Number, true},
+            {"pim_static_power_per_pu", JsonValueKind::Number, true},
+            {"pim_dynamic_power_per_pu_comp", JsonValueKind::Number, true},
+            {"pim_buffer_static_power_per_kb", JsonValueKind::Number, true},
+            {"pim_buffer_dynamic_power_per_bit", JsonValueKind::Number, true},
+        });
     // DRAM config
     if ((std::string)mem_config["dram_type"] == "dram")
         dram_type = DramType::DRAM;
@@ -279,7 +514,15 @@ void SysConfig::initialize_PIM_config(std::string pim_config) {
         throw std::runtime_error(
             fmt::format("Not implemented dram type {} ", (std::string)mem_config["dram_type"]));
     dram_freq = mem_config["dram_freq"];
-    DRAM_act_buf_size = (uint64_t)(mem_config["DRAM_act_buf_size_MB"])MB;
+    const uint64_t dram_act_buf_size_mib =
+        mem_config["DRAM_act_buf_size_MB"].get<uint64_t>();
+    if (dram_act_buf_size_mib == 0 ||
+        dram_act_buf_size_mib >
+            std::numeric_limits<uint64_t>::max() / (1024ULL * 1024ULL)) {
+        throw std::invalid_argument(
+            "DRAM_act_buf_size_MB must be positive and fit in uint64_t bytes");
+    }
+    DRAM_act_buf_size = dram_act_buf_size_mib * 1024ULL * 1024ULL;
     dram_channels = mem_config["dram_channels"];
     dram_req_size = mem_config.value("dram_req_size", 0U);
     // PIM config
@@ -297,7 +540,30 @@ void SysConfig::initialize_PIM_config(std::string pim_config) {
     pim_buffer_static_power_per_kb = mem_config["pim_buffer_static_power_per_kb"];
     pim_buffer_dynamic_power_per_bit = mem_config["pim_buffer_dynamic_power_per_bit"];
 
-    pim_parallel_bank_accesses = mem_config.value("pim_parallel_bank_accesses", 0);
+    for (const auto& value : {
+             std::pair<const char*, uint32_t>{"pim_PE_num", pim_PE_num},
+             {"pim_input_buffer_size", pim_input_buffer_size},
+             {"pim_output_buffer_size", pim_output_buffer_size}}) {
+        phsim::ConfigValidator::ValidatePositiveValue(
+            value.first, value.second, pim_config);
+    }
+    for (const auto& value : {
+             std::pair<const char*, double>{"hybrid_bonding_bw_area_ratio",
+                                            hybrid_bonding_bw_area_ratio},
+             {"pim_pu_area", pim_pu_area},
+             {"pim_controller_area_overhead", pim_controller_area_overhead},
+             {"pim_buffer_area_per_kb", pim_buffer_area_per_kb},
+             {"pim_static_power_per_pu", pim_static_power_per_pu},
+             {"pim_dynamic_power_per_pu_comp", pim_dynamic_power_per_pu_comp},
+             {"pim_buffer_static_power_per_kb", pim_buffer_static_power_per_kb},
+             {"pim_buffer_dynamic_power_per_bit",
+              pim_buffer_dynamic_power_per_bit}}) {
+        if (!std::isfinite(value.second) || value.second < 0.0) {
+            throw std::invalid_argument(fmt::format(
+                "{} in '{}' must be a finite non-negative number",
+                value.first, pim_config));
+        }
+    }
 }
 
 void SysConfig::validate_configuration_contracts() {
@@ -313,6 +579,20 @@ void SysConfig::validate_configuration_contracts() {
     ConfigValidator::ValidateRequestSize(
         dram_req_size, mem_config.BL, mem_config.bus_width, pim_config_path,
         memory_config_path_);
+    for (const auto& value : {
+             std::pair<const char*, uint32_t>{"precision", precision},
+             {"precision_weight", precision_weight},
+             {"precision_activation", precision_activation},
+             {"precision_cache", precision_cache},
+             {"precision_psum", precision_psum}}) {
+        if (dram_req_size % value.second != 0) {
+            throw std::invalid_argument(fmt::format(
+                "DRAM request size {} bytes is not divisible by {}={} "
+                "bytes in '{}'",
+                dram_req_size, value.first, value.second,
+                system_config_path_));
+        }
+    }
     ConfigValidator::ValidatePimBankOrganization(
         mem_config.dual_bank, mem_config.pim_type, pim_config_path,
         memory_config_path_);
@@ -328,36 +608,11 @@ void SysConfig::validate_configuration_contracts() {
         dram_trace_simulation_mode, mem_config.enable_self_refresh);
 
     // DataContainer payload mutations cannot be reconstructed from aggregate
-    // pruning statistics, so it always retains the exact execution path.
-    // Virtual memory can use the mapping-only replay implemented for
-    // Proportional Tile Pruning and the stable FFN subset of Decode Pruning.
-    if (dram_data_container_enable && accelerate_ctrl) {
-        spdlog::warn(
-            "Simulation acceleration method '{}' is disabled because "
-            "dram_data_container_enable=true requires exact per-request "
-            "data side effects",
-            accelerate_method);
-        accelerate_ctrl = false;
-        compile_time_tile_pruning = false;
-    }
-    if (virtual_mem_hash_enable && accelerate_ctrl &&
-        accelerate_method != "Proportional") {
-        spdlog::warn(
-            "Simulation acceleration method '{}' is disabled because "
-            "virtual-memory side-effect replay currently supports only "
-            "the Proportional method",
-            accelerate_method);
-        accelerate_ctrl = false;
-        compile_time_tile_pruning = false;
-    }
-    if (dram_data_container_enable && decode_pruning_enabled) {
-        spdlog::warn(
-            "Decode Pruning is disabled because "
-            "dram_data_container_enable=true requires exact per-request "
-            "data side effects");
-        decode_pruning_enabled = false;
-        decode_pruning_compile_context = false;
-    }
+    // pruning statistics. Virtual memory supports mapping-only replay for the
+    // Proportional method, but not for the legacy acceleration methods.
+    ConfigValidator::ValidateFeatureCompatibility(
+        dram_data_container_enable, virtual_mem_hash_enable, accelerate_ctrl,
+        accelerate_method, decode_pruning_enabled);
 
     ConfigValidator::ValidateSupportedValue(
         "core_type",
@@ -391,15 +646,6 @@ void SysConfig::validate_configuration_contracts() {
         "Reserved metadata fields (no timing/capacity effect in this build): "
         "num_dies={}, model_vocab_size={}",
         mem_config.num_dies, model_vocab_size);
-}
-
-
-SysConfig& initialized_config(std::string const sys_config_path, std::string const memory_config_path, std::string const pim_config_path, std::string const inference_config_path, const std::string model_config_path, const std::string output_path) {
-
-    auto system_config = new SysConfig();
-    // system_config->initialize_from_config_path(sys_config_path, memory_config_path, pim_config_path, inference_config_path, model_config_path, output_path);
-
-    return *system_config;
 }
 
 
@@ -1252,12 +1498,13 @@ bool MyAddressAllocator::init(const SysConfig& config) {
     */
     configure_address_decoder(config.mem_config);
 
-    spdlog::critical("Initializing MyAddressAllocator of DRAM system with "
-                     "{} channels, {} ranks, {} devices, {} bankgroups, {} banks, {} rows, {} columns",
-                     dram_channels, ranks, devices_per_rank, bankgroups, banks, rows, columns);
+    spdlog::info("Initializing MyAddressAllocator of DRAM system with "
+                 "{} channels, {} ranks, {} devices, {} bankgroups, {} banks, {} rows, {} columns",
+                 dram_channels, ranks, devices_per_rank, bankgroups, banks, rows, columns);
 
-    spdlog::critical("DQ = {}, burst_length = {}, Channel_Burst_size = {}, DRAM_Burst_size = {}, Each Bank Row Contains {} Bytes, the supported BL time of one row is {}",
-        DQ_width, burst_length, dram_burst_size, memory_burst_size, columns * DQ_width / 8, BL_num_per_row);
+    spdlog::info("DQ = {}, burst_length = {}, Channel_Burst_size = {}, DRAM_Burst_size = {}, Each Bank Row Contains {} Bytes, the supported BL time of one row is {}",
+                 DQ_width, burst_length, dram_burst_size, memory_burst_size,
+                 columns * DQ_width / 8, BL_num_per_row);
 
     precision_weight = config.precision_weight;
     precision_activation = config.precision_activation;
@@ -2240,11 +2487,13 @@ bool MyAddressAllocator::malloc_kvcache_space() {
 }
 
 bool MyAddressAllocator::check_addrs(const std::vector<addr_type>& addrs) {
-    spdlog::info("********************** Check addrs **********************");
-    spdlog::info("Total {} address are checked", addrs.size());
+    spdlog::debug("********************** Check addrs **********************");
+    spdlog::debug("Total {} address are checked", addrs.size());
     for (auto addr : addrs) {
-        spdlog::info("current addr: {}, for channel {}, Rank {}, BankGroup {}, Bank {}, Row {}, Column {}",
-            addr, get_channel_index(addr), get_rank_index(addr), get_bankgroup_index(addr), get_bank_index(addr), get_row_index(addr), get_col_index(addr));
+        spdlog::debug("current addr: {}, for channel {}, Rank {}, BankGroup {}, Bank {}, Row {}, Column {}",
+                      addr, get_channel_index(addr), get_rank_index(addr),
+                      get_bankgroup_index(addr), get_bank_index(addr),
+                      get_row_index(addr), get_col_index(addr));
     }
     return true;
 }
@@ -2870,8 +3119,6 @@ std::vector<std::unique_ptr<MemoryAccess>> MemoryAccess::gen_trace_from_instruct
 std::vector<std::unique_ptr<MemoryAccess>> MemoryAccess::gen_pim_trace_from_instruction(Instruction &inst, uint32_t id, uint32_t size, MemoryAccessType req_type, bool request, uint32_t core_id,
                                                                   cycle_type start_cycle, int buffer_id, StagePlatform stage_platform) {
     std::vector<std::unique_ptr<MemoryAccess>> ret;
-    const uint32_t parallel_n = Config::system_config.pim_parallel_bank_accesses;
-    // const bool pim_comp_bank_stagger = (parallel_n > 0 && req_type == MemoryAccessType::COMP && (parallel_n % MyAddressAllocator::dram_channels) == 0);
     for (auto addr : inst.src_addrs) {
         if (req_type == MemoryAccessType::COMP_HASH) {
             // spdlog::info("Add the channel and Bank index to all the COMP Hash Operation");
@@ -2905,48 +3152,8 @@ std::vector<std::unique_ptr<MemoryAccess>> MemoryAccess::gen_pim_trace_from_inst
                     }
                 }
             }
-            /*
-            for (uint32_t ch = 0; ch < MyAddressAllocator::dram_channels; ch++) {
-                uint32_t bank_linear = (ch * bank_step) % MyAddressAllocator::banks_per_channel;
-                uint32_t bk = bank_linear;
-                const uint32_t ba_s = bk % MyAddressAllocator::banks;
-                bk /= MyAddressAllocator::banks;
-                const uint32_t bg_s = bk % MyAddressAllocator::bankgroups;
-                bk /= MyAddressAllocator::bankgroups;
-                const uint32_t ra_s = bk % MyAddressAllocator::ranks;
-                const addr_type dram_addr =
-                    MyAddressAllocator::make_address_by_index(ra_s, bg_s, ba_s, row, col, ch);
-                req_count++;
-                auto mem_access = std::unique_ptr<MemoryAccess>(new MemoryAccess{
-                    .id = ch,
-                    .logical_dram_address = dram_addr,
-                    .dram_address = dram_addr,
-                    .spad_address = inst.dest_addr,
-                    .size = size,
-                    .logical_start_addr = (inst.logical_start_addr != 0 ? inst.logical_start_addr : dram_addr),
-                    .exec_len_bytes = (inst.exec_len_bytes != 0 ? inst.exec_len_bytes : inst.size),
-                    .req_type = req_type,
-                    .request = request,
-                    .core_id = core_id,
-                    .start_cycle = start_cycle,
-                    .buffer_id = buffer_id,
-                    .parent_tile = inst.parent_tile,
-                    .stage_platform = stage_platform,
-                });
-                ret.push_back(std::move(mem_access));
-            }
-            */
         }
         else {
-            if (parallel_n > 0 && req_type == MemoryAccessType::COMP) {
-                static bool warned = false;
-                if (!warned) {
-                    spdlog::warn(
-                        "pim_parallel_bank_accesses={}: N%%dram_channels!=0 for PIM_COMP; using legacy add_channel_index path",
-                        parallel_n);
-                    warned = true;
-                }
-            }
             for (uint32_t ch = 0; ch < MyAddressAllocator::dram_channels; ch++) {
                 auto convert_address = MyAddressAllocator::add_channel_index(addr, ch);
                 auto channel = MyAddressAllocator::get_channel_index(convert_address);

@@ -208,12 +208,31 @@ inline bool DirExist(std::string dir) {
     }
 }
 
-inline nlohmann::json load_config(std::string config_path) {
-    nlohmann::json config_json;
+inline nlohmann::json load_config(const std::string& config_path) {
+    if (config_path.empty()) {
+        throw std::invalid_argument("JSON configuration path must not be empty");
+    }
+
     std::ifstream config_file(config_path);
-    config_file >> config_json;
-    config_file.close();
-    return config_json;
+    if (!config_file.is_open()) {
+        throw std::runtime_error(
+            "Cannot open JSON configuration file '" + config_path + "'");
+    }
+
+    try {
+        nlohmann::json config_json;
+        config_file >> config_json;
+        if (!config_json.is_object()) {
+            throw std::invalid_argument(
+                "JSON configuration file '" + config_path +
+                "' must contain an object at the top level");
+        }
+        return config_json;
+    } catch (const nlohmann::json::exception& error) {
+        throw std::runtime_error(
+            "Cannot parse JSON configuration file '" + config_path +
+            "': " + error.what());
+    }
 }
 
 
@@ -413,6 +432,8 @@ private:
     phsim::DramGeometryResult geometry_;
     phsim::DramAddressLayout address_layout_;
     int GetInteger(const std::string& sec, const std::string& opt, int default_val) const;  //
+    double GetReal(const std::string& sec, const std::string& opt,
+                   double default_val) const;
     static DRAMProtocol GetDRAMProtocol(std::string protocol_str);
 
     void InitSystemParams();
@@ -438,8 +459,17 @@ inline MemConfig::MemConfig(std::string memory_config_path, std::string pim_conf
     memory_config_path_ = memory_config_path;
     // Load the Memory Configs
     reader_ = std::make_shared<INIReader>(memory_config_path);
-    if (reader_->ParseError() < 0) {
-        throw std::runtime_error("Can't load memory_config file - " + memory_config_path);
+    if (reader_->ParseError() != 0) {
+        const int parse_error = reader_->ParseError();
+        if (parse_error < 0) {
+            throw std::runtime_error(
+                "Cannot open memory configuration file '" +
+                memory_config_path + "'");
+        }
+        throw std::runtime_error(
+            "Cannot parse memory configuration file '" +
+            memory_config_path + "' near line " +
+            std::to_string(parse_error));
     }
     // The initialization of the parameters has to be strictly in this order
     // because of internal dependencies
@@ -473,10 +503,12 @@ inline void MemConfig::CalculateSize() {
     geometry_ = phsim::CalculateDramGeometry(input, memory_config_path_);
 
     if (geometry_.channel_size_increased) {
-        std::cout << "WARNING: Cannot create memory system of size "
-                  << channel_size
-                  << "MB with given device choice! Using default size "
-                  << geometry_.rank_size_mib << " instead!" << std::endl;
+        throw std::invalid_argument(
+            "Configured channel_size=" + std::to_string(channel_size) +
+            " MiB in '" + memory_config_path_ +
+            "' cannot be represented by the configured DRAM geometry; "
+            "minimum representable size is " +
+            std::to_string(geometry_.rank_size_mib) + " MiB");
     }
     channel_size = geometry_.channel_size_mib;
     ranks = geometry_.ranks;
@@ -503,8 +535,58 @@ inline DRAMProtocol MemConfig::GetDRAMProtocol(std::string protocol_str) {
     return protocol_pairs[protocol_str];
 }
 
-inline int MemConfig::GetInteger(const std::string& sec, const std::string& opt, int default_val) const {
-    return static_cast<int>(reader_->GetInteger(sec, opt, default_val));
+inline int MemConfig::GetInteger(const std::string& sec, const std::string& opt,
+                                 int default_val) const {
+    const std::string raw_text = reader_->Get(sec, opt, "");
+    if (raw_text.empty()) {
+        return default_val;
+    }
+    std::string text = raw_text.substr(0, raw_text.find_first_of(";#"));
+    try {
+        size_t parsed = 0;
+        const long long value = std::stoll(text, &parsed, 0);
+        while (parsed < text.size() &&
+               std::isspace(static_cast<unsigned char>(text[parsed]))) {
+            ++parsed;
+        }
+        if (parsed != text.size() || value < std::numeric_limits<int>::min() ||
+            value > std::numeric_limits<int>::max()) {
+            throw std::out_of_range("invalid integer");
+        }
+        return static_cast<int>(value);
+    } catch (const std::exception&) {
+        throw std::invalid_argument(
+            "Invalid integer value for '" + sec + "." + opt +
+            "' in memory configuration file '" + memory_config_path_ +
+            "': '" + raw_text + "'");
+    }
+}
+
+inline double MemConfig::GetReal(const std::string& sec,
+                                 const std::string& opt,
+                                 double default_val) const {
+    const std::string raw_text = reader_->Get(sec, opt, "");
+    if (raw_text.empty()) {
+        return default_val;
+    }
+    std::string text = raw_text.substr(0, raw_text.find_first_of(";#"));
+    try {
+        size_t parsed = 0;
+        const double value = std::stod(text, &parsed);
+        while (parsed < text.size() &&
+               std::isspace(static_cast<unsigned char>(text[parsed]))) {
+            ++parsed;
+        }
+        if (parsed != text.size() || !std::isfinite(value)) {
+            throw std::out_of_range("invalid real");
+        }
+        return value;
+    } catch (const std::exception&) {
+        throw std::invalid_argument(
+            "Invalid numeric value for '" + sec + "." + opt +
+            "' in memory configuration file '" + memory_config_path_ +
+            "': '" + raw_text + "'");
+    }
 }
 
 inline void MemConfig::InitSystemParams() {
@@ -519,6 +601,20 @@ inline void MemConfig::InitSystemParams() {
     trans_queue_size = GetInteger("system", "trans_queue_size", 32);
     unified_queue = reader.GetBoolean("system", "unified_queue", false);
     write_buf_size = GetInteger("system", "write_buf_size", 16);
+    for (const auto& value : {
+             std::pair<const char*, int>{"channel_size", static_cast<int>(channel_size)},
+             {"channels", static_cast<int>(channels)},
+             {"bus_width", static_cast<int>(bus_width)},
+             {"cmd_queue_size", cmd_queue_size},
+             {"trans_queue_size", trans_queue_size},
+             {"write_buf_size", write_buf_size}}) {
+        if (value.second <= 0) {
+            throw std::invalid_argument(
+                "Memory configuration field system." +
+                std::string(value.first) + " must be greater than zero in '" +
+                memory_config_path_ + "'");
+        }
+    }
     std::string ref_policy = reader.Get("system", "refresh_policy", "RANK_LEVEL_STAGGERED");
 
     if (ref_policy == "RANK_LEVEL_SIMULTANEOUS") {
@@ -624,28 +720,36 @@ inline void MemConfig::InitDRAMParams() {
 }
 
 inline void MemConfig::InitOtherParams() {
-    const auto& reader = *reader_;
     epoch_period = GetInteger("other", "epoch_period", 100000);
     // determine how much output we want:
     // -1: no file output at all (NOT implemented yet)
     // 0: no epoch file output, only outputs the summary in the end
     // 1: default value, adds epoch CSV output on level 0
     // 2: adds histogram outputs in a different CSV format
-    output_level = reader.GetInteger("other", "output_level", 1);
+    output_level = GetInteger("other", "output_level", 1);
+    if (epoch_period <= 0) {
+        throw std::invalid_argument(
+            "Memory configuration field other.epoch_period must be greater "
+            "than zero in '" + memory_config_path_ + "'");
+    }
+    if (output_level < 0 || output_level > 2) {
+        throw std::invalid_argument(
+            "Memory configuration field other.output_level must be 0, 1, "
+            "or 2 in '" + memory_config_path_ + "'");
+    }
     // Other Parameters
     // give a prefix instead of specify the output name one by one...
     // this would allow outputing to a directory and you can always override
     // these values
     if (!DirExist(output_dir)) {
-        std::cout << "WARNING: Output directory " << output_dir
-                  << " not exists! Using current directory for output!"
-                  << std::endl;
-        output_dir = "./";
+        throw std::runtime_error(
+            "Output directory does not exist or is not a directory: '" +
+            output_dir + "'");
     } else {
         output_dir = output_dir + "/";
     }
     output_prefix =
-        output_dir + reader.Get("other", "output_prefix", "dramsim3");
+        output_dir + reader_->Get("other", "output_prefix", "dramsim3");
     json_stats_name = output_prefix + ".json";
     json_epoch_name = output_prefix + "epoch.json";
     txt_stats_name = output_prefix + ".txt";
@@ -673,8 +777,7 @@ inline void MemConfig::InitTimingParams() {
     // Timing Parameters
     // TODO there is no need to keep all of these variables, they should
     // just be temporary, ultimately we only need cmd to cmd Timing
-    const auto& reader = *reader_;
-    tCK = reader.GetReal("timing", "tCK", 1.0);
+    tCK = GetReal("timing", "tCK", 1.0);
     AL = GetInteger("timing", "AL", 0);
     CL = GetInteger("timing", "CL", 12);
     CWL = GetInteger("timing", "CWL", 12);
@@ -693,7 +796,7 @@ inline void MemConfig::InitTimingParams() {
     tRFC = GetInteger("timing", "tRFC", 74);
     tRC = tRAS + tRP;
     tCKE = GetInteger("timing", "tCKE", 6);
-    tCKESR = ReadTCKESRWithLegacyFallback(reader);
+    tCKESR = ReadTCKESRWithLegacyFallback(*reader_);
     tXS = GetInteger("timing", "tXS", 432);
     tXP = GetInteger("timing", "tXP", 8);
     tRFCb = GetInteger("timing", "tRFCb", 20);
@@ -712,6 +815,36 @@ inline void MemConfig::InitTimingParams() {
     tRCDWR = GetInteger("timing", "tRCDWR", 20);
 
     ideal_memory_latency = GetInteger("timing", "ideal_memory_latency", 10);
+
+    for (const auto& value : {
+             std::pair<const char*, int>{"AL", AL},
+             {"CL", CL}, {"CWL", CWL}, {"tCCD_L", tCCD_L},
+             {"tCCD_S", tCCD_S}, {"tRTRS", tRTRS}, {"tRTP", tRTP},
+             {"tWTR_L", tWTR_L}, {"tWTR_S", tWTR_S}, {"tWR", tWR},
+             {"tRP", tRP}, {"tRRD_L", tRRD_L}, {"tRRD_S", tRRD_S},
+             {"tRAS", tRAS}, {"tRCD", tRCD}, {"tRFC", tRFC},
+             {"tCKE", tCKE}, {"tCKESR", tCKESR}, {"tXS", tXS},
+             {"tXP", tXP}, {"tRFCb", tRFCb}, {"tREFI", tREFI},
+             {"tREFIb", tREFIb}, {"tFAW", tFAW}, {"tRPRE", tRPRE},
+             {"tWPRE", tWPRE}, {"tPPD", tPPD}, {"t32AW", t32AW},
+             {"tRCDRD", tRCDRD}, {"tRCDWR", tRCDWR},
+             {"ideal_memory_latency", ideal_memory_latency}}) {
+        if (value.second < 0) {
+            throw std::invalid_argument(
+                "Memory timing field timing." + std::string(value.first) +
+                " must be non-negative in '" + memory_config_path_ + "'");
+        }
+    }
+    if (tREFI == 0 || tREFIb == 0) {
+        throw std::invalid_argument(
+            "Memory timing fields tREFI and tREFIb must be greater than zero "
+            "in '" + memory_config_path_ + "'");
+    }
+    if (tRCD < AL) {
+        throw std::invalid_argument(
+            "Memory timing field tRCD must be greater than or equal to AL in '" +
+            memory_config_path_ + "'");
+    }
 
     // latency and duration of read and write
     RL = AL + CL;
@@ -748,19 +881,18 @@ inline void MemConfig::InitTimingParams() {
 
 
 inline void MemConfig::InitPowerParams() {
-    const auto& reader = *reader_;
     // Power-related parameters
-    double VDD = reader.GetReal("power", "VDD", 1.2);
-    double IDD0 = reader.GetReal("power", "IDD0", 48);
-    double IDD2P = reader.GetReal("power", "IDD2P", 25);
-    double IDD2N = reader.GetReal("power", "IDD2N", 34);
+    double VDD = GetReal("power", "VDD", 1.2);
+    double IDD0 = GetReal("power", "IDD0", 48);
+    double IDD2P = GetReal("power", "IDD2P", 25);
+    double IDD2N = GetReal("power", "IDD2N", 34);
     // double IDD3P = reader.GetReal("power", "IDD3P", 37);
-    double IDD3N = reader.GetReal("power", "IDD3N", 43);
-    double IDD4W = reader.GetReal("power", "IDD4W", 123);
-    double IDD4R = reader.GetReal("power", "IDD4R", 135);
-    double IDD5AB = reader.GetReal("power", "IDD5AB", 250);  // all-bank ref
-    double IDD5PB = reader.GetReal("power", "IDD5PB", 5);    // per-bank ref
-    double IDD6x = reader.GetReal("power", "IDD6x", 31);
+    double IDD3N = GetReal("power", "IDD3N", 43);
+    double IDD4W = GetReal("power", "IDD4W", 123);
+    double IDD4R = GetReal("power", "IDD4R", 135);
+    double IDD5AB = GetReal("power", "IDD5AB", 250);  // all-bank ref
+    double IDD5PB = GetReal("power", "IDD5PB", 5);    // per-bank ref
+    double IDD6x = GetReal("power", "IDD6x", 31);
 
     // energy increments per command/cycle, calculated as voltage * current *
     // time(in cycles) units are V * mA * Cycles and if we convert cycles to ns
@@ -970,7 +1102,6 @@ public:
     // N>0 (PIM_COMP only): still exactly dram_channels DRAM requests (no N-fold traffic); bank_linear per channel is
     // (ch * (N / dram_channels)) % banks_per_channel to spread across banks without multiplying completion time.
     // Requires N % dram_channels == 0; otherwise legacy path. Data must be laid out for staggered banks to be correct.
-    uint32_t pim_parallel_bank_accesses;
 
 
     double hybrid_bonding_bw_area_ratio;
@@ -986,6 +1117,7 @@ public:
     /* Log SysConfig */
     std::string operation_log_output_path;
     std::string log_dir;
+    std::string log_level = "info";
 
     /* ICNT SysConfig */
     IcntType icnt_type;
@@ -1020,10 +1152,6 @@ namespace Config {
     extern SysConfig system_config;
 }
 
-
-
-SysConfig& initialized_config(std::string const sys_config_path, std::string const memory_config_path, std::string const pim_config_path, std::string const inference_config_path,
-                             const std::string model_config_path, const std::string output_path);
 
 
 ///////////////////////////////////////////////////
@@ -2460,7 +2588,7 @@ namespace Logger {
         fname += ".tsv";
         std::ofstream ofile(fname);
         if (!ofile.is_open()) {
-            assert(0);
+            throw std::runtime_error("Cannot open statistics file: " + fname);
         }
         ofile << StatClass::get_columns();
         for (auto stat : stats) {

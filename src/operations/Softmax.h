@@ -24,5 +24,5 @@ class Softmax : public Operation {
     void initialize_my_tiles();
     Tile make_deferred_tile(uint32_t N, uint32_t req_idx);
     Tile initialize_my_instructions(uint32_t N, uint32_t req_idx);
-    uint32_t my_sram_size_needed();
+    uint64_t my_sram_size_needed();
 };

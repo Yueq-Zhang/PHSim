@@ -8,12 +8,12 @@
     "__sram_size": 1,
     "sram_size": 1,
 
-    "spad_size": 1024,
-    "accum_spad_size": 1024,
+    "spad_size": 2,
+    "accum_spad_size": 2,
     "sram_width": 128,
 
     "process_bit": 32,
-    "vector_core_count": 1,
+    "vector_core_count": 2,
     "vector_core_width": 64,
     "add_latency": 1,
     "mul_latency": 1,
@@ -24,11 +24,10 @@
     "scalar_add_latency": 1,
     "scalar_mul_latency": 1,
 
-    "icnt_type": "booksim2",
+    "icnt_type": "simple",
     "icnt_latency": 1,
     "icnt_freq": 400,
-    "icnt_ctrl_size": 8,
-    "icnt_config_path": "configs/booksim2_configs/mesh_2x2.icnt",
+    "icnt_config_path": "configs/booksim2_configs/fly_c64_m8.icnt",
 
     "precision": 2,
     "layout": "NHWC",

@@ -17,5 +17,5 @@ private:
     void initialize_my_tiles();
     Tile initialize_my_instructions(uint32_t N);
 
-    uint32_t sram_size_needed();
+    uint64_t sram_size_needed();
 };

@@ -13,7 +13,7 @@ Sram::Sram(const SysConfig& config, const cycle_type &core_cycle, bool accum)
 }
 
 bool Sram::check_hit(addr_type address, int buffer_id) {
-    // spdlog::info("check_hit addr:{:x}, buffer_id:{}, end: {}", address, buffer_id,
+    // spdlog::debug("check_hit addr:{:x}, buffer_id:{}, end: {}", address, buffer_id,
     //              _cache_table[buffer_id].find(address) == _cache_table[buffer_id].end());
     if (_cache_table[buffer_id].find(address) == _cache_table[buffer_id].end()) {  // 如果找的这个地址在cache table中没有, 返回false，无法执行
         return false;
@@ -40,7 +40,7 @@ bool Sram::check_allocated(addr_type address, int buffer_id) {   // check alloca
 void Sram::cycle() {}
 
 void Sram::flush(int buffer_id) {
-    // spdlog::info("Buffer id {} is flushed.", buffer_id);
+    // spdlog::debug("Buffer id {} is flushed.", buffer_id);
     _current_size[buffer_id] = 0;
     _cache_table[buffer_id].clear();
 }
@@ -59,7 +59,7 @@ void Sram::reserve(addr_type address, int buffer_id, size_t allocated_size, size
     } else {
         assert(0);
     }
-    // spdlog::info("pushed a entry in cache table with address {} size {} to buffer {}.", address, allocated_size, buffer_id);
+    // spdlog::debug("pushed a entry in cache table with address {} size {} to buffer {}.", address, allocated_size, buffer_id);
     _cache_table[buffer_id][address] = SramEntry{.valid = (count==0), .size = allocated_size, .remain_req_count = count, .timestamp = _core_cycle};  // 创建一个新的
 }
 
@@ -68,10 +68,10 @@ void Sram::fill(addr_type address, int buffer_id) {
     assert(_cache_table[buffer_id][address].remain_req_count > 0);
     assert(!_cache_table[buffer_id][address].valid);
     _cache_table[buffer_id][address].remain_req_count--;
-    // spdlog::info("sram address {:x}, buffer_id: {}, count down to {}", address, buffer_id, _cache_table[buffer_id][address].remain_req_count);
+    // spdlog::debug("sram address {:x}, buffer_id: {}, count down to {}", address, buffer_id, _cache_table[buffer_id][address].remain_req_count);
     if (_cache_table[buffer_id][address].remain_req_count == 0) {  // 加载的数据元素向里面填充，如果全部填充了，则对应位置可以是Valid的情况
         _cache_table[buffer_id][address].valid = true;
-        // spdlog::info("Make SRAM Buffer {} Entry address {} Valid", buffer_id, address);
+        // spdlog::debug("Make SRAM Buffer {} Entry address {} Valid", buffer_id, address);
         // spdlog::trace("MAKE valid {} {}F", buffer_id, address);
     }
 }
@@ -79,7 +79,7 @@ void Sram::fill(addr_type address, int buffer_id) {
 void Sram::count_up(addr_type address, int buffer_id) {
     assert(check_allocated(address, buffer_id));
     _cache_table[buffer_id][address].remain_req_count++;
-    // spdlog::info("sram address {:x} count up to {}", address, _cache_table[buffer_id][address].remain_req_count);
+    // spdlog::debug("sram address {:x} count up to {}", address, _cache_table[buffer_id][address].remain_req_count);
     if (_cache_table[buffer_id][address].valid) {
         _cache_table[buffer_id][address].valid = false;
         spdlog::trace("MAKE valid {} {}", buffer_id, address);
@@ -88,12 +88,12 @@ void Sram::count_up(addr_type address, int buffer_id) {
 
 void Sram::print_all(int buffer_id) {
     for (auto &[key, val] : _cache_table[buffer_id]) {
-        spdlog::info("{:x} : {}", key, val.size);
+        spdlog::debug("{:x} : {}", key, val.size);
     }
 }
 
 void Sram::print_non_valid(int buffer_id) {
     for (auto &[key, val] : _cache_table[buffer_id]) {
-        if (!val.valid) spdlog::info("{:x} : {}", key, val.remain_req_count);
+        if (!val.valid) spdlog::debug("{:x} : {}", key, val.remain_req_count);
     }
 }

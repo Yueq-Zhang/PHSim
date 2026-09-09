@@ -22,13 +22,13 @@ class Dram : public IDramBackend {
     virtual MemoryAccess *top(uint32_t cid) override = 0;
     virtual void pop(uint32_t cid) override = 0;
     virtual uint32_t get_channel_id(MemoryAccess *request) override = 0;
-    virtual void print_stat() {}
+    virtual void print_stat() override {}
     addr_type get_addr_align() { return _addr_align; }
 
-    virtual double get_avg_bw_util() = 0;
-    virtual uint64_t get_avg_pim_cycle() = 0;
-    virtual void reset_pim_cycle() = 0;
-    virtual void log(Stage stage) = 0;
+    virtual double get_avg_bw_util() override = 0;
+    virtual uint64_t get_avg_pim_cycle() override = 0;
+    virtual void reset_pim_cycle() override = 0;
+    virtual void log(Stage stage) override = 0;
 
    protected:
     explicit Dram(const SysConfig& config) : _config(config) {}
@@ -44,6 +44,14 @@ class PIM : public Dram {
     ~PIM() = default;
     virtual bool running() override;
     virtual void cycle() override;
+    void advance_cycle(cycle_type current_cycle, size_t unstable_length,
+                       size_t sample_length,
+                       double instruction_ratio) override;
+    void synchronize_cycles(cycle_type skipped_cycles) override;
+    void prepare_request(MemoryAccess* request,
+                         cycle_type current_cycle) override;
+    void schedule_pending_work(uint32_t cid,
+                               cycle_type current_cycle) override;
     virtual bool is_full(uint32_t cid, MemoryAccess *request) override;
     virtual void push(uint32_t cid, MemoryAccess *request) override;
     virtual bool is_empty(uint32_t cid) override;
@@ -54,27 +62,34 @@ class PIM : public Dram {
     void set_dram_cycles(uint64_t cycles);
     void apply_estimated_workload(
         const ProportionalWorkloadStat& workload,
-        const std::vector<uint64_t>* write_command_override = nullptr);
-    void begin_proportional_command_sampling();
-    void mark_proportional_command_warmup_complete(double warmup_weight);
-    void apply_estimated_time(cycle_type skipped_dram_cycles);
-    void begin_decode_pruning_state_sample(const std::string& operation);
+        const std::vector<uint64_t>* write_command_override = nullptr) override;
+    void begin_proportional_command_sampling() override;
+    void mark_proportional_command_warmup_complete(
+        double warmup_weight) override;
+    void apply_estimated_time(cycle_type skipped_dram_cycles,
+                              bool physical_tail_pending) override;
+    void begin_decode_pruning_state_sample(
+        const std::string& operation) override;
     void finish_decode_pruning_state_sample(
-        const std::string& operation, uint32_t required_samples);
+        const std::string& operation, uint32_t required_samples) override;
     std::vector<uint64_t> decode_pruning_sampled_write_requests(
-        const std::string& operation) const;
+        const std::string& operation) const override;
     std::vector<uint64_t> decode_pruning_sampled_write_commands(
-        const std::string& operation) const;
+        const std::string& operation) const override;
     void apply_decode_pruning_state(
-        const std::string& operation, cycle_type skipped_dram_cycles);
+        const std::string& operation,
+        cycle_type skipped_dram_cycles) override;
     cycle_type get_cycle() { return _cycles; }
     uint64_t get_core_command_counter(uint32_t core_id,
-                                      const std::string& name) const;
+                                      const std::string& name) const override;
+    bool supports_core_command_counters() const noexcept override {
+        return true;
+    }
 
     uint64_t MakeAddress(int channel, int rank, int bankgroup, int bank, int row, int col);
     uint64_t EncodePIMHeader(int channel, int row, bool for_gwrite, int num_comps, int num_readres);
     void update_stat(uint32_t cid);
-    void log(Stage stage);
+    void log(Stage stage) override;
 
     std::unique_ptr<dramsim3::NewtonSim> _mem;
     DramDataContainer* _data_container;

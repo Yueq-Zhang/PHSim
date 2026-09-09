@@ -1,4 +1,5 @@
 #include "Softmax.h"
+#include "SramTilingValidation.hpp"
 
 Softmax::Softmax(std::string name) : Operation(name) {
     // assume as dim = -1
@@ -16,7 +17,7 @@ std::vector<Ptr<MyTensor>> Softmax::get_my_outputs(std::vector<Ptr<MyTensor>> in
     for (size_t i = 0; i < inputs.size(); ++i) {
         _my_inputs[i] = inputs[i];
         auto input_dims = _my_inputs[i]->get_dims();
-        spdlog::info("Softmax input index: {} / input size: {}", i, inputs[i]->get_dims());
+        spdlog::debug("Softmax input index: {} / input size: {}", i, inputs[i]->get_dims());
         _my_outputs[i] = std::make_shared<MyTensor>(_name + "_output", input_dims, TensorType::ACT, false);
     }
     calculate_my_loops();
@@ -30,7 +31,7 @@ std::vector<Ptr<MyTensor>> Softmax::get_my_outputs(std::vector<Ptr<MyTensor>> in
         std::vector<uint32_t> input_dim = inputs[i]->get_dims();
         _my_outputs[i] = std::make_shared<MyTensor>(_name + "_output", input_dim, TensorType::ACT, false);
     }
-    // spdlog::info("softmax batch_size: {}", _batch_size);
+    // spdlog::debug("softmax batch_size: {}", _batch_size);
     */
 
     initialize_my_tiles();
@@ -51,14 +52,19 @@ void Softmax::calculate_my_loops() {
         }
         _inner_loop[1] = input_dims.back();
 
-        while (my_sram_size_needed() > _config.spad_size KB / 2) {
-            _outer_loop[0] *= 2;
-            _inner_loop[0] = (_inner_loop[0] & 1) + (_inner_loop[0] >> 1);
+        const uint64_t available_sram_bytes =
+            phsim::AvailablePingPongSramBytes(_config.spad_size);
+        while (my_sram_size_needed() > available_sram_bytes) {
+            phsim::HalveSramTileDimensionAndDoubleCount(
+                _inner_loop, 0, _outer_loop, 0,
+                "Softmax '" + _name + "'", my_sram_size_needed(),
+                available_sram_bytes,
+                "batch=" + std::to_string(batch));
         }
 
         _inner_loop_softmax.push_back(_inner_loop);
         _outer_loop_softmax.push_back(_outer_loop);
-        spdlog::info("Softmax for batch for Batch {} operation with inner loop: {}, outer loop: {}", batch, _inner_loop, _outer_loop);
+        spdlog::debug("Softmax for batch for Batch {} operation with inner loop: {}, outer loop: {}", batch, _inner_loop, _outer_loop);
     }
 }
 
@@ -98,14 +104,15 @@ Tile Softmax::make_deferred_tile(uint32_t N, uint32_t req_idx) {
 }
 
 
-uint32_t Softmax::my_sram_size_needed() {
-    auto n = _inner_loop[0];
-    auto k = _inner_loop[1];
+uint64_t Softmax::my_sram_size_needed() {
+    uint64_t n = _inner_loop[0];
+    uint64_t k = _inner_loop[1];
     if (k % _config.vector_core_width != 0) {
         k += _config.vector_core_width - k % _config.vector_core_width;
     }
 
-    return n * (2 * k + 1) * MyAddressAllocator::precision_activation;
+    return n * (2ULL * k + 1ULL) *
+           MyAddressAllocator::precision_activation;
 }
 
 

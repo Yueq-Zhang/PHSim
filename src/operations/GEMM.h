@@ -50,7 +50,7 @@ class GEMM : public Operation {
 
     Tile initialize_my_DASH_instructions_activation_first(uint32_t B, uint32_t M, uint32_t K, uint32_t N, bool should_store);
 
-    uint32_t sram_size_needed();
+    uint64_t sram_size_needed();
 
     void calculate_my_loops_prime();
 };

@@ -1,5 +1,9 @@
 #include "simulator.hpp"
 
+#include "DRAM/Dram.h"
+#include "DRAM/EventDrivenDram.h"
+#include "clock_math.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
@@ -15,6 +19,19 @@
 #endif
 
 // #define TEST_EVENT_DRIVEN_
+
+namespace {
+
+std::unique_ptr<IDramBackend> make_dram_backend(
+    DramMode mode, const SysConfig& config,
+    DramDataContainer* data_container) {
+    if (mode == DramMode::CYCLE_ACCURATE) {
+        return std::make_unique<PIM>(config, data_container);
+    }
+    return std::make_unique<EventDrivenDram>(config, data_container);
+}
+
+}  // namespace
 
 #if ENABLE_DRAM_ALIGNMENT_TRACE
 static void log_dram_completion_trace(DramMode mode, uint32_t channel, const MemoryAccess* access) {
@@ -42,9 +59,18 @@ static void log_dram_completion_trace(DramMode mode, uint32_t channel, const Mem
     auto& file_open = is_event_mode ? event_file_open : cycle_file_open;
     if (!file_open) {
         const std::string file_name = is_event_mode ? "/dram_completion_event.csv" : "/dram_completion_cycle.csv";
-        file.open(Config::system_config.log_dir + file_name, std::ios::out | std::ios::trunc);
+        const std::string path = Config::system_config.log_dir + file_name;
+        file.open(path, std::ios::out | std::ios::trunc);
+        if (!file.is_open()) {
+            throw std::runtime_error(
+                "Cannot open DRAM completion trace file: " + path);
+        }
         file_open = true;
         file << "completion_sequence,channel,id,core_id,mem_id,buffer_id,address,type,rank,bankgroup,bank,row,col,enter_cycle,finish_cycle\n";
+        if (!file.good()) {
+            throw std::runtime_error(
+                "Failed to write DRAM completion trace header: " + path);
+        }
     }
 
     const uint32_t rank = MyAddressAllocator::get_rank_index(access->dram_address);
@@ -60,6 +86,9 @@ static void log_dram_completion_trace(DramMode mode, uint32_t channel, const Mem
          << rank << ',' << bankgroup << ',' << bank << ',' << row << ',' << col << ','
          << access->dram_enter_cycle << ','
          << access->dram_finish_cycle << '\n';
+    if (!file.good()) {
+        throw std::runtime_error("Failed to write DRAM completion trace");
+    }
 }
 #endif
 
@@ -69,25 +98,30 @@ static bool g_dram_compare_open = false;
 
 static void log_dram_compare_trace(const char* source, uint32_t channel, const MemoryAccess* access) {
     if (!g_dram_compare_open) {
-        g_dram_compare_file.open(Config::system_config.log_dir + "/dram_compare_trace.csv", std::ios::out | std::ios::trunc);
+        const std::string path =
+            Config::system_config.log_dir + "/dram_compare_trace.csv";
+        g_dram_compare_file.open(path, std::ios::out | std::ios::trunc);
+        if (!g_dram_compare_file.is_open()) {
+            throw std::runtime_error(
+                "Cannot open DRAM comparison trace file: " + path);
+        }
         g_dram_compare_open = true;
         g_dram_compare_file << "source,channel,id,address,type,enter_cycle,finish_cycle\n";
     }
     g_dram_compare_file << source << ',' << channel << ',' << access->id << ',' << access->dram_address << ','
                         << memAccessTypeString(access->req_type) << ',' << access->dram_enter_cycle << ','
                         << access->dram_finish_cycle << '\n';
+    if (!g_dram_compare_file.good()) {
+        throw std::runtime_error("Failed to write DRAM comparison trace");
+    }
 }
 #endif
 
 Simulator::Simulator(const SysConfig& config) :_config(config), _core_cycles(0){
 
-    // time sync method, Frequency unit for these devices is MHz
-    _core_period = 1.0 / static_cast<double>(_config.core_freq);
-    _icnt_period = 1.0 / static_cast<double>(_config.icnt_freq);
-    _dram_period = 1.0 / static_cast<double>(_config.dram_freq);
-    _core_time = 0.0;
-    _dram_time = 0.0;
-    _icnt_time = 0.0;
+    phsim::clock::validate_frequency(_config.core_freq);
+    phsim::clock::validate_frequency(_config.icnt_freq);
+    phsim::clock::validate_frequency(_config.dram_freq);
 
     _n_cores = _config.num_cores;
     _n_memories = _config.dram_channels;
@@ -95,42 +129,38 @@ Simulator::Simulator(const SysConfig& config) :_config(config), _core_cycles(0){
 
     _cores.resize(_config.num_cores);
 
-    // Initial the DRAM-PIM Object; Here we initialize both two types
+    // Construct only the selected DRAM implementation. Simulator and Scheduler
+    // use the shared backend contract from this point onward.
     _dram_mode = config.dram_trace_simulation_mode ? DramMode::EVENT_DRIVEN : DramMode::CYCLE_ACCURATE;
     ValidateDramBackendCapabilities(_dram_mode, config.mem_config.enable_self_refresh);
     _data_container = std::make_unique<DramDataContainer>(config);
-    _dram = std::make_unique<PIM>(config, _data_container.get());  // cycle accurate dram model based on dramsim3
-
-    if (_dram_mode == DramMode::EVENT_DRIVEN) {
-        _event_driven_dram = std::make_unique<EventDrivenDram>(config, _data_container.get());  // self-constructed event-driven dram
-    }
+    _dram_backend = make_dram_backend(
+        _dram_mode, config, _data_container.get());
     #ifdef TEST_EVENT_DRIVEN_
-    if (!_event_driven_dram) {
-        _event_driven_dram = std::make_unique<EventDrivenDram>(config, _data_container.get());
+    if (_dram_mode == DramMode::CYCLE_ACCURATE) {
+        _comparison_event_driven_dram = std::make_unique<EventDrivenDram>(
+            config, _data_container.get());
     }
     #endif
-    _active_dram_backend =
-        _dram_mode == DramMode::CYCLE_ACCURATE
-            ? static_cast<IDramBackend*>(_dram.get())
-            : static_cast<IDramBackend*>(_event_driven_dram.get());
-    assert(_active_dram_backend != nullptr);
+    assert(_dram_backend != nullptr);
 
     _dram_cycle_count = 0;
+    _icnt_cycle_count = 0;
 
     // Test both the dram model  -------  can be removed
     std::vector<addr_type> test_addrs = {0x0, 0x40, 0x80, 0xC0, 0x100, 0x92b76};
     for (addr_type addr : test_addrs) {
         // MyAddress Allocator result
         uint32_t ch_allocator = MyAddressAllocator::get_channel_index(addr);
-        // cycle accurate NewtonSim result
+        // Selected backend result.
         MemoryAccess temp;
         temp.dram_address = addr;
-        uint32_t ch_pim = _dram->get_channel_id(&temp);
-        assert(ch_allocator == ch_pim);
-        if (_event_driven_dram) {
-            // EventDrivenDram result
-            uint32_t ch_event = _event_driven_dram->get_channel_id(&temp);
-            assert(ch_pim == ch_event);
+        const uint32_t ch_backend = _dram_backend->get_channel_id(&temp);
+        assert(ch_allocator == ch_backend);
+        if (_comparison_event_driven_dram) {
+            const uint32_t ch_event =
+                _comparison_event_driven_dram->get_channel_id(&temp);
+            assert(ch_backend == ch_event);
         }
     }
 
@@ -149,31 +179,32 @@ Simulator::Simulator(const SysConfig& config) :_config(config), _core_cycles(0){
 
     _scheduler = std::make_unique<MyScheduler>(_config, &_core_cycles,
                                                _data_container.get());
-    _scheduler->bind_system(_client.get(), _dram.get(),
-                            _event_driven_dram.get(), _icnt.get(), _cores);
+    _scheduler->bind_system(_client.get(), _dram_backend.get(),
+                            _icnt.get(), _cores);
 
-    std::cout << "The simulation structure is initialized " << std::endl;
+    spdlog::info("Simulation structure initialized");
 
-    if (!_dram || !_icnt || !_scheduler || !_client) {
-        std::cerr << "Error: Failed to initialize critical components of the simulator!" << std::endl;
+    if (!_dram_backend || !_icnt || !_scheduler || !_client) {
+        spdlog::error("Failed to initialize critical simulator components");
         throw std::runtime_error("Critical component initialization failed");
     }
 
     for (int i = 0; i < _n_cores; i++) {
         if (!_cores[i]) {
-            std::cerr << "Error: Failed to initialize core " << i << std::endl;
-            throw std::runtime_error("Core initialization failed");
+            spdlog::error("Failed to initialize core {}", i);
+            throw std::runtime_error(
+                "Core initialization failed for core " +
+                std::to_string(i));
         }
     }
 }
 
 Simulator::~Simulator() {
-    _active_dram_backend = nullptr;
     // Scheduler and transport components only borrow MemoryAccess pointers.
     // Destroy all borrowers before the Core-owned request pools.
     _scheduler.reset();
-    _event_driven_dram.reset();
-    _dram.reset();
+    _comparison_event_driven_dram.reset();
+    _dram_backend.reset();
     _icnt.reset();
     _cores.clear();
     _client.reset();
@@ -230,7 +261,8 @@ void Simulator::update_req_stat(MemoryAccessType t, uint64_t &read_cnt, uint64_t
 
 void Simulator::launch_model(Ptr<Model> model) {_model = std::move(model);}
 
-void Simulator::advance_accelerated_time(cycle_type target_core_cycle) {
+cycle_type Simulator::advance_accelerated_time(
+    cycle_type target_core_cycle) {
     if (target_core_cycle < _core_cycles) {
         throw std::logic_error(
             "Accelerated time cannot move backwards from core cycle " +
@@ -238,21 +270,28 @@ void Simulator::advance_accelerated_time(cycle_type target_core_cycle) {
             std::to_string(target_core_cycle));
     }
     if (target_core_cycle == _core_cycles) {
-        return;
+        return 0;
     }
 
-    const cycle_type delta_core_cycles = target_core_cycle - _core_cycles;
-    const cycle_type delta_dram_cycles = static_cast<cycle_type>(
-        delta_core_cycles *
-        (static_cast<double>(_config.dram_freq) / _config.core_freq));
-    const cycle_type delta_icnt_cycles = static_cast<cycle_type>(
-        delta_core_cycles *
-        (static_cast<double>(_config.icnt_freq) / _config.core_freq));
+    // _dram_cycle_count and _icnt_cycle_count identify the next edges that
+    // have not yet executed. Move them to the first edge at or after the
+    // target Core timestamp. Absolute conversion preserves fractional phase
+    // across any number of acceleration jumps.
+    const cycle_type target_dram_cycle = phsim::clock::scale_cycles_ceil(
+        target_core_cycle, _config.core_freq, _config.dram_freq);
+    const cycle_type target_icnt_cycle = phsim::clock::scale_cycles_ceil(
+        target_core_cycle, _config.core_freq, _config.icnt_freq);
+    if (target_dram_cycle < _dram_cycle_count ||
+        target_icnt_cycle < _icnt_cycle_count) {
+        throw std::logic_error(
+            "Accelerated time would move a dependent clock backwards");
+    }
+    const cycle_type delta_dram_cycles =
+        target_dram_cycle - _dram_cycle_count;
+    const cycle_type delta_icnt_cycles =
+        target_icnt_cycle - _icnt_cycle_count;
 
     _core_cycles = target_core_cycle;
-    _core_time = static_cast<double>(_core_cycles) * _core_period;
-    _dram_time = _core_time;
-    _icnt_time = _core_time;
 
     for (auto& core : _cores) {
         core->set_core_cycle(_core_cycles);
@@ -260,16 +299,12 @@ void Simulator::advance_accelerated_time(cycle_type target_core_cycle) {
     _client->set_client_cycle(_core_cycles);
     _scheduler->set_scheduler_cycles(_core_cycles);
 
-    // CycleAccurate keeps a local wrapper counter. EventDriven schedules from
-    // the simulator's absolute DRAM cycle, so only the active mode is updated.
-    if (_dram_mode == DramMode::CYCLE_ACCURATE) {
-        assert(_dram != nullptr);
-        _dram->set_dram_cycles(delta_dram_cycles);
-    } else {
-        assert(_event_driven_dram != nullptr);
-    }
-    _dram_cycle_count += delta_dram_cycles;
+    _dram_backend->synchronize_cycles(delta_dram_cycles);
+    _dram_cycle_count = target_dram_cycle;
     _icnt->set_icnt_cycles(delta_icnt_cycles);
+    _icnt_cycle_count = target_icnt_cycle;
+    assert(_icnt->get_icnt_cycle() == _icnt_cycle_count);
+    return delta_dram_cycles;
 }
 
 void Simulator::cycle() {
@@ -321,34 +356,17 @@ void Simulator::cycle() {
             if (_scheduler->decode_pruning_prediction_pending()) {
                 const cycle_type delta_core_cycles =
                     _scheduler->decode_pruning_prediction_cycles();
-                const cycle_type delta_dram_cycles =
-                    static_cast<cycle_type>(
-                        delta_core_cycles *
-                        (static_cast<double>(_config.dram_freq) /
-                         _config.core_freq));
-                const cycle_type delta_icnt_cycles =
-                    static_cast<cycle_type>(
-                        delta_core_cycles *
-                        (static_cast<double>(_config.icnt_freq) /
-                         _config.core_freq));
-                _scheduler->apply_decode_pruning_prediction();
-                _core_cycles += delta_core_cycles;
-                _core_time =
-                    static_cast<double>(_core_cycles) * _core_period;
-                _dram_time = _core_time;
-                _icnt_time = _core_time;
-                for (int core_id = 0; core_id < _n_cores; ++core_id) {
-                    _cores[core_id]->set_core_cycle(_core_cycles);
+                if (delta_core_cycles >
+                    std::numeric_limits<cycle_type>::max() - _core_cycles) {
+                    throw std::overflow_error(
+                        "Decode Pruning clock advance exceeds uint64_t range");
                 }
-                _client->set_client_cycle(_core_cycles);
-                _scheduler->set_scheduler_cycles(_core_cycles);
+                _scheduler->apply_decode_pruning_prediction();
+                const cycle_type delta_dram_cycles =
+                    advance_accelerated_time(_core_cycles +
+                                             delta_core_cycles);
                 _scheduler->apply_decode_pruning_dram_state(
                     delta_dram_cycles);
-                if (_dram_mode == DramMode::CYCLE_ACCURATE) {
-                    _dram->set_dram_cycles(delta_dram_cycles);
-                }
-                _dram_cycle_count += delta_dram_cycles;
-                _icnt->set_icnt_cycles(delta_icnt_cycles);
                 spdlog::info(
                     "Applied Decode Pruning prediction: +{} core cycles",
                     delta_core_cycles);
@@ -493,13 +511,8 @@ void Simulator::cycle() {
 
                                 _icnt->apply_estimated_workload(workload);
 
-                                if (_dram_mode == DramMode::CYCLE_ACCURATE) {
-                                    _dram->apply_estimated_workload(workload);
-                                } else {
-                                    assert(_event_driven_dram != nullptr);
-                                    _event_driven_dram->apply_estimated_workload(
-                                        workload);
-                                }
+                                _dram_backend->apply_estimated_workload(
+                                    workload);
                                 spdlog::info(
                                     "Applied proportional ICNT/DRAM request compensation: reads {}, writes {}, PIM P_HEADER/GWRITE/COMP/READRES {}/{}/{}/{}, read bytes {}, write bytes {}",
                                     workload.memory_reads,
@@ -516,33 +529,11 @@ void Simulator::cycle() {
                             const cycle_type estimated_cycle = _scheduler->get_estimated_all_cycle();
                             cycle_type skipped_dram_cycles = 0;
                             if (estimated_cycle > _core_cycles) {
-                                const cycle_type delta_core_cycles = estimated_cycle - _core_cycles;
-                                const cycle_type delta_dram_cycles = static_cast<cycle_type>(
-                                    delta_core_cycles *
-                                    (static_cast<double>(_config.dram_freq) / _config.core_freq));
-                                const cycle_type delta_icnt_cycles = static_cast<cycle_type>(
-                                    delta_core_cycles *
-                                    (static_cast<double>(_config.icnt_freq) / _config.core_freq));
-                                skipped_dram_cycles = delta_dram_cycles;
-
                                 spdlog::info(
                                     "Applying Proportional acceleration: jumping from core cycle {} to {}",
                                     _core_cycles, estimated_cycle);
-                                _core_cycles = estimated_cycle;
-                                _core_time = static_cast<double>(_core_cycles) * _core_period;
-                                _dram_time = _core_time;
-                                _icnt_time = _core_time;
-
-                                for (int sync_core = 0; sync_core < _n_cores; ++sync_core) {
-                                    _cores[sync_core]->set_core_cycle(_core_cycles);
-                                }
-                                _client->set_client_cycle(_core_cycles);
-                                _scheduler->set_scheduler_cycles(_core_cycles);
-                                if (_dram_mode == DramMode::CYCLE_ACCURATE) {
-                                    _dram->set_dram_cycles(delta_dram_cycles);
-                                }
-                                _dram_cycle_count += delta_dram_cycles;
-                                _icnt->set_icnt_cycles(delta_icnt_cycles);
+                                skipped_dram_cycles =
+                                    advance_accelerated_time(estimated_cycle);
                             }
                             else {
                                 spdlog::info(
@@ -552,13 +543,8 @@ void Simulator::cycle() {
 
                             const bool has_tail = _scheduler->release_proportional_tail_tiles();
                             if (skipped_dram_cycles > 0) {
-                                if (_dram_mode == DramMode::CYCLE_ACCURATE) {
-                                    _dram->apply_estimated_time(skipped_dram_cycles);
-                                } else if (!has_tail) {
-                                    assert(_event_driven_dram != nullptr);
-                                    _event_driven_dram->apply_estimated_time(
-                                        skipped_dram_cycles);
-                                }
+                                _dram_backend->apply_estimated_time(
+                                    skipped_dram_cycles, has_tail);
                             }
                             if (!has_tail) {
                                 assert(_scheduler->proportional_operation_complete(finished_tile->operation_id));
@@ -601,167 +587,135 @@ void Simulator::cycle() {
             g_core_count++;
         }
 
-        // DRAM Operation
-        if (_dram_mode == DramMode::CYCLE_ACCURATE) {
-            if (_cycle_mask & DRAM_MASK) {  // DRAM Cycle
-                auto t_dram_begin = std::chrono::high_resolution_clock::now();
-                _dram->cycle();
-                if (_predicting_config._unstable_length != 0) {
-                    _dram->receive_predicting_config(_predicting_config._unstable_length, _predicting_config._sample_length, _predicting_config._inst_ratio);
-                }
-                _dram_cycle_count++;
-                _icnt->reset_dram_interface_valid();
-                auto t_dram_end = std::chrono::high_resolution_clock::now();
-                g_dram_time_sec += std::chrono::duration<double>(t_dram_end - t_dram_begin).count();
-                g_dram_time_count++;
-            }
-
-            if (_cycle_mask & ICNT_MASK) { // Interconnect cycle
-                auto t_icnt_begin = std::chrono::high_resolution_clock::now();
-                for (int core_id = 0; core_id < _n_cores; core_id++) { // from core 0, add Memory Access to interconnect
-                    for (int mem_id = 0; mem_id < _n_memories; mem_id++) {
-                        // add the mem access from core to interconnect, then send to dram
-                        if (_cores[core_id]->has_memory_request(mem_id)) {
-                            MemoryAccess *front = _cores[core_id]->top_memory_request(mem_id);  //
-                            front->core_id = core_id;
-                            front->mem_id = mem_id;
-                            if (!_icnt->is_full(core_id * _n_memories + mem_id, front)) {
-                                // Map exactly once, when the interconnect can
-                                // accept the request.  Mapping before the
-                                // capacity check would remap an already-mapped
-                                // address on every back-pressured cycle.
-                                front->logical_dram_address = front->dram_address;
-                                front->dram_address = TwoLevelPageMapper::map_logical_address(front->logical_dram_address);
-                                assert(MyAddressAllocator::get_channel_index(front->dram_address) == mem_id); // get channel index based from dram address
-                                _icnt->push(core_id * _n_memories + mem_id, get_dest_node(front), front);
-                                _cores[core_id]->pop_memory_request(mem_id);
-                            }
-                        }
-                        // Cores require the memory response from interconnect
-                        if (!_icnt->is_empty(core_id * _n_memories + mem_id)) {
-                            const uint32_t response_node = core_id * _n_memories + mem_id;
-                            MemoryAccess* response = _icnt->top(response_node);
-                            _icnt->pop(response_node);
-                            _cores[core_id]->push_memory_response(response);
-                        }
-                    }
-                }
-
-                for (int mem_id = 0; mem_id < _n_memories; mem_id++) { // Interconnect push Memory Access to dram and get the result
-                    // Push memory request from ICNT output buffer to DRAM
-                    if (!_icnt->is_empty(memory_offset + mem_id) && !_active_dram_backend->is_full(mem_id, _icnt->top(memory_offset + mem_id)) && _icnt->dram_push_valid(mem_id)) { // _dram->_push_valid[mem_id]
-                        _active_dram_backend->push(mem_id, _icnt->top(memory_offset + mem_id));  // push the request from interconnect to cycle accurate dram
-                        #ifdef TEST_EVENT_DRIVEN_
-                        auto memory_req = _icnt->top(memory_offset + mem_id);
-                        auto deep_copy_req = memory_req->clone();
-                        deep_copy_req->dram_enter_cycle = _dram_cycle_count;
-                        auto* event_req = deep_copy_req.get();
-                        _event_driven_compare_copies.push_back(std::move(deep_copy_req));
-                        _event_driven_dram->push(mem_id, event_req); // send memory request into the Event driven dram
-                        #endif
-                        _icnt->pop(memory_offset + mem_id);
-                        _icnt->consume_dram_push(mem_id);
-                    }
-                    else {
-                        #ifdef TEST_EVENT_DRIVEN_
-                        _event_driven_dram->schedule_pending_operation(mem_id, _dram_cycle_count);
-                        #endif
-                    }
-                    #ifdef TEST_EVENT_DRIVEN_
-                    if (!_event_driven_dram->response_event_queues_[mem_id].isEmpty()) {
-                        auto* event_resp = _event_driven_dram->top(mem_id);
-                        log_dram_compare_trace("event", mem_id, event_resp);
-                        _event_driven_dram->pop(mem_id);
-                    }
-                    #endif
-                    // Pop response from DRAM to ICNT input buffer
-                    if (!_active_dram_backend->is_empty(mem_id) && !_icnt->is_full(memory_offset + mem_id, _active_dram_backend->top(mem_id)) && _icnt->dram_pop_valid(mem_id)) {  // _dram->_pop_valid[mem_id]
-                        auto* golden_resp = _active_dram_backend->top(mem_id);
-                        #ifdef TEST_EVENT_DRIVEN_
-                        log_dram_compare_trace("golden", mem_id, golden_resp);
-                        #endif
-#if ENABLE_DRAM_ALIGNMENT_TRACE
-                        log_dram_completion_trace(_dram_mode, mem_id, golden_resp);
-#endif
-                        _icnt->push(memory_offset + mem_id, get_dest_node(golden_resp), golden_resp);
-                        _active_dram_backend->pop(mem_id);
-                        _icnt->consume_dram_pop(mem_id);
-                    }
-                }
-                _icnt->cycle();
-                auto t_icnt_end = std::chrono::high_resolution_clock::now();
-                g_icnt_time_sec += std::chrono::duration<double>(t_icnt_end - t_icnt_begin).count();
-                g_icnt_time_count++;
-            }
+        // Advance the selected DRAM backend. CA consumes one NewtonSim tick;
+        // ED intentionally performs no work until a timestamped request or
+        // pending event is observed.
+        if (_cycle_mask & DRAM_MASK) {
+            auto t_dram_begin = std::chrono::high_resolution_clock::now();
+            _dram_backend->advance_cycle(
+                _dram_cycle_count, _predicting_config._unstable_length,
+                _predicting_config._sample_length,
+                _predicting_config._inst_ratio);
+            _dram_cycle_count++;
+            _icnt->reset_dram_interface_valid();
+            auto t_dram_end = std::chrono::high_resolution_clock::now();
+            g_dram_time_sec +=
+                std::chrono::duration<double>(t_dram_end - t_dram_begin)
+                    .count();
+            g_dram_time_count++;
         }
-        else if (_dram_mode == DramMode::EVENT_DRIVEN) {
-            if (_cycle_mask & DRAM_MASK) {  // DRAM Cycle
-                auto t_dram_begin = std::chrono::high_resolution_clock::now();
-                _dram_cycle_count++;
-                _icnt->reset_dram_interface_valid();
-                auto t_dram_end = std::chrono::high_resolution_clock::now();
-                g_dram_time_sec += std::chrono::duration<double>(t_dram_end - t_dram_begin).count();
-                g_dram_time_count++;
-            }
-            if (_cycle_mask & ICNT_MASK) {
-                auto t_icnt_dram_begin = std::chrono::high_resolution_clock::now();
-                // Core <-> ICNT
-                for (int core_id = 0; core_id < _n_cores; core_id++) {
-                    for (int mem_id = 0; mem_id < _n_memories; mem_id++) {
-                        // Core -> ICNT (request), if core has memory request to some dram channel, send the request
-                        if (_cores[core_id]->has_memory_request(mem_id)) {
-                            MemoryAccess *front = _cores[core_id]->top_memory_request(mem_id);
-                            // update_req_stat(front->req_type, _stat_core2icnt_read, _stat_core2icnt_write, _stat_core2icnt_gwrite, _stat_core2icnt_other);
-                            front->core_id = core_id;
-                            front->mem_id  = mem_id;
-                            uint32_t src = core_id * _n_memories + mem_id;
-                            if (!_icnt->is_full(src, front)) {
-                                front->logical_dram_address = front->dram_address;
-                                front->dram_address = TwoLevelPageMapper::map_logical_address(front->logical_dram_address);
-                                assert(MyAddressAllocator::get_channel_index(front->dram_address) == mem_id);
-                                uint32_t dst = get_dest_node(front); // memory node
-                                _icnt->push(src, dst, front);
-                                _cores[core_id]->pop_memory_request(mem_id);
-                            }
-                        }
-                        // ICNT -> Core (response), if current core node has memory response, fetch the memory response
-                        uint32_t core_node = core_id * _n_memories + mem_id;
-                        if (!_icnt->is_empty(core_node)) {
-                            MemoryAccess* response = _icnt->top(core_node);
-                            _icnt->pop(core_node);
-                            _cores[core_id]->push_memory_response(response);
+
+        if (_cycle_mask & ICNT_MASK) {
+            auto t_icnt_begin = std::chrono::high_resolution_clock::now();
+
+            // Core <-> interconnect transport is backend-independent.
+            for (int core_id = 0; core_id < _n_cores; core_id++) {
+                for (int mem_id = 0; mem_id < _n_memories; mem_id++) {
+                    const uint32_t core_node =
+                        core_id * _n_memories + mem_id;
+                    if (_cores[core_id]->has_memory_request(mem_id)) {
+                        MemoryAccess* front =
+                            _cores[core_id]->top_memory_request(mem_id);
+                        front->core_id = core_id;
+                        front->mem_id = mem_id;
+                        if (!_icnt->is_full(core_node, front)) {
+                            // Map exactly once, when the interconnect accepts
+                            // the request. Re-mapping on a back-pressured cycle
+                            // would corrupt the logical-to-physical relation.
+                            front->logical_dram_address = front->dram_address;
+                            front->dram_address =
+                                TwoLevelPageMapper::map_logical_address(
+                                    front->logical_dram_address);
+                            assert(MyAddressAllocator::get_channel_index(
+                                       front->dram_address) == mem_id);
+                            _icnt->push(core_node, get_dest_node(front), front);
+                            _cores[core_id]->pop_memory_request(mem_id);
                         }
                     }
+                    if (!_icnt->is_empty(core_node)) {
+                        MemoryAccess* response = _icnt->top(core_node);
+                        _icnt->pop(core_node);
+                        _cores[core_id]->push_memory_response(response);
+                    }
+                }
+            }
+
+            // Interconnect <-> DRAM transport is shared. The backend hook
+            // stamps ED arrival cycles and is a no-op for CA.
+            for (int mem_id = 0; mem_id < _n_memories; mem_id++) {
+                const uint32_t memory_node = memory_offset + mem_id;
+                bool request_accepted = false;
+                if (!_icnt->is_empty(memory_node)) {
+                    MemoryAccess* memory_req = _icnt->top(memory_node);
+                    _dram_backend->prepare_request(memory_req,
+                                                   _dram_cycle_count);
+                    if (!_dram_backend->is_full(mem_id, memory_req) &&
+                        _icnt->dram_push_valid(mem_id)) {
+                        _dram_backend->push(mem_id, memory_req);
+#ifdef TEST_EVENT_DRIVEN_
+                        if (_comparison_event_driven_dram) {
+                            auto deep_copy_req = memory_req->clone();
+                            auto* event_req = deep_copy_req.get();
+                            _event_driven_compare_copies.push_back(
+                                std::move(deep_copy_req));
+                            _comparison_event_driven_dram->prepare_request(
+                                event_req, _dram_cycle_count);
+                            _comparison_event_driven_dram->push(mem_id,
+                                                                event_req);
+                        }
+#endif
+                        _icnt->pop(memory_node);
+                        _icnt->consume_dram_push(mem_id);
+                        request_accepted = true;
+                    }
+                }
+                if (!request_accepted) {
+                    _dram_backend->schedule_pending_work(mem_id,
+                                                         _dram_cycle_count);
+#ifdef TEST_EVENT_DRIVEN_
+                    if (_comparison_event_driven_dram) {
+                        _comparison_event_driven_dram->schedule_pending_work(
+                            mem_id, _dram_cycle_count);
+                    }
+#endif
                 }
 
-                // ICNT <-> Event_Driven DRAM
-                for (int mem_id = 0; mem_id < _n_memories; mem_id++) { // Interconnect push Memory Access to DRAM and get the result
-                    if (!_icnt->is_empty(memory_offset + mem_id) && !_active_dram_backend->is_full(mem_id, _icnt->top(memory_offset + mem_id, _dram_cycle_count)) && _icnt->dram_push_valid(mem_id)) {
-                        auto memory_req = _icnt->top(memory_offset + mem_id);
-                        memory_req->dram_enter_cycle = _dram_cycle_count;
-                        _active_dram_backend->push(mem_id, memory_req);
-                        _icnt->pop(memory_offset + mem_id);
-                        _icnt->consume_dram_push(mem_id);
-                    }
-                    else {
-                        _event_driven_dram->schedule_pending_operation(mem_id, _dram_cycle_count);
-                    }
-                    // Pop response from DRAM to ICNT input buffer
-                    if (!_active_dram_backend->is_empty(mem_id) && !_icnt->is_full(memory_offset + mem_id, _active_dram_backend->top(mem_id)) && _icnt->dram_pop_valid(mem_id)) {  // _dram->_pop_valid[mem_id]
-                        auto* event_resp = _active_dram_backend->top(mem_id);
-#if ENABLE_DRAM_ALIGNMENT_TRACE
-                        log_dram_completion_trace(_dram_mode, mem_id, event_resp);
-#endif
-                        _icnt->push(memory_offset + mem_id, get_dest_node(event_resp), event_resp);
-                        _active_dram_backend->pop(mem_id);
-                        _icnt->consume_dram_pop(mem_id);
-                    }
+#ifdef TEST_EVENT_DRIVEN_
+                if (_comparison_event_driven_dram &&
+                    !_comparison_event_driven_dram->is_empty(mem_id)) {
+                    auto* event_resp =
+                        _comparison_event_driven_dram->top(mem_id);
+                    log_dram_compare_trace("event", mem_id, event_resp);
+                    _comparison_event_driven_dram->pop(mem_id);
                 }
-                _icnt->cycle();
-                auto t_icnt_dram_end = std::chrono::high_resolution_clock::now();
-                g_icnt_time_sec += std::chrono::duration<double>(t_icnt_dram_end - t_icnt_dram_begin).count();
-                g_icnt_time_count++;
+#endif
+
+                if (!_dram_backend->is_empty(mem_id) &&
+                    !_icnt->is_full(memory_node,
+                                    _dram_backend->top(mem_id)) &&
+                    _icnt->dram_pop_valid(mem_id)) {
+                    MemoryAccess* response = _dram_backend->top(mem_id);
+#ifdef TEST_EVENT_DRIVEN_
+                    if (_comparison_event_driven_dram) {
+                        log_dram_compare_trace("golden", mem_id, response);
+                    }
+#endif
+#if ENABLE_DRAM_ALIGNMENT_TRACE
+                    log_dram_completion_trace(_dram_mode, mem_id, response);
+#endif
+                    _icnt->push(memory_node, get_dest_node(response), response);
+                    _dram_backend->pop(mem_id);
+                    _icnt->consume_dram_pop(mem_id);
+                }
             }
+            _icnt->cycle();
+            ++_icnt_cycle_count;
+            assert(_icnt->get_icnt_cycle() == _icnt_cycle_count);
+            auto t_icnt_end = std::chrono::high_resolution_clock::now();
+            g_icnt_time_sec +=
+                std::chrono::duration<double>(t_icnt_end - t_icnt_begin)
+                    .count();
+            g_icnt_time_count++;
         }
     }
     spdlog::info(">>>>>> Simulation Finished <<<<<<");
@@ -817,12 +771,7 @@ void Simulator::cycle() {
     spdlog::info(">>>>>> ICNT Stats <<<<<<");
     _icnt->print_stats();
     // _icnt->log();
-    if (_dram_mode == DramMode::EVENT_DRIVEN) {
-        _event_driven_dram->print_stat();
-    }
-    else {
-        _dram->print_stat();
-    }
+    _dram_backend->print_stat();
     spdlog::info(">>>>>> Scheduler Stats <<<<<<");
     _scheduler->print_stat();
     _scheduler->print_op_stat();
@@ -840,7 +789,7 @@ bool Simulator::running() {      // return ture if there is any instance is runn
         running = running || core->running();
     }
     running = running || _icnt->running();
-    running = running || _active_dram_backend->running();
+    running = running || _dram_backend->running();
     running = running || _scheduler->running();
     running = running || _client->running();
     return running;
@@ -848,28 +797,17 @@ bool Simulator::running() {      // return ture if there is any instance is runn
 
 
 void Simulator::set_cycle_mask() {
-    _cycle_mask = 0x0;
-    double minimum_time = MIN3(_core_time, _dram_time, _icnt_time);  // Find minimum time
-    // if component time smaller than minimum time, activate, then add one cycle
-    if (_core_time <= minimum_time) {
-        _cycle_mask |= CORE_MASK;
-        _core_time += _core_period;
-    }
-    if (_dram_time <= minimum_time) {
-        _cycle_mask |= DRAM_MASK;
-        _dram_time += _dram_period;
-    }
-    if (_icnt_time <= minimum_time) {
-        _cycle_mask |= ICNT_MASK;
-        _icnt_time += _icnt_period;
-    }
+    _cycle_mask = phsim::clock::select_next_mask({{{
+        _core_cycles, _config.core_freq, CORE_MASK}, {
+        _dram_cycle_count, _config.dram_freq, DRAM_MASK}, {
+        _icnt_cycle_count, _config.icnt_freq, ICNT_MASK}}});
 }
 
 
 uint32_t Simulator::get_dest_node(MemoryAccess *access) {
     // memory_offset = core size * dram_channels, for core, the reset dram_channels port is for the dram
     if (access->request) {
-        return memory_offset + _active_dram_backend->get_channel_id(access);  // core to memory
+        return memory_offset + _dram_backend->get_channel_id(access);  // core to memory
     }
     else {
         return access->core_id * _config.dram_channels + access->mem_id; // memory to core
@@ -879,17 +817,9 @@ uint32_t Simulator::get_dest_node(MemoryAccess *access) {
 
 void Simulator::update_stage_stat() {
     Stage done_stage = _scheduler->get_prev_stage();
-    const double memory_bw_util =
-        _dram_mode == DramMode::CYCLE_ACCURATE
-            ? _dram->get_avg_bw_util()
-            : _event_driven_dram->get_avg_bw_util();
-    const uint64_t pim_cycles =
-        _dram_mode == DramMode::CYCLE_ACCURATE
-            ? _dram->get_avg_pim_cycle()
-            : _event_driven_dram->get_avg_pim_cycle();
+    const double memory_bw_util = _dram_backend->get_avg_bw_util();
+    const uint64_t pim_cycles = _dram_backend->get_avg_pim_cycle();
 
-    // TODO:: complete the log of DRAM
-    // _dram->log(done_stage);
     _stage_stats.push_back(StageStat{.stage = done_stage,
                                      .done_cycle = _core_cycles,
                                      .pim_cycles = pim_cycles,
@@ -905,8 +835,7 @@ void Simulator::log_stage_stat() {
     std::string fname = Config::system_config.log_dir + "/_summary.tsv";
     std::ofstream ofile(fname);
     if (!ofile.is_open()) {
-        std::cerr << "Cannot open log file: " << fname << std::endl;
-        return;
+        throw std::runtime_error("Cannot open stage statistics file: " + fname);
     }
 
     std::string header = "";

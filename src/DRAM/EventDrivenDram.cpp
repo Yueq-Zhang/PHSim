@@ -1,8 +1,9 @@
-#include <iostream>
 #include <fstream>
 #include <stdexcept>
 #include <string>
 #include "EventDrivenDram.h"
+
+#include "../../ext/NewtonSim/src/configuration.h"
 #include "DramDataContainer.h"
 #include "NewtonSim/src/configuration.h"
 
@@ -1256,7 +1257,8 @@ MemorySystem::MemorySystem(const MemConfig& mem_config, int mem_id): config_(mem
     for (auto i = 0; i < config_.channels; i++) {
         dram_channels.emplace_back(new DRAMChannel(config_, i));
     }
-    std::cout << "The Dram Channel with " << config_.channels << " channels is initialized" << std::endl;
+    spdlog::info("EventDriven DRAM initialized with {} channels",
+                 config_.channels);
 }
 
 
@@ -1264,7 +1266,7 @@ MemorySystem::~MemorySystem() {
     for (auto & dram_channel : dram_channels) {
         delete dram_channel;
     }
-    std::cout << "Memory System Destructor" << std::endl;
+    spdlog::info("EventDriven DRAM memory system destroyed");
 }
 
 
@@ -1288,25 +1290,35 @@ static void trace_event_row_decision(const std::shared_ptr<Event>& event,
         return;
     }
     if (!opened) {
-        trace.open(Config::system_config.log_dir +
-                       "/dram_row_decision_eventdriven.csv",
+        const std::string path = Config::system_config.log_dir +
+                                 "/dram_row_decision_eventdriven.csv";
+        trace.open(path,
                    std::ofstream::out | std::ofstream::trunc);
+        if (!trace.is_open()) {
+            throw std::runtime_error(
+                "Cannot open EventDriven row-decision trace: " + path);
+        }
         opened = true;
-        if (trace.is_open()) {
-            trace << "decision_sequence,channel,add_cycle,decision_cycle,address,type,rank,bankgroup,bank,target_row,open_row,open_row_exec_count,pending_precharge,pending_activate,pending_row_count,decision\n";
+        trace << "decision_sequence,channel,add_cycle,decision_cycle,address,type,rank,bankgroup,bank,target_row,open_row,open_row_exec_count,pending_precharge,pending_activate,pending_row_count,decision\n";
+        if (!trace.good()) {
+            throw std::runtime_error(
+                "Failed to write EventDriven row-decision trace header: " +
+                path);
         }
     }
-    if (trace.is_open()) {
-        trace << sequence++ << ',' << event->channel_index << ','
-              << event->add_cycle << ',' << decision_cycle << ','
-              << event->dram_address << ','
-              << memAccessTypeString(event->req_type) << ','
-              << event->rank_index << ',' << event->bankgroup_index << ','
-              << event->bank_index << ',' << event->row_index << ','
-              << bank->open_row << ',' << bank->open_row_exec_event_count << ','
-              << bank->pending_precharge << ',' << bank->pending_activate << ','
-              << bank->pending_precharge_order_queue.size() << ','
-              << decision << '\n';
+    trace << sequence++ << ',' << event->channel_index << ','
+          << event->add_cycle << ',' << decision_cycle << ','
+          << event->dram_address << ','
+          << memAccessTypeString(event->req_type) << ','
+          << event->rank_index << ',' << event->bankgroup_index << ','
+          << event->bank_index << ',' << event->row_index << ','
+          << bank->open_row << ',' << bank->open_row_exec_event_count << ','
+          << bank->pending_precharge << ',' << bank->pending_activate << ','
+          << bank->pending_precharge_order_queue.size() << ','
+          << decision << '\n';
+    if (!trace.good()) {
+        throw std::runtime_error(
+            "Failed to write EventDriven row-decision trace");
     }
 }
 
@@ -1526,23 +1538,27 @@ EventDrivenDram::EventDrivenDram(const SysConfig& config,
     }
 #if ENABLE_DRAM_ALIGNMENT_TRACE
     if (config.record_dram_completion_trace) {
-        command_trace_.open(Config::system_config.log_dir +
-                                "/dram_command_eventdriven.csv",
-                            std::ofstream::out | std::ofstream::trunc);
-        time_advance_trace_.open(Config::system_config.log_dir +
-                                     "/dram_time_advance_eventdriven.csv",
-                                 std::ofstream::out | std::ofstream::trunc);
-        transaction_trace_.open(Config::system_config.log_dir +
-                                    "/dram_transaction_eventdriven.csv",
-                                std::ofstream::out | std::ofstream::trunc);
-        if (command_trace_.is_open()) {
-            command_trace_ << "command_sequence,channel,cycle,command,address,rank,bankgroup,bank,row,col,open_row_before,source\n";
-        }
-        if (time_advance_trace_.is_open()) {
-            time_advance_trace_ << "advance_sequence,channel,source,from_cycle,to_cycle,delta,earliest_type,earliest_cycle\n";
-        }
-        if (transaction_trace_.is_open()) {
-            transaction_trace_ << "sequence,arrival_sequence,channel,cycle,action,type,address,detail\n";
+        const auto open_trace = [](std::ofstream& stream,
+                                   const std::string& path) {
+            stream.open(path, std::ofstream::out | std::ofstream::trunc);
+            if (!stream.is_open()) {
+                throw std::runtime_error(
+                    "Cannot open EventDriven diagnostic trace: " + path);
+            }
+        };
+        open_trace(command_trace_, Config::system_config.log_dir +
+                                       "/dram_command_eventdriven.csv");
+        open_trace(time_advance_trace_, Config::system_config.log_dir +
+                                            "/dram_time_advance_eventdriven.csv");
+        open_trace(transaction_trace_, Config::system_config.log_dir +
+                                           "/dram_transaction_eventdriven.csv");
+        command_trace_ << "command_sequence,channel,cycle,command,address,rank,bankgroup,bank,row,col,open_row_before,source\n";
+        time_advance_trace_ << "advance_sequence,channel,source,from_cycle,to_cycle,delta,earliest_type,earliest_cycle\n";
+        transaction_trace_ << "sequence,arrival_sequence,channel,cycle,action,type,address,detail\n";
+        if (!command_trace_.good() || !time_advance_trace_.good() ||
+            !transaction_trace_.good()) {
+            throw std::runtime_error(
+                "Failed to write EventDriven diagnostic trace headers");
         }
     }
 #endif
@@ -1591,6 +1607,28 @@ EventDrivenDram::EventDrivenDram(const SysConfig& config,
 }
 
 EventDrivenDram::~EventDrivenDram() = default;
+
+void EventDrivenDram::advance_cycle(cycle_type, size_t, size_t, double) {
+    // ED advances channels directly to the timestamp of the next observable
+    // request or completion. A simulator DRAM tick therefore has no local
+    // state to advance.
+}
+
+void EventDrivenDram::synchronize_cycles(cycle_type) {
+    // ED uses the Simulator's absolute DRAM cycle when requests are prepared.
+}
+
+void EventDrivenDram::prepare_request(MemoryAccess* request,
+                                      cycle_type current_cycle) {
+    if (request != nullptr) {
+        request->dram_enter_cycle = current_cycle;
+    }
+}
+
+void EventDrivenDram::schedule_pending_work(uint32_t cid,
+                                            cycle_type current_cycle) {
+    schedule_pending_operation(cid, current_cycle);
+}
 
 
 Event EventDrivenDram::generate_event_from_req(MemoryAccess *req) {
@@ -2638,7 +2676,9 @@ void EventDrivenDram::write_event_driven_stats(bool print_to_log) const {
     std::ofstream json_out(output_prefix + ".json", std::ofstream::out);
     std::ofstream txt_out(output_prefix + ".txt", std::ofstream::out);
     if (!json_out.is_open() || !txt_out.is_open()) {
-        spdlog::warn("EventDriven DRAM stats output path is not writable: {}", output_prefix);
+        throw std::runtime_error(
+            "EventDriven DRAM statistics output path is not writable: " +
+            output_prefix);
     }
 
     json_out << "{";
@@ -3781,7 +3821,9 @@ void EventDrivenDram::mark_proportional_command_warmup_complete(
         _command_warmup_weight, 1.0 - _command_warmup_weight);
 }
 
-void EventDrivenDram::apply_estimated_time(cycle_type skipped_dram_cycles) {
+void EventDrivenDram::apply_estimated_time(cycle_type skipped_dram_cycles,
+                                           bool physical_tail_pending) {
+    if (physical_tail_pending) return;
     if (skipped_dram_cycles == 0) return;
     const auto scale = [skipped_dram_cycles](uint64_t measured,
                                              uint64_t sampled) -> uint64_t {

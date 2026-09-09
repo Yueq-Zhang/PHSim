@@ -4,8 +4,7 @@
 #include "../common_function.hpp"
 #include "../Program/StageProgram.h"
 
-class PIM;
-class EventDrivenDram;
+class IDramBackend;
 class MyCore;
 class MyInterconnect;
 class Client;
@@ -333,7 +332,7 @@ public:
     void capture_decode_pruning_template(uint32_t operation_id);
 
     // 以下组件均用于完成Scheduler对于其余组件进行控制与更新操作
-    void bind_system(Client* client, PIM* dram, EventDrivenDram* event_driven_dram,
+    void bind_system(Client* client, IDramBackend* dram_backend,
                      MyInterconnect* icnt,
                      const std::vector<std::unique_ptr<MyCore>>& cores);
     private:
@@ -342,8 +341,7 @@ public:
     void advance_iterative_inference(Stage completed_stage);
 
     Client* _client = nullptr;
-    PIM* _dram = nullptr;
-    EventDrivenDram* _event_driven_dram = nullptr;
+    IDramBackend* _dram_backend = nullptr;
     DramDataContainer* _data_container = nullptr;
     MyInterconnect* _icnt = nullptr;
     std::vector<MyCore*> _cores;

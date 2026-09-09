@@ -4,7 +4,6 @@
     "DRAM_act_buf_size_MB": 1024,
     "dram_channels": 2,
     "dram_req_size": 32,
-    "pim_parallel_bank_accesses": 0,
     "PU_location": "bank",
     "dual_bank": true,
     "pim_PE_num": 16,

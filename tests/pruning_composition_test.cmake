@@ -39,26 +39,6 @@ function(require_generated_tokens simulator_stdout request_id expected_tokens ca
     endif()
 endfunction()
 
-function(require_exact_fallback baseline_case fallback_case context)
-    foreach(required_file IN ITEMS
-            _summary.tsv core_timing.tsv icnt_traffic.json
-            data_container_stats.json virtual_memory_stats.json)
-        set(baseline_file "${suite_root}/${baseline_case}/${required_file}")
-        set(fallback_file "${suite_root}/${fallback_case}/${required_file}")
-        if(NOT EXISTS "${baseline_file}" OR NOT EXISTS "${fallback_file}")
-            message(FATAL_ERROR
-                "${context}: missing ${required_file} for exact fallback check")
-        endif()
-        file(SHA256 "${baseline_file}" baseline_hash)
-        file(SHA256 "${fallback_file}" fallback_hash)
-        if(NOT baseline_hash STREQUAL fallback_hash)
-            message(FATAL_ERROR
-                "${context}: ${required_file} differs between baseline "
-                "${baseline_case} and fallback ${fallback_case}")
-        endif()
-    endforeach()
-endfunction()
-
 function(require_vm_replay baseline_case pruned_case context)
     set(baseline_file
         "${suite_root}/${baseline_case}/virtual_memory_stats.json")
@@ -252,6 +232,23 @@ function(run_case case_name kind backend pruning vm dc)
     file(WRITE "${case_output_dir}/test-process.log"
         "${simulator_stdout}\n${simulator_stderr}")
 
+    if(dc AND NOT pruning STREQUAL "baseline")
+        if(simulator_result EQUAL 0)
+            message(FATAL_ERROR
+                "${case_name}: incompatible Pruning+DataContainer config "
+                "was accepted")
+        endif()
+        if(NOT "${simulator_stdout}\n${simulator_stderr}" MATCHES
+               "dram_data_container_enable=true is incompatible")
+            message(FATAL_ERROR
+                "${case_name}: incompatible configuration did not report "
+                "the DataContainer conflict")
+        endif()
+        message(STATUS
+            "${case_name}: incompatible Pruning+DataContainer config rejected")
+        return()
+    endif()
+
     if(NOT simulator_result EQUAL 0 OR
        NOT simulator_stdout MATCHES "Finish the simulation" OR
        NOT simulator_stdout MATCHES
@@ -362,26 +359,7 @@ function(run_case case_name kind backend pruning vm dc)
         endif()
     endforeach()
 
-    if(dc AND NOT pruning STREQUAL "baseline")
-        if(pruning MATCHES "^proportional")
-            set(expected_fallback_warning
-                "Simulation acceleration method 'Proportional' is disabled")
-        elseif(pruning STREQUAL "decode")
-            set(expected_fallback_warning "Decode Pruning is disabled")
-        endif()
-        if(DEFINED expected_fallback_warning AND
-           NOT "${simulator_stdout}\n${simulator_stderr}" MATCHES
-               "${expected_fallback_warning}")
-            message(FATAL_ERROR
-                "${case_name}: stateful Pruning fallback warning was not emitted")
-        endif()
-        if(NOT estimated_tiles EQUAL 0)
-            message(FATAL_ERROR
-                "${case_name}: exact fallback still estimated "
-                "${estimated_tiles} tiles")
-        endif()
-        unset(expected_fallback_warning)
-    elseif(NOT dc AND NOT pruning STREQUAL "baseline" AND
+    if(NOT dc AND NOT pruning STREQUAL "baseline" AND
            estimated_tiles EQUAL 0)
         message(FATAL_ERROR
             "${case_name}: Pruning did not remain active without DataContainer")
@@ -447,9 +425,6 @@ if(TEST_SUITE STREQUAL "tile")
             baseline false true)
         run_case("dc-compile-${backend}" tile ${backend}
             proportional-compile false true)
-        require_exact_fallback(
-            "dc-baseline-${backend}" "dc-compile-${backend}"
-            "Tile Pruning with DataContainer (${backend})")
         require_vm_replay(
             "vm-baseline-${backend}" "vm-compile-${backend}"
             "Tile Pruning virtual-memory replay (${backend})")
@@ -483,11 +458,6 @@ elseif(TEST_SUITE STREQUAL "decode-continuous")
                     "${feature}-baseline-${backend}"
                     "${feature}-pruned-${backend}"
                     "Decode Pruning virtual-memory replay (${backend})")
-            elseif(feature STREQUAL "dc")
-                require_exact_fallback(
-                    "${feature}-baseline-${backend}"
-                    "${feature}-pruned-${backend}"
-                    "Decode Pruning with ${feature} (${backend})")
             endif()
         endforeach()
     endforeach()
@@ -501,12 +471,6 @@ elseif(TEST_SUITE STREQUAL "triple")
             baseline true true)
         run_case("decode-pruned-${backend}" continuous ${backend}
             decode true true)
-        require_exact_fallback(
-            "tile-baseline-${backend}" "tile-pruned-${backend}"
-            "Tile Pruning with VM+DataContainer (${backend})")
-        require_exact_fallback(
-            "decode-baseline-${backend}" "decode-pruned-${backend}"
-            "Decode Pruning with VM+DataContainer (${backend})")
     endforeach()
 else()
     message(FATAL_ERROR "Unsupported pruning TEST_SUITE: ${TEST_SUITE}")

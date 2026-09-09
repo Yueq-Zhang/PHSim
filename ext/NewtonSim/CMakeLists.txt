@@ -90,7 +90,7 @@ target_include_directories(dramsim3
 target_compile_options(dramsim3 PRIVATE -Wall)
 target_link_libraries(dramsim3 PRIVATE inih format)
 set_target_properties(dramsim3 PROPERTIES
-    CXX_STANDARD 11
+    CXX_STANDARD 17
     CXX_STANDARD_REQUIRED YES
     CXX_EXTENSIONS NO
 )
@@ -100,7 +100,7 @@ add_executable(dramsim3main src/main.cc src/cpu.cc)
 target_link_libraries(dramsim3main PRIVATE dramsim3 args)
 target_compile_options(dramsim3main PRIVATE)
 set_target_properties(dramsim3main PROPERTIES
-    CXX_STANDARD 11
+    CXX_STANDARD 17
     CXX_STANDARD_REQUIRED YES
     CXX_EXTENSIONS NO
 )

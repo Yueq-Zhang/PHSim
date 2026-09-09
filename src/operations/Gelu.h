@@ -15,5 +15,5 @@ class Gelu : public Operation {
     void calculate_my_loops();
     void initialize_my_tiles();
     Tile initialize_my_instructions(uint32_t N);
-    uint32_t my_sram_size_needed();
+    uint64_t my_sram_size_needed();
 };

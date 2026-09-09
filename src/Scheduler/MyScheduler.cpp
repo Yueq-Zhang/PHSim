@@ -1,6 +1,5 @@
 #include "MyScheduler.hpp"
-#include "../DRAM/Dram.h"
-#include "../DRAM/EventDrivenDram.h"
+#include "../DRAM/IDramBackend.h"
 #include "../Core/MyCore.hpp"
 #include "../Interconnect/MyInterconnect.hpp"
 #include <algorithm>
@@ -58,7 +57,7 @@ MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
             "multi-layer test modes");
     }
     if (_output_token_iteration_enable) {
-        spdlog::info(
+        spdlog::debug(
             "Output-token iteration enabled; Decode backend: {}",
             config.allocation_scheme == "NPU" ? "NPU/SA" : "PIM");
     }
@@ -71,14 +70,14 @@ MyScheduler::MyScheduler(const SysConfig& config, const cycle_type *core_cycle,
 
     _core_rr_id = 0;
     _active_reqs = 0;
-    spdlog::info(
+    spdlog::debug(
         "Batch scheduler: {} (max_batch_size={}, max_active_reqs={})",
         config.batch_scheduler, _max_batch_size, _max_active_reqs);
 }
 
 void MyScheduler::launch(Ptr<Model> model) {  // Register the model on memory
     _model = model;
-    spdlog::info("MODEL {} Launched in Scheduler", model->get_name());
+    spdlog::debug("MODEL {} Launched in Scheduler", model->get_name());
 }
 
 bool MyScheduler::can_accept_request() const {
@@ -106,7 +105,7 @@ void MyScheduler::add_request(std::shared_ptr<InferRequest> request) {
         _breq.empty()) {
         _stage = _init_stage;
     }
-    spdlog::info(
+    spdlog::debug(
         "Scheduler admitted request {}: {}/{} resident requests",
         request->id, _request_queue.size(), _max_active_reqs);
     _last_request_cycle = _cycles;
@@ -119,7 +118,7 @@ bool MyScheduler::empty() { return _model_program == nullptr; }
 bool MyScheduler::running() { return !_request_queue.empty() || !_completed_request_queue.empty(); }
 
 std::shared_ptr<InferRequest> MyScheduler::pop_completed_request() {
-    // spdlog::info("Scheduler::pop_completed_request()");
+    // spdlog::debug("Scheduler::pop_completed_request()");
     auto completed_req = _completed_request_queue.front();
     _completed_request_queue.pop();
     return completed_req;
@@ -205,7 +204,7 @@ bool MyScheduler::form_continuous_batch() {
     }
 
     _current_continuous_batch_id = _next_continuous_batch_id++;
-    spdlog::info(
+    spdlog::debug(
         "Continuous batch {} formed: stage={}, requests=[{}], batch_size={}",
         _current_continuous_batch_id, stageToString(_stage),
         format_request_ids(_breq), _breq.size());
@@ -249,7 +248,7 @@ void MyScheduler::complete_continuous_batch(Stage completed_stage) {
                 request->first_token_cycle = _cycles;
                 request->first_token_generated = true;
             }
-            spdlog::info(
+            spdlog::debug(
                 "Scheduler:: Request {} generated token {}/{}",
                 request->id, request->generated, request->output_size);
             if (request->generated >= request->output_size) {
@@ -263,7 +262,7 @@ void MyScheduler::complete_continuous_batch(Stage completed_stage) {
             "Continuous batching only supports Prefill and Decode stages");
     }
 
-    spdlog::info(
+    spdlog::debug(
         "Continuous batch {} completed: stage={}, requests=[{}]",
         _current_continuous_batch_id, stageToString(completed_stage),
         completed_ids);
@@ -301,7 +300,7 @@ void MyScheduler::complete_request(const Ptr<InferRequest>& request) {
     _completed_request_queue.push(request);
 
     if (!_output_token_iteration_enable) {
-        spdlog::info(
+        spdlog::debug(
             "Scheduler:: The inference process of request {} is done",
             request->id);
     }
@@ -313,7 +312,7 @@ void MyScheduler::complete_request(const Ptr<InferRequest>& request) {
                 _active_reqs--;
             }
             if (!_output_token_iteration_enable) {
-                spdlog::info(
+                spdlog::debug(
                     "Scheduler::Free the KV cache of the done request {} ",
                     request->id);
             }
@@ -322,7 +321,7 @@ void MyScheduler::complete_request(const Ptr<InferRequest>& request) {
         }
     }
     if (_output_token_iteration_enable) {
-        spdlog::info(
+        spdlog::debug(
             "Scheduler:: Request {} completed after generating {}/{} tokens; "
             "KV cache released",
             request->id, request->generated, request->output_size);
@@ -349,7 +348,7 @@ void MyScheduler::advance_iterative_inference(Stage completed_stage) {
                     request->id, request->generated, request->output_size));
             }
             request->generated++;
-            spdlog::info(
+            spdlog::debug(
                 "Scheduler:: Request {} generated token {}/{}",
                 request->id, request->generated, request->output_size);
         }
@@ -409,7 +408,7 @@ void MyScheduler::cycle() {
         else {
             std::string red = "\033[1;31m";
             std::string reset = "\033[0m";
-            spdlog::info("{}----------Make Inference Program----------{}", red, reset);
+            spdlog::debug("{}----------Make Inference Program----------{}", red, reset);
             make_program();  // make new program
         }
     }
@@ -421,16 +420,16 @@ void MyScheduler::make_program() {
     Config::system_config.decode_pruning_compile_context = false;
     if (_test_single_op) {
         auto batch_for_single_op = std::make_shared<BatchedRequest>(_breq);
-        spdlog::info("Create a New Program to test the single operation: {}, (batch.size: {})",_test_single_op_name, batch_for_single_op->_batch_size);
+        spdlog::debug("Create a New Program to test the single operation: {}, (batch.size: {})",_test_single_op_name, batch_for_single_op->_batch_size);
         _stage = Stage::Single_test;
         _model_program = std::make_unique<StageProgram>(_test_single_op_type, batch_for_single_op, _stage, _data_container);
-        spdlog::info("*************************************************************");
-        spdlog::info("Initialize Single-Layer Test Program for Inference");
-        spdlog::info("*************************************************************");
+        spdlog::debug("*************************************************************");
+        spdlog::debug("Initialize Single-Layer Test Program for Inference");
+        spdlog::debug("*************************************************************");
     }
     else if (_test_multi_layer){
         auto batch_for_multi_layer = std::make_shared<BatchedRequest>(_breq);
-        spdlog::info("Create a New Program to test the multi_layer operation: {}, (batch.size: {})", _test_multi_layer, batch_for_multi_layer->_batch_size);
+        spdlog::debug("Create a New Program to test the multi_layer operation: {}, (batch.size: {})", _test_multi_layer, batch_for_multi_layer->_batch_size);
         _stage = Stage::Multi_test;
         Config::system_config.decode_pruning_compile_context =
             _config.decode_pruning_enabled &&
@@ -438,35 +437,35 @@ void MyScheduler::make_program() {
              _test_multi_layer_name == "npu_decode");
         _model_program = std::make_unique<StageProgram>(_model, _test_multi_layer_name, batch_for_multi_layer, _stage, _data_container);
         Config::system_config.decode_pruning_compile_context = false;
-        spdlog::info("*************************************************************");
-        spdlog::info("Initialize Multi-Layer Test Program for Inference");
-        spdlog::info("*************************************************************");
+        spdlog::debug("*************************************************************");
+        spdlog::debug("Initialize Multi-Layer Test Program for Inference");
+        spdlog::debug("*************************************************************");
     }
     else if (_stage == Stage::Prefill) {
-        spdlog::info("*************************************************************");
-        spdlog::info("Initialize Prefill Stage of Model Inference");
-        spdlog::info("*************************************************************");
+        spdlog::debug("*************************************************************");
+        spdlog::debug("Initialize Prefill Stage of Model Inference");
+        spdlog::debug("*************************************************************");
         auto batch_for_prefill = std::make_shared<BatchedRequest>(_breq);
-        spdlog::info("New Program for SA (batch.size: {})", batch_for_prefill->_reqs.size());
+        spdlog::debug("New Program for SA (batch.size: {})", batch_for_prefill->_reqs.size());
         _model_program = std::make_unique<StageProgram>(_model, batch_for_prefill, StagePlatform::SA, _stage, _data_container);
     }
     else if (_stage == Stage::Decode) {
-        spdlog::info("*************************************************************");
-        spdlog::info("Initialize Decode Stage of Model Inference");
-        spdlog::info("*************************************************************");
+        spdlog::debug("*************************************************************");
+        spdlog::debug("Initialize Decode Stage of Model Inference");
+        spdlog::debug("*************************************************************");
         auto batch_for_decode = std::make_shared<BatchedRequest>(_breq);
-        spdlog::info("New Program for PIM  (batch.size: {})", batch_for_decode->_reqs.size());
+        spdlog::debug("New Program for PIM  (batch.size: {})", batch_for_decode->_reqs.size());
         Config::system_config.decode_pruning_compile_context =
             _config.decode_pruning_enabled;
         _model_program = std::make_unique<StageProgram>(_model, batch_for_decode, StagePlatform::PIM, _stage, _data_container);
         Config::system_config.decode_pruning_compile_context = false;
     }
     else if (_stage == Stage::NPU_Decode) {
-        spdlog::info("*************************************************************");
-        spdlog::info("Initialize Decode Stage of Model Inference");
-        spdlog::info("*************************************************************");
+        spdlog::debug("*************************************************************");
+        spdlog::debug("Initialize Decode Stage of Model Inference");
+        spdlog::debug("*************************************************************");
         auto batch_for_decode = std::make_shared<BatchedRequest>(_breq);
-        spdlog::info("New Program for SA (batch.size: {})", batch_for_decode->_reqs.size());
+        spdlog::debug("New Program for SA (batch.size: {})", batch_for_decode->_reqs.size());
         Config::system_config.decode_pruning_compile_context =
             _config.decode_pruning_enabled;
         _model_program = std::make_unique<StageProgram>(_model, batch_for_decode, StagePlatform::SA, _stage, _data_container);
@@ -490,7 +489,7 @@ void MyScheduler::refresh_status() {
                 if (_active_operation_stats.count(op->get_id())) {
                     continue;
                 }
-                spdlog::info("Start the execution of operation {}", op->get_name());
+                spdlog::debug("Start the execution of operation {}", op->get_name());
 
                 if (count_active_operations()) {
                     if (_active_operation_stats.find(op->get_id()) != _active_operation_stats.end()) {
@@ -628,16 +627,9 @@ void MyScheduler::refresh_status() {
                         baseline.push_back(
                             decode_core_timing_snapshot(core_id));
                     }
-                    if (_config.dram_trace_simulation_mode) {
-                        assert(_event_driven_dram != nullptr);
-                        _event_driven_dram
-                            ->begin_decode_pruning_state_sample(
-                                decode_template_key);
-                    } else {
-                        assert(_dram != nullptr);
-                        _dram->begin_decode_pruning_state_sample(
-                            decode_template_key);
-                    }
+                    assert(_dram_backend != nullptr);
+                    _dram_backend->begin_decode_pruning_state_sample(
+                        decode_template_key);
                 }
                 issue_tile_per_core();  // issue current tile to each core
                 if (decode_target && decode_has_template) {
@@ -651,7 +643,7 @@ void MyScheduler::refresh_status() {
 
 
 void MyScheduler::finish_program() {
-    spdlog::info("Current Program {} start at core cycle {}, finished at core cycle: {}", _model_program->_name,program_start_cycle , _cycles);
+    spdlog::debug("Current Program {} start at core cycle {}, finished at core cycle: {}", _model_program->_name,program_start_cycle , _cycles);
     _model_program = nullptr;
     refresh_stage();
 }
@@ -663,7 +655,7 @@ void MyScheduler::refresh_stage() {
         std::string red = "\033[1;31m";
         std::string reset = "\033[0m";
         std::string stage_name = stageToString(_stage);
-        spdlog::info("{}------- Stage {} Done -------{}", red, stage_name, reset);
+        spdlog::debug("{}------- Stage {} Done -------{}", red, stage_name, reset);
 
         // Update stat
         _stage_stats.emplace_back(stage_name, _cycles);
@@ -787,42 +779,26 @@ bool MyScheduler::finish_tile(uint32_t core_id, Tile& tile) {  // Record the fin
                             active_finish.size() >= warmup_tiles;
                     }
                     if (warmup_complete) {
+                        assert(_dram_backend != nullptr);
                         if (_proportional_attention_mode) {
-                            if (_config.dram_trace_simulation_mode) {
-                                assert(_event_driven_dram != nullptr);
-                                _event_driven_dram->mark_proportional_command_warmup_complete(
+                            _dram_backend
+                                ->mark_proportional_command_warmup_complete(
                                     _config.attention_command_warmup_weight);
-                            } else {
-                                assert(_dram != nullptr);
-                                _dram->mark_proportional_command_warmup_complete(
-                                    _config.attention_command_warmup_weight);
-                            }
                         } else if (_proportional_softmax_mode) {
-                            if (_config.dram_trace_simulation_mode) {
-                                assert(_event_driven_dram != nullptr);
-                                _event_driven_dram->begin_proportional_command_sampling();
-                            } else {
-                                assert(_dram != nullptr);
-                                _dram->begin_proportional_command_sampling();
-                            }
+                            _dram_backend
+                                ->begin_proportional_command_sampling();
                         } else {
                             // For ordinary GEMMs, retain the first complete
                             // K-loop as command warmup.  READ/WRITE estimation
                             // uses the complete retained prefix, while row
                             // locality is sampled only after this cold-start
                             // window.
-                            if (_config.dram_trace_simulation_mode) {
-                                assert(_event_driven_dram != nullptr);
-                                _event_driven_dram->mark_proportional_command_warmup_complete(
+                            _dram_backend
+                                ->mark_proportional_command_warmup_complete(
                                     0.0);
-                            } else {
-                                assert(_dram != nullptr);
-                                _dram->mark_proportional_command_warmup_complete(
-                                    0.0);
-                            }
                         }
                         _proportional_command_sample_started = true;
-                        spdlog::info(
+                        spdlog::debug(
                             "Started proportional DRAM command sample window for {} after warmup",
                             _current_op->get_name());
                     }
@@ -831,7 +807,7 @@ bool MyScheduler::finish_tile(uint32_t core_id, Tile& tile) {  // Record the fin
                 if (prefix_it != _proportional_prefix_tiles.end() &&
                     finish_cycles.size() == prefix_it->second) {
                     _cores.at(core_id)->end_proportional_timing_sampling();
-                    spdlog::info(
+                    spdlog::debug(
                         "Core {} completed {} proportional sampling tiles for operation {}",
                         core_id, prefix_it->second, _current_op->get_name());
                 }
@@ -935,7 +911,7 @@ bool MyScheduler::finish_tile(uint32_t core_id, Tile& tile) {  // Record the fin
                 if (!_core_stable[core_id] && _core_executable_tile_queue[core_id].empty()) {
                     _core_stable[core_id] = true;
                     _core_estimated_cycles[core_id] = *_core_cycle;
-                    spdlog::info("Core {} exhausted its Loop_wise sample tiles before stabilization; using actual cycle {}",
+                    spdlog::debug("Core {} exhausted its Loop_wise sample tiles before stabilization; using actual cycle {}",
                                  core_id, *_core_cycle);
                 }
             }
@@ -949,8 +925,8 @@ bool MyScheduler::finish_tile(uint32_t core_id, Tile& tile) {  // Record the fin
     if (_active_operation_stats[tile.operation_id].remain_tiles == 0) {  // no remain tile, current op finished,
         _op_stats.emplace_back(_active_operation_stats[tile.operation_id].name, _cycles);
         result = true;
-        spdlog::info("Layer {} finish at {}", _active_operation_stats[tile.operation_id].name, *_core_cycle);
-        spdlog::info("Total compute time {}", *_core_cycle - _active_operation_stats[tile.operation_id].start_cycle);
+        spdlog::debug("Layer {} finish at {}", _active_operation_stats[tile.operation_id].name, *_core_cycle);
+        spdlog::debug("Total compute time {}", *_core_cycle - _active_operation_stats[tile.operation_id].start_cycle);
         const double host_total_time_sec = std::chrono::duration<double>(
             std::chrono::steady_clock::now() -
             _active_operation_stats[tile.operation_id].host_start_time)
@@ -960,15 +936,15 @@ bool MyScheduler::finish_tile(uint32_t core_id, Tile& tile) {  // Record the fin
                 .deferred_compile_time_sec;
         const double host_simulation_time_sec =
             std::max(0.0, host_total_time_sec - deferred_compile_time_sec);
-        spdlog::info(
+        spdlog::debug(
             "Operation {} Deferred Compile Time: {:.9f} s",
             _active_operation_stats[tile.operation_id].name,
             deferred_compile_time_sec);
-        spdlog::info(
+        spdlog::debug(
             "Operation {} Host Simulation Time: {:.9f} s",
             _active_operation_stats[tile.operation_id].name,
             host_simulation_time_sec);
-        spdlog::info(
+        spdlog::debug(
             "Operation {} Host Total Time incl Deferred Compile: {:.9f} s",
             _active_operation_stats[tile.operation_id].name,
             host_total_time_sec);
@@ -984,15 +960,15 @@ bool MyScheduler::finish_tile(uint32_t core_id, Tile& tile) {  // Record the fin
                 logical_end - pim_stat.pim_start_cycle;
             if (duration > 0) {
                 double pim_bw = static_cast<double>(logical_count) / duration;
-                spdlog::info("Operation {} PIM Bandwidth: {:.4f} inst/cycle (Logical count: {}, measured {}, estimated {}, duration {})",
+                spdlog::debug("Operation {} PIM Bandwidth: {:.4f} inst/cycle (Logical count: {}, measured {}, estimated {}, duration {})",
                     _active_operation_stats[tile.operation_id].name, pim_bw, 
                     logical_count, pim_stat.pim_inst_count,
                     pim_stat.estimated_pim_inst_count, duration);
                 // Aggregate to global stats
                 _total_pim_inst_count += logical_count;
                 _total_pim_duration += duration;
-                // spdlog::info("PIM Utilization of current tile is {:.4f}", pim_bw);
-                // spdlog::info()
+                // spdlog::debug("PIM Utilization of current tile is {:.4f}", pim_bw);
+                // spdlog::debug()
             }
         }
         capture_decode_pruning_template(tile.operation_id);
@@ -1080,7 +1056,7 @@ void MyScheduler::compute_estimated_cycle(){
                     core_estimated_cycle;
 
                 _estimated_all_cycle = std::max<cycle_type>(_estimated_all_cycle, core_estimated_cycle);
-                spdlog::info(
+                spdlog::debug(
                     "Proportional attention estimate core {}: warmup head tiles {}, sampled head tiles {}, predicted prefix+middle head rounds {}, sampled pair cycles {}, remaining predicted heads {}, finish cycle {}",
                     core_id, warmup_head_tiles,
                     prefix_tiles - warmup_head_tiles,
@@ -1112,7 +1088,7 @@ void MyScheduler::compute_estimated_cycle(){
 
                 _estimated_all_cycle = std::max<cycle_type>(
                     _estimated_all_cycle, core_estimated_cycle);
-                spdlog::info(
+                spdlog::debug(
                     "Proportional Softmax estimate core {}: warmup rounds {}, sampled rounds {}, common rounds {}, sample window cycles {}, finish cycle {}",
                     core_id, warmup_rounds, sampled_rounds,
                     _proportional_common_softmax_rounds, sample_window,
@@ -1145,7 +1121,7 @@ void MyScheduler::compute_estimated_cycle(){
                 core_estimated_cycle;
 
             _estimated_all_cycle = std::max<cycle_type>(_estimated_all_cycle, core_estimated_cycle);
-            spdlog::info(
+            spdlog::debug(
                 "Proportional estimate core {}: K-loop tiles {}, sampled {}, common loops {}, finish cycle {}",
                 core_id, kloop_tiles, sample_tiles, _proportional_common_kloops,
                 core_estimated_cycle);
@@ -1156,8 +1132,8 @@ void MyScheduler::compute_estimated_cycle(){
 void MyScheduler::begin_attention_round_command_trace() {
     _attention_round_trace_active = false;
     if (_current_op == nullptr || _current_op->get_optype() != "GEMM_Att" ||
-        _sim_accelerate || _config.dram_trace_simulation_mode ||
-        _dram == nullptr) {
+        _sim_accelerate || _dram_backend == nullptr ||
+        !_dram_backend->supports_core_command_counters()) {
         return;
     }
 
@@ -1180,20 +1156,29 @@ void MyScheduler::begin_attention_round_command_trace() {
         }
         _attention_round_index[core_id] = 0;
         _attention_round_last_act[core_id] =
-            _dram->get_core_command_counter(core_id, "num_act_cmds");
+            _dram_backend->get_core_command_counter(core_id, "num_act_cmds");
         _attention_round_last_pre[core_id] =
-            _dram->get_core_command_counter(core_id, "num_pre_cmds");
+            _dram_backend->get_core_command_counter(core_id, "num_pre_cmds");
     }
 
     if (_attention_round_remaining_tiles.empty()) {
         return;
     }
     if (!_attention_round_trace_file_initialized) {
-        std::ofstream out(Config::system_config.log_dir +
-                          "/attention_core_round_commands.tsv",
+        const std::string path = Config::system_config.log_dir +
+                                 "/attention_core_round_commands.tsv";
+        std::ofstream out(path,
                           std::ios::out | std::ios::trunc);
+        if (!out.is_open()) {
+            throw std::runtime_error(
+                "Cannot open attention command trace file: " + path);
+        }
         out << "operation\tcore\tround\tbatch\thead\tcore_cycle"
                "\tcumulative_act\tcumulative_pre\tdelta_act\tdelta_pre\n";
+        if (!out.good()) {
+            throw std::runtime_error(
+                "Failed to write attention command trace header: " + path);
+        }
         _attention_round_trace_file_initialized = true;
     }
     _attention_round_trace_active = true;
@@ -1219,20 +1204,29 @@ void MyScheduler::record_attention_round_command_trace(
     }
 
     const uint64_t cumulative_act =
-        _dram->get_core_command_counter(core_id, "num_act_cmds");
+        _dram_backend->get_core_command_counter(core_id, "num_act_cmds");
     const uint64_t cumulative_pre =
-        _dram->get_core_command_counter(core_id, "num_pre_cmds");
+        _dram_backend->get_core_command_counter(core_id, "num_pre_cmds");
     const uint64_t delta_act = cumulative_act - _attention_round_last_act[core_id];
     const uint64_t delta_pre = cumulative_pre - _attention_round_last_pre[core_id];
     const uint32_t round = ++_attention_round_index[core_id];
 
-    std::ofstream out(Config::system_config.log_dir +
-                      "/attention_core_round_commands.tsv",
+    const std::string path = Config::system_config.log_dir +
+                             "/attention_core_round_commands.tsv";
+    std::ofstream out(path,
                       std::ios::out | std::ios::app);
+    if (!out.is_open()) {
+        throw std::runtime_error(
+            "Cannot append attention command trace file: " + path);
+    }
     out << _attention_round_trace_operation << '\t' << core_id << '\t'
         << round << '\t' << tile.batch << '\t' << tile.head_index << '\t'
         << *_core_cycle << '\t' << cumulative_act << '\t' << cumulative_pre
         << '\t' << delta_act << '\t' << delta_pre << '\n';
+    if (!out.good()) {
+        throw std::runtime_error(
+            "Failed to append attention command trace file: " + path);
+    }
 
     _attention_round_last_act[core_id] = cumulative_act;
     _attention_round_last_pre[core_id] = cumulative_pre;
@@ -1245,7 +1239,7 @@ void MyScheduler::finish_last_mm_tile(uint32_t core_id, Tile& tile) {
     assert(_active_operation_stats[tile.operation_id].remain_tiles > 0);
     _active_operation_stats[tile.operation_id].remain_tiles--;
 
-    // spdlog::info("Finish tile stage_platform:{}", stagePlatformToString(tile.stage_platform));
+    // spdlog::debug("Finish tile stage_platform:{}", stagePlatformToString(tile.stage_platform));
     _model_program->finish_operation_tile(tile);
 
     _tile_position++;
@@ -1257,8 +1251,8 @@ bool MyScheduler::update_stats_last_tile(uint32_t core_id, Tile& tile) {
     if (_active_operation_stats[tile.operation_id].remain_tiles == 0) {  // 完成判断，若当前operation没有新的tile，表明执行完毕
         _op_stats.emplace_back(_active_operation_stats[tile.operation_id].name, _cycles);
         result = true;
-        spdlog::info("Layer {} finish at {}", _active_operation_stats[tile.operation_id].name, *_core_cycle);
-        spdlog::info("Total compute time {}", *_core_cycle - _active_operation_stats[tile.operation_id].start_cycle);
+        spdlog::debug("Layer {} finish at {}", _active_operation_stats[tile.operation_id].name, *_core_cycle);
+        spdlog::debug("Total compute time {}", *_core_cycle - _active_operation_stats[tile.operation_id].start_cycle);
         const double host_total_time_sec = std::chrono::duration<double>(
             std::chrono::steady_clock::now() -
             _active_operation_stats[tile.operation_id].host_start_time)
@@ -1268,15 +1262,15 @@ bool MyScheduler::update_stats_last_tile(uint32_t core_id, Tile& tile) {
                 .deferred_compile_time_sec;
         const double host_simulation_time_sec =
             std::max(0.0, host_total_time_sec - deferred_compile_time_sec);
-        spdlog::info(
+        spdlog::debug(
             "Operation {} Deferred Compile Time: {:.9f} s",
             _active_operation_stats[tile.operation_id].name,
             deferred_compile_time_sec);
-        spdlog::info(
+        spdlog::debug(
             "Operation {} Host Simulation Time: {:.9f} s",
             _active_operation_stats[tile.operation_id].name,
             host_simulation_time_sec);
-        spdlog::info(
+        spdlog::debug(
             "Operation {} Host Total Time incl Deferred Compile: {:.9f} s",
             _active_operation_stats[tile.operation_id].name,
             host_total_time_sec);
@@ -1291,15 +1285,15 @@ bool MyScheduler::update_stats_last_tile(uint32_t core_id, Tile& tile) {
             cycle_type duration = logical_end - pim_stat.pim_start_cycle;
             if (duration > 0) {
                 double pim_bw = static_cast<double>(logical_count) / duration;
-                spdlog::info("Operation {} PIM Bandwidth: {:.4f} inst/cycle (Logical count: {}, measured {}, estimated {}, duration {})",
+                spdlog::debug("Operation {} PIM Bandwidth: {:.4f} inst/cycle (Logical count: {}, measured {}, estimated {}, duration {})",
                     _active_operation_stats[tile.operation_id].name, pim_bw,
                     logical_count, pim_stat.pim_inst_count,
                     pim_stat.estimated_pim_inst_count, duration);
                 // Aggregate to global stats
                 _total_pim_inst_count += logical_count;
                 _total_pim_duration += duration;
-                // spdlog::info("PIM Utilization of current tile is {:.4f}", pim_bw);
-                // spdlog::info()
+                // spdlog::debug("PIM Utilization of current tile is {:.4f}", pim_bw);
+                // spdlog::debug()
             }
         }
         _model_program->finish_operation(tile.operation_id);
@@ -1722,7 +1716,7 @@ uint64_t MyScheduler::replay_virtual_memory_tiles(
         }
     }
     queues.clear();
-    spdlog::info(
+    spdlog::debug(
         "Replayed {} virtual-memory mappings from {} pruned tiles",
         mapping_calls, replayed_tiles);
     return mapping_calls;
@@ -1853,35 +1847,17 @@ void MyScheduler::capture_decode_pruning_template(uint32_t operation_id) {
          active->second.name.find(".attn.proj") != std::string::npos);
     std::vector<uint64_t> sampled_write_requests;
     std::vector<uint64_t> sampled_write_commands;
-    if (_config.dram_trace_simulation_mode) {
-        assert(_event_driven_dram != nullptr);
-        if (npu_attention_projection) {
-            sampled_write_requests =
-                _event_driven_dram
-                    ->decode_pruning_sampled_write_requests(
-                        template_key);
-            sampled_write_commands =
-                _event_driven_dram
-                    ->decode_pruning_sampled_write_commands(
-                        template_key);
-        }
-        _event_driven_dram->finish_decode_pruning_state_sample(
-            template_key,
-            _config.decode_pruning_sample_iterations);
-    } else {
-        assert(_dram != nullptr);
-        if (npu_attention_projection) {
-            sampled_write_requests =
-                _dram->decode_pruning_sampled_write_requests(
-                    template_key);
-            sampled_write_commands =
-                _dram->decode_pruning_sampled_write_commands(
-                    template_key);
-        }
-        _dram->finish_decode_pruning_state_sample(
-            template_key,
-            _config.decode_pruning_sample_iterations);
+    assert(_dram_backend != nullptr);
+    if (npu_attention_projection) {
+        sampled_write_requests =
+            _dram_backend->decode_pruning_sampled_write_requests(
+                template_key);
+        sampled_write_commands =
+            _dram_backend->decode_pruning_sampled_write_commands(
+                template_key);
     }
+    _dram_backend->finish_decode_pruning_state_sample(
+        template_key, _config.decode_pruning_sample_iterations);
 
     DecodePruningTemplate sample;
     sample.operation_cycles =
@@ -1958,7 +1934,7 @@ void MyScheduler::capture_decode_pruning_template(uint32_t operation_id) {
             sampled_write_requests;
         sample.channel_write_commands =
             sampled_write_commands;
-        spdlog::info(
+        spdlog::debug(
             "Decode Pruning captured {} actual NPU output Store "
             "requests for {}",
             sampled_writes, active->second.name);
@@ -2003,7 +1979,7 @@ void MyScheduler::capture_decode_pruning_template(uint32_t operation_id) {
         accumulator.channel_write_commands[channel] +=
             sample.channel_write_commands[channel];
     }
-    spdlog::info(
+    spdlog::debug(
         "Decode Pruning sample {}/{} captured for {}: {} cycles",
         accumulator.samples, _config.decode_pruning_sample_iterations,
         active->second.name, sample.operation_cycles);
@@ -2046,7 +2022,7 @@ void MyScheduler::capture_decode_pruning_template(uint32_t operation_id) {
         }
     }
     _decode_pruning_templates.emplace(template_key, result);
-    spdlog::info(
+    spdlog::debug(
         "Decode Pruning template finalized for {} from {} samples: "
         "{} average cycles",
         active->second.name, accumulator.samples,
@@ -2085,12 +2061,12 @@ void MyScheduler::prepare_decode_pruning_prediction() {
         }
     }
     if (_config.virtual_mem_hash_enable) {
-        spdlog::info(
+        spdlog::debug(
             "Decode compile-time pruning removed {} deferred tiles from "
             "execution for {}; their address mappings will be replayed",
             deferred_tiles_skipped, _current_op->get_name());
     } else {
-        spdlog::info(
+        spdlog::debug(
             "Decode compile-time pruning discarded {} deferred tiles for "
             "{} without materializing instructions",
             deferred_tiles_skipped, _current_op->get_name());
@@ -2104,14 +2080,9 @@ void MyScheduler::prepare_decode_pruning_prediction() {
     _active_operation_stats.at(_decode_pruning_pending_operation)
         .remain_tiles = 0;
 
-    if (_config.dram_trace_simulation_mode) {
-        assert(_event_driven_dram != nullptr);
-        _event_driven_dram->begin_proportional_command_sampling();
-    } else {
-        assert(_dram != nullptr);
-        _dram->begin_proportional_command_sampling();
-    }
-    spdlog::info(
+    assert(_dram_backend != nullptr);
+    _dram_backend->begin_proportional_command_sampling();
+    spdlog::debug(
         "Decode Pruning skips all {} tiles of {} and predicts {} cycles",
         _active_operation_stats.at(_decode_pruning_pending_operation)
             .total_tiles,
@@ -2156,13 +2127,8 @@ void MyScheduler::apply_decode_pruning_prediction() {
     const auto* write_command_override =
         prediction.channel_write_commands.empty()
             ? nullptr : &prediction.channel_write_commands;
-    if (_config.dram_trace_simulation_mode) {
-        _event_driven_dram->apply_estimated_workload(
-            total, write_command_override);
-    } else {
-        _dram->apply_estimated_workload(
-            total, write_command_override);
-    }
+    assert(_dram_backend != nullptr);
+    _dram_backend->apply_estimated_workload(total, write_command_override);
     if (_config.dram_channels > 0) {
         _active_operation_stats.at(_decode_pruning_pending_operation)
             .estimated_pim_inst_count +=
@@ -2193,15 +2159,9 @@ void MyScheduler::apply_decode_pruning_prediction() {
 void MyScheduler::apply_decode_pruning_dram_state(
     cycle_type skipped_dram_cycles) {
     assert(_decode_pruning_pending);
-    if (_config.dram_trace_simulation_mode) {
-        assert(_event_driven_dram != nullptr);
-        _event_driven_dram->apply_decode_pruning_state(
-            _decode_pruning_pending_key, skipped_dram_cycles);
-    } else {
-        assert(_dram != nullptr);
-        _dram->apply_decode_pruning_state(
-            _decode_pruning_pending_key, skipped_dram_cycles);
-    }
+    assert(_dram_backend != nullptr);
+    _dram_backend->apply_decode_pruning_state(
+        _decode_pruning_pending_key, skipped_dram_cycles);
 }
 
 void MyScheduler::complete_decode_pruning_prediction(
@@ -2228,13 +2188,8 @@ void MyScheduler::complete_decode_pruning_prediction(
 }
 
 void MyScheduler::finalize_proportional_workload_plan() {
-    if (_config.dram_trace_simulation_mode) {
-        assert(_event_driven_dram != nullptr);
-        _event_driven_dram->begin_proportional_command_sampling();
-    } else {
-        assert(_dram != nullptr);
-        _dram->begin_proportional_command_sampling();
-    }
+    assert(_dram_backend != nullptr);
+    _dram_backend->begin_proportional_command_sampling();
     for (uint32_t core_id : _proportional_active_cores) {
         _cores.at(core_id)->begin_proportional_timing_sampling();
     }
@@ -2255,7 +2210,7 @@ void MyScheduler::finalize_proportional_workload_plan() {
     estimated_tile.stat.num_calculation = total.num_calculation;
     _current_op->reduce_tile(estimated_tile);
 
-    spdlog::info(
+    spdlog::debug(
         "Proportional workload compensation planned for {}: logical tiles {}, read requests {}, write requests {}, read bytes {}, write bytes {}, calculations {}",
         _current_op->get_name(), total.tiles, total.memory_reads,
         total.memory_writes, total.memory_read_bytes, total.memory_write_bytes,
@@ -2264,7 +2219,7 @@ void MyScheduler::finalize_proportional_workload_plan() {
 
 void MyScheduler::print_current_operation_workload_stat() const {
     const OperationStat stat = _current_op->get_stat();
-    spdlog::info(
+    spdlog::debug(
         "Operation workload {}: Logical tiles {}, Measured tiles {}, Estimated tiles {}, Memory reads {}, Memory writes {}, Estimated memory reads {}, Estimated memory writes {}, Calculations {}, Estimated calculations {}",
         stat.op_name, stat.measured_tiles + stat.estimated_tiles,
         stat.measured_tiles, stat.estimated_tiles, stat.memory_reads,
@@ -2313,7 +2268,7 @@ void MyScheduler::prepare_proportional_sampling() {
         1, _k_loop_size);
 
     if (_proportional_active_cores.empty() || common_kloops < 2) {
-        spdlog::info(
+        spdlog::debug(
             "Disable Proportional acceleration for {}: fewer than two complete K-loops per active core",
             _current_op->get_name());
         _sim_accelerate = false;
@@ -2325,7 +2280,7 @@ void MyScheduler::prepare_proportional_sampling() {
     const uint32_t common_tiles = common_kloops * _k_loop_size;
     const uint32_t skipped_per_core = common_tiles - prefix_tiles;
     if (skipped_per_core == 0) {
-        spdlog::info(
+        spdlog::debug(
             "Disable Proportional acceleration for {}: the selected ratio leaves no complete middle tiles to skip",
             _current_op->get_name());
         _sim_accelerate = false;
@@ -2369,7 +2324,7 @@ void MyScheduler::prepare_proportional_sampling() {
     _proportional_common_kloops = common_kloops;
     finalize_proportional_workload_plan();
     _proportional_plan_ready = true;
-    spdlog::info(
+    spdlog::debug(
         "Proportional sampling {}: ratio {:.3f}, K-loop tiles {}, sampled tiles/core {}, common loops {}, skipped tiles {}, retained tail tiles {}",
         _current_op->get_name(), _proportional_sample_ratio, _k_loop_size,
         _proportional_sample_tiles, _proportional_common_kloops,
@@ -2416,7 +2371,7 @@ void MyScheduler::prepare_proportional_attention_sampling() {
     // Two heads are retained as warmup. The following two heads form a complete
     // alternating sample pair. All remaining common heads are predicted.
     if (has_unassigned_core || plans.empty() || common_head_rounds < 6) {
-        spdlog::info(
+        spdlog::debug(
             "Disable Proportional attention acceleration for {}: every core needs at least six complete head rounds for 2-head warmup, 2-head sampling, and prediction",
             _current_op->get_name());
         _sim_accelerate = false;
@@ -2488,7 +2443,7 @@ void MyScheduler::prepare_proportional_attention_sampling() {
     _proportional_common_head_rounds = predicted_head_rounds;
     finalize_proportional_workload_plan();
     _proportional_plan_ready = true;
-    spdlog::info(
+    spdlog::debug(
         "Proportional attention sampling {}: warmup heads/core 2, sampled heads/core 2, common head rounds {}, skipped tiles {}, retained irregular tail tiles {}",
         _current_op->get_name(), _proportional_common_head_rounds,
         _proportional_skipped_tiles, retained_tail_tiles);
@@ -2521,7 +2476,7 @@ void MyScheduler::prepare_proportional_softmax_sampling() {
     }
 
     if (has_unassigned_core || common_rounds <= prefix_rounds) {
-        spdlog::info(
+        spdlog::debug(
             "Disable Proportional Softmax acceleration for {}: every core needs more than {} complete outer-tile rounds",
             _current_op->get_name(), prefix_rounds);
         _sim_accelerate = false;
@@ -2569,7 +2524,7 @@ void MyScheduler::prepare_proportional_softmax_sampling() {
     _proportional_common_softmax_rounds = common_rounds;
     finalize_proportional_workload_plan();
     _proportional_plan_ready = true;
-    spdlog::info(
+    spdlog::debug(
         "Proportional Softmax sampling {}: warmup rounds/core {}, sampled rounds/core {}, common rounds {}, skipped tiles {}, retained partial-round tail tiles {}",
         _current_op->get_name(), warmup_rounds, sampled_rounds,
         _proportional_common_softmax_rounds, _proportional_skipped_tiles,
@@ -2757,7 +2712,7 @@ void MyScheduler::get_tile(uint32_t core_id) {
             operation_stat.launched_tiles++;
             const std::string operation_name = operation_stat.name;
             _core_executable_tile_queue[core_id].pop_front();
-            spdlog::info("At cycle {} Core {} get Tile, pop a tile from the Scheduler executable tile queue, {} exist for operation {}",
+            spdlog::debug("At cycle {} Core {} get Tile, pop a tile from the Scheduler executable tile queue, {} exist for operation {}",
                 *_core_cycle, core_id, get_exist_tile_count(), operation_name);
         }
     }
@@ -2792,7 +2747,7 @@ void MyScheduler::print_stat() {
     // Print Global PIM Bandwidth Utilization
     if (_total_pim_duration > 0) {
         double total_pim_bw = (double)_total_pim_inst_count * (_config.mem_config.burst_cycle / 2) / _total_pim_duration;
-        spdlog::info("Total Inference PIM Bandwidth Utilization: {:.2f}% (Total Count: {}, Total Duration: {})",
+        spdlog::debug("Total Inference PIM Bandwidth Utilization: {:.2f}% (Total Count: {}, Total Duration: {})",
             total_pim_bw * 100, _total_pim_inst_count, _total_pim_duration);
     }
 
@@ -2800,7 +2755,7 @@ void MyScheduler::print_stat() {
         auto stage_name = stage_stat.first;
         auto stage_cycles = stage_stat.second;
         auto exec_cycles = stage_cycles - prev_cycles;
-        spdlog::info("Stage {} : {} cycles", stage_name, exec_cycles);
+        spdlog::debug("Stage {} : {} cycles", stage_name, exec_cycles);
         prev_cycles = stage_cycles;
     }
 }
@@ -2812,7 +2767,7 @@ void MyScheduler::print_op_stat() {
         auto op_name = op_stat.first;
         auto op_cycles = op_stat.second;
         auto exec_cycles = op_cycles - prev_cycles;
-        spdlog::info("Op {} : {} cycles", op_name, exec_cycles);
+        spdlog::debug("Op {} : {} cycles", op_name, exec_cycles);
         prev_cycles = op_cycles;
     }
 }
@@ -2865,13 +2820,12 @@ void MyScheduler::set_scheduler_cycles(uint64_t cycles) {
 
 
 // Bind Implementation
-void MyScheduler::bind_system(Client* client, PIM* dram,
-                              EventDrivenDram* event_driven_dram,
+void MyScheduler::bind_system(Client* client,
+                              IDramBackend* dram_backend,
                               MyInterconnect* icnt,
                               const std::vector<std::unique_ptr<MyCore>>& cores) {
     _client = client;
-    _dram = dram;
-    _event_driven_dram = event_driven_dram;
+    _dram_backend = dram_backend;
     _icnt = icnt;
     _cores.clear();
     _cores.reserve(cores.size());

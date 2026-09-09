@@ -33,7 +33,7 @@ MyTensor::MyTensor(std::string name, std::vector<uint32_t> dims, TensorType tens
     Cache_length = 0;
     Cache_capacity = 0;
 
-    spdlog::info("Initial Tensor: {}", name);
+    spdlog::debug("Initial Tensor: {}", name);
     ScopedAllocationScheme scoped_scheme(_layout_scheme);
 
     if (tensor_type == TensorType::WGT) {  // Weight Tensor allocation 1D and 2D
@@ -90,9 +90,9 @@ MyTensor::MyTensor(std::string name, std::vector<uint32_t> dims, TensorType tens
 }
 
 void MyTensor::cache_append() {
-    spdlog::info("Before allocated, current Cache Capacity is {}", Cache_capacity);
+    spdlog::debug("Before allocated, current Cache Capacity is {}", Cache_capacity);
     Cache_capacity += MyAddressAllocator::kvcache_append(&kv_cache_allocate_rows, _tensor_type);
-    spdlog::info("After Allocated, the Cache Capacity is {}", Cache_capacity);
+    spdlog::debug("After Allocated, the Cache Capacity is {}", Cache_capacity);
 }
 
 
@@ -227,7 +227,7 @@ addr_type MyTensor::get_activation_addr(std::vector<uint32_t> indexes) {
 
 
 std::vector<addr_type> MyTensor::get_all_addrs() {
-    // spdlog::info("get_all_addrs of tensor with size {}", _dims);
+    // spdlog::debug("get_all_addrs of tensor with size {}", _dims);
     std::vector<addr_type> addrs;
 
     if (_tensor_type == TensorType::ACT or _tensor_type == TensorType::PSUM) {
@@ -290,7 +290,7 @@ std::vector<addr_type> MyTensor::get_all_addrs() {
 
 
 void MyTensor::add_token() {
-    spdlog::info("add_token");
+    spdlog::debug("add_token");
 }
 
 void MyTensor::set_transposed() {
@@ -307,8 +307,8 @@ void MyTensor::unset_transposed() {
 std::vector<addr_type> MyTensor::get_addrs(std::vector<std::vector<uint32_t>> indexes) {
 
     std::vector<addr_type> addrs;
-    // spdlog::info("The dimension of current tensor is {}", _dims.size());
-    // spdlog::info("the number of operation indexes is {} ", indexes.size());
+    // spdlog::debug("The dimension of current tensor is {}", _dims.size());
+    // spdlog::debug("the number of operation indexes is {} ", indexes.size());
     std::vector<uint64_t> offsets;
 
     if (_tensor_type == TensorType::ACT or _tensor_type == TensorType::PSUM) {
@@ -362,7 +362,7 @@ std::vector<addr_type> MyTensor::get_addrs(std::vector<std::vector<uint32_t>> in
         if (i == 0 or burst_offset != offsets[i] / data_unit) {
             burst_offset = offsets[i] / data_unit;
             addr_type addr = MyAddressAllocator::get_sequence_address(burst_offset, start_outer_row_loop, start_middle_row_loop, start_inner_row_loop, start_row, start_col);
-            // spdlog::info("Generate addr for activation is {}, with burst_offset {}", addr, burst_offset);
+            // spdlog::debug("Generate addr for activation is {}, with burst_offset {}", addr, burst_offset);
             addrs.push_back(addr);
         }
     }
@@ -457,8 +457,8 @@ addr_type MyTensor::get_DASH_2D_weight_address(uint32_t burst_offset) {
     uint32_t bankgroup_index = rank_offset % (MyAddressAllocator::bankgroups / MyAddressAllocator::interleaved_banks_per_tile);
 
     // std::vector<std::vector<uint32_t>> tile_bank_location_lookuptable;
-    spdlog::info("Current burst offset {} belongs to {}th tile, corresponding to the {} iteration {} offset tile allocation", burst_offset, tile_index, tile_iteration_index, tile_iteration_offset);
-    spdlog::info("The begin of the tile is {} Row, {} Rank, {} Bank, {} Bankgroup", burst_row_index, rank_index, bank_index, bankgroup_index);  //
+    spdlog::debug("Current burst offset {} belongs to {}th tile, corresponding to the {} iteration {} offset tile allocation", burst_offset, tile_index, tile_iteration_index, tile_iteration_offset);
+    spdlog::debug("The begin of the tile is {} Row, {} Rank, {} Bank, {} Bankgroup", burst_row_index, rank_index, bank_index, bankgroup_index);  //
 
     // outer_row_offset = rank
     // middle_row_offset = bank
@@ -651,7 +651,7 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes(std::vector<std
                         uint32_t column_slice_size = MyAddressAllocator::act_column_slice_size; // Config::system_config.model_n_embd;
                         uint32_t column_slice_index = 0;
                         uint32_t column_slice_offset = 0;
-                        // spdlog::info("Current DRAM Channel Number is {}", MyAddressAllocator::dram_channels);
+                        // spdlog::debug("Current DRAM Channel Number is {}", MyAddressAllocator::dram_channels);
                         uint32_t row_iteration_index = 0;
                         uint32_t row_iteration_border = 0;
                         uint32_t row_index = 0;
@@ -687,7 +687,7 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes(std::vector<std
                                     continue;
                                 }
                                 else {  // the index[0] is larger than the current row border, and the next row is contained
-                                    // spdlog::info("Current row index is {}, larger than the row iteration index {}", index[0], row_iteration_index);
+                                    // spdlog::debug("Current row index is {}, larger than the row iteration index {}", index[0], row_iteration_index);
                                     row_iteration_index = std::floor((index[0] * _dims[1] + index[1]) / MyAddressAllocator::dram_channels);
                                     row_iteration_border = (row_iteration_index + 1) * MyAddressAllocator::dram_channels;
                                     row_index = index[0] * _dims[1] + index[1];
@@ -699,7 +699,7 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes(std::vector<std
                                 }
                             }
                         }
-                        // spdlog::info("start index={}, end index = {}, {} activation Burst offset are generated", indexes.front(), indexes.back(), burst_offsets.size());
+                        // spdlog::debug("start index={}, end index = {}, {} activation Burst offset are generated", indexes.front(), indexes.back(), burst_offsets.size());
                     }
                 }
                 else {
@@ -1029,7 +1029,7 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes(std::vector<std
                 }
                 */
 
-                // spdlog::info("{} address is generate for Head index {}, load KCache token index {} - {}, token offset {} - {}",
+                // spdlog::debug("{} address is generate for Head index {}, load KCache token index {} - {}, token offset {} - {}",
                 //    addrs.size(), head_index, tile_k_begin, tile_k_end, tile_n_begin, tile_n_end);
                 // MyAddressAllocator::check_addrs(addrs);
 
@@ -1102,7 +1102,7 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes(std::vector<std
 
                 //
                 /*
-                // spdlog::info("Current K Cache index is n = {}-{}, k = {}-{}", indexes.front()[0], indexes.back()[0], indexes.front()[1], indexes.back()[1]);
+                // spdlog::debug("Current K Cache index is n = {}-{}, k = {}-{}", indexes.front()[0], indexes.back()[0], indexes.front()[1], indexes.back()[1]);
                 // Calculate the storage location corresponding to the current attention head based on tile_k_begin
                 uint32_t head_index = tile_n_begin / MyAddressAllocator::d_k; // get head index based on tile_n_begin
                 assert(head_index == tile_n_end / MyAddressAllocator::d_k);  // make sure all the accessed data are in the same head
@@ -1136,7 +1136,7 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes(std::vector<std
                     }
                 }
                 */
-                // spdlog::info("{} burst addrs for one tile of K Cache are generated", addrs.size());
+                // spdlog::debug("{} burst addrs for one tile of K Cache are generated", addrs.size());
                 // MyAddressAllocator::check_addrs(addrs);
             }
         }
@@ -1258,7 +1258,7 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes(std::vector<std
                     }
                 }
                 */
-                // spdlog::info("{} burst addrs for one tile of V Cache are generated", addrs.size());
+                // spdlog::debug("{} burst addrs for one tile of V Cache are generated", addrs.size());
                 // MyAddressAllocator::check_addrs(addrs);
             }
         }
@@ -1354,7 +1354,7 @@ std::vector<addr_type> MyTensor::generate_addrs_based_on_indexes_attention(std::
         addr_type addr = MyAddressAllocator::get_sequence_address(burst_offset, start_outer_row_loop, start_middle_row_loop, start_inner_row_loop, start_row, start_col);
         addrs.push_back(addr);
     }
-    // spdlog::info("{} addr offset are generated for head {}, begin index {}, end index{}", burst_offsets.size(), head_index, indexes.front(), indexes.back());
+    // spdlog::debug("{} addr offset are generated for head {}, begin index {}, end index{}", burst_offsets.size(), head_index, indexes.front(), indexes.back());
     return addrs;
 }
 
@@ -1426,7 +1426,7 @@ std::vector<addr_type> MyTensor::generate_pim_comp_addrs_attention(uint32_t head
         for (auto burst_offset : burst_offsets) {
             pim_comp_addrs.push_back(MyAddressAllocator::get_sequence_address_pim(burst_offset, row_indexes, 0));
         }
-        // spdlog::info("{} PIM Comp Addrs has been generated", pim_comp_addrs.size());
+        // spdlog::debug("{} PIM Comp Addrs has been generated", pim_comp_addrs.size());
         // MyAddressAllocator::check_addrs(pim_comp_addrs);
     }
     else if (_tensor_type == TensorType::VCache) {
@@ -1452,7 +1452,7 @@ std::vector<addr_type> MyTensor::generate_pim_comp_addrs_attention(uint32_t head
             pim_comp_addrs.push_back(MyAddressAllocator::get_sequence_address_pim(burst_offset, row_indexes, 0));
         }
         // MyAddressAllocator::check_addrs(pim_comp_addrs);
-        // spdlog::info("{} PIM Comp Addrs has been generated", pim_comp_addrs.size());
+        // spdlog::debug("{} PIM Comp Addrs has been generated", pim_comp_addrs.size());
     }
 
     return pim_comp_addrs;
@@ -1490,7 +1490,7 @@ std::vector<addr_type> MyTensor::generate_pim_addrs_based_on_vector_indexes(std:
             }
         }
         // assert(addrs.size() == allocate_rows.size() * burst_offsets.size() * MyAddressAllocator::bank_allocated_columns_per_tile);
-        // spdlog::info("{} addrs is generated for {} times burst for weight matrix", addrs.size(), allocate_rows.size() * burst_offsets.size() * MyAddressAllocator::bank_allocated_columns_per_tile);
+        // spdlog::debug("{} addrs is generated for {} times burst for weight matrix", addrs.size(), allocate_rows.size() * burst_offsets.size() * MyAddressAllocator::bank_allocated_columns_per_tile);
     }
     else if (_tensor_type == TensorType::KCache) {
 
@@ -1960,5 +1960,5 @@ void MyTensor::append_data_into_container(const std::vector<uint8_t>& data,
 
 
 MyTensor::~MyTensor() {
-    // spdlog::info("Remove the current tensor, disable the allocated memory space");
+    // spdlog::debug("Remove the current tensor, disable the allocated memory space");
 }

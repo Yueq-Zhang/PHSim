@@ -14,10 +14,9 @@ cmake --build build -j2
 ctest --test-dir build --output-on-failure
 ```
 
-配置文件中的相对路径按照程序启动时的工作目录解析。仓库提供的 Case 都以 `build/` 为工作目录，因此运行前应创建输出目录并进入 `build/`：
+配置文件中的相对路径按照程序启动时的工作目录解析。仓库提供的 Case 都以 `build/` 为工作目录，因此进入 `build/` 后运行；输出目录不存在时程序会自动创建：
 
 ```bash
-mkdir -p output/nano
 cd build
 ./NMC_Simulator \
   --simulation_config ../configs/Cases/Nano/simulation_config_Nano.json \
@@ -29,7 +28,7 @@ cd build
 | 参数 | 短参数 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `--simulation_config` | `-sc` | 路径字符串 | 空字符串 | 顶层仿真配置。实际运行必须提供。 |
-| `--output_path` | `-o` | 路径字符串 | `output` | 输出目录。目录必须提前创建。已有 `log.txt` 会在启动时删除。 |
+| `--output_path` | `-o` | 路径字符串 | `output` | 输出目录；不存在时自动创建，创建失败则终止。已有 `log.txt` 会被截断后写入本次完整日志。 |
 
 ## 2. 配置层次与字段判定规则
 
@@ -52,7 +51,7 @@ simulation_config_*.json
 - **条件必填**：只有选择特定后端/模式时才使用。
 - **保留字段**：样例中存在，但当前初始化路径没有消费；修改它不会可靠地改变仿真。
 
-JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确检查的字段外，当前解析器对很多“必须大于零”的条件没有统一报错；下表中的约束应视为有效配置要求。
+JSON 顶层必须是对象；未知字段、缺失的必填字段、类型错误和超出对应 C++ 无符号整数范围的数值都会在启动阶段拒绝。关键核心尺寸、存储容量、精度、模型维度和请求上限还会执行正值及相互关系检查。这样可以避免字段拼写错误或非法值在长时间仿真后才暴露。
 
 ## 3. JSON 配置参数手册
 
@@ -117,6 +116,7 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | `layout` | 字符串 | `NHWC`（兼容值） | 当前算子中的NCHW/NHWC维度切换代码未启用，因此该字段属于兼容保留项；仅接受 `NHWC`，避免其他值静默无效。 |
 | `scheduler` | 字符串 | 必填 | 当前仅实现 `simple`；其他值会在启动时拒绝。 |
 | `operation_log_output_path` | 字符串/路径 | 空字符串（兼容值） | 不再覆盖命令行输出目录；仅接受空字符串，所有输出统一由 `--output_path` 决定。 |
+| `log_level` | 字符串 | `info` | 全局终端与 `log.txt` 日志等级，可选 `trace`、`debug`、`info`、`warn`、`error`、`critical`、`off`。逐算子、逐tile和详细调度信息位于 `debug`；正常实验建议保留 `info`。 |
 
 以下字段出现在部分样例中，但当前初始化代码不读取：
 
@@ -231,7 +231,6 @@ JSON 数字必须非负并适合对应的 C++ 无符号类型。除代码明确�
 | `pim_PE_num` | 无符号整数/MAC单元/PU | 必填 | 每个PU内的PE数量，必须大于0。 |
 | `pim_input_buffer_size` | 无符号整数/byte | 必填 | 每通道PIM全局输入缓冲大小。 |
 | `pim_output_buffer_size` | 无符号整数/byte/PU | 必填 | 每个PU输出缓冲大小。 |
-| `pim_parallel_bank_accesses` | 无符号整数/bank | `0` | `0`使用传统COMP地址复制；大于0时仅对PIM_COMP启用bank错开。有效非零值应能被 `dram_channels` 整除，否则回退传统路径。 |
 | `hybrid_bonding_bw_area_ratio` | 浮点/mm²/(GB/s) | 必填 | 按总带宽估算hybrid-bonding面积。 |
 | `pim_pu_area` | 浮点/mm²/PU | 必填 | 单PU面积。 |
 | `pim_controller_area_overhead` | 浮点/mm²/PU | 必填 | 单PU控制器面积开销。 |
@@ -375,7 +374,7 @@ DRAM命令能耗按 `V × mA × ns` 计算，因此JSON/TXT中的DRAM能耗数�
 | section/字段 | 类型/单位 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `other.epoch_period` | 整数/DRAM周期 | `100000` | NewtonSim epoch统计周期。 |
-| `other.output_level` | 整数 | `1` | `0`仅summary，`1`增加epoch输出，`2`增加直方图；`-1`在代码注释中标为未完整实现。 |
+| `other.output_level` | 整数 | `1` | 仅接受 `0`、`1`、`2`：`0`仅summary，`1`增加epoch输出，`2`增加直方图；未完整实现的 `-1` 会在启动时拒绝。 |
 | `other.output_prefix` | 字符串 | `dramsim3` | CA输出文件前缀。PHSim ED固定使用 `eventdrivendram`。 |
 | `hmc.num_links` | 整数/条 | `4` | HMC专用链路数。 |
 | `hmc.link_width` | 整数/bit | `16` | HMC链路宽度。 |
@@ -403,11 +402,9 @@ DRAM命令能耗按 `V × mA × ns` 计算，因此JSON/TXT中的DRAM能耗数�
 | `eventdrivendram.json`、`eventdrivendram.txt` | EventDriven | ED逐通道请求、合并、命令、逻辑补偿、状态周期、带宽和能耗。 |
 | `proportional_command_compensation.json` | CycleAccurate | Proportional采样的CA命令补偿；关闭采样时可能为空。 |
 | `attention_core_round_commands.tsv` | 相关注意力采样路径 | 每轮注意力采样/命令记录，仅特定加速case产生。 |
-| `log.txt` | 所有运行 | 当前只由独立文件logger写入结束信息；大部分spdlog统计输出仍在终端。建议用shell重定向保存完整控制台。 |
+| `log.txt` | 所有运行 | 与终端同步记录达到 `log_level` 阈值的完整运行日志；每次启动会截断同一输出目录中的旧文件。默认 `info` 保留配置摘要、阶段统计和结束状态，`debug` 额外记录逐算子、逐tile与详细调度信息。 |
 
-测试脚本生成的 `test-process.log` 是CTest封装捕获的终端输出，不是直接运行可执行程序时自动生成的文件。
-
-保存终端输出示例：
+测试脚本生成的 `test-process.log` 是CTest封装捕获的终端输出，不是直接运行可执行程序时自动生成的文件。若还希望在外部保存一份带shell环境信息的控制台副本，可使用：
 
 ```bash
 ./NMC_Simulator -sc ../tests/configs/data_container_gemm_ca_simulation.json \
@@ -727,9 +724,9 @@ mkdir -p output/gemm-ca output/gemm-ed
 
 DataContainer只为访问过的DRAM列物化存储；未写位置读为0。CA和ED共用同一套完成语义：普通READ/WRITE维护DRAM burst，P_HEADER清空对应通道的PIM暂存状态，GWRITE按burst写入输入缓冲区，COMP/COMP_HASH发布结果，READRES按burst读回结果。COMPS_READRES执行后两步的组合语义。重复读取同一个已完成响应不会再次修改状态。
 
-当前Pruning不重放DataContainer的payload修改。因此，只要开启DataContainer，初始化阶段就会关闭仿真加速和Decode Pruning并输出warning，实际执行自动回到逐请求精确路径。这是有意的正确性保护，不是配置失效。
+当前Pruning不重放DataContainer的payload修改。因此，DataContainer不能与 `accelerate_ctrl=true` 或 `decode_pruning_enabled=true` 同时使用；不兼容组合会在启动阶段明确报错，不再静默关闭用户请求的功能。需要比较时应分别运行DataContainer精确基线和不带DataContainer的Pruning实验。
 
-虚拟内存具有独立的“仅地址副作用重放”路径：`Proportional` Tile Pruning被跳过的tile仍会生成其逻辑地址并调用页映射，但不会送入Core、互联或DRAM；Decode Pruning只对地址形状稳定的FFN操作使用该路径，Q/K/V/投影生成仍真实执行，因为KV-cache增长可能改变不同token迭代的地址。虚拟内存与`naive`或`Loop_wise`组合时仍自动回退。测试会对比映射次数、逐通道分布、地址对指纹和最终页表，而不仅是流量计数。
+虚拟内存具有独立的“仅地址副作用重放”路径：`Proportional` Tile Pruning被跳过的tile仍会生成其逻辑地址并调用页映射，但不会送入Core、互联或DRAM；Decode Pruning只对地址形状稳定的FFN操作使用该路径，Q/K/V/投影生成仍真实执行，因为KV-cache增长可能改变不同token迭代的地址。虚拟内存与`naive`或`Loop_wise`加速组合会在启动阶段拒绝。测试会对比映射次数、逐通道分布、地址对指纹和最终页表，而不仅是流量计数。
 
 这里的PIM payload是“透明字节流”，不是数值计算引擎。测试或上层功能模型可以在COMP请求中提供结果字节；若未提供，DataContainer只把当前输入缓冲区快照作为可追踪的占位结果，不执行矩阵乘加、量化或浮点运算。因此专用测试验证的是数据流、顺序、通道隔离和容量边界，不能替代算子数值正确性验证。
 
@@ -873,6 +870,8 @@ ctest --test-dir . --output-on-failure -R "interconnect_backpressure|booksim2_(u
 
 ## 8. 已知配置兼容性提示
 
+- 所有JSON配置现在采用严格字段集合；未知字段通常表示拼写错误并会直接拒绝。INI解析错误、非法整数/浮点值、负时序值和不可表示的DRAM容量也会在启动时终止。`--output_path`不存在时程序会创建目录，创建失败则终止，不会改写到当前目录。
+- DataContainer与仿真加速/Decode Pruning、虚拟内存与非`Proportional`加速属于不兼容组合，必须由用户修改配置，不再通过warning静默关闭功能。
 - `gen_request_output_size` 已用于固定请求的输出目标，但只有 `output_token_iteration_enable=true` 才按该目标重复Decode；默认关闭时仍执行原有固定stage序列。
 - `batch_scheduler`缺失时默认使用`legacy`，因此旧配置不改变调度语义。`continuous`仅支持完整模型且要求`output_token_iteration_enable=true`；单算子、多层测试或固定stage序列会在启动时拒绝该组合。
 - `gen_request=false` 时，Client读取CSV第1列作为输入长度、第2列作为输出长度；文件缺失、列数错误、非法数值或空数据都会在启动时给出明确错误。仓库Case默认路径指向 `sample_trace/request-traces/`。

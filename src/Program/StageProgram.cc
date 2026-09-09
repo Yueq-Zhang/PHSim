@@ -148,7 +148,7 @@ void StageProgram::init_program() {
 
 void StageProgram::init_program_single_op(Ops test_single_op_type) {
     assert(_stage == Stage::Single_test);
-    spdlog::info(">>>>>> Initialize Single Layer Model Program <<<<<<");
+    spdlog::debug(">>>>>> Initialize Single Layer Model Program <<<<<<");
 
     // the type of the operation can be required
     uint32_t batch_size = _breq->_reqs.size();
@@ -223,7 +223,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
                 my_inputs_K.push_back(my_K);
             }
 
-            spdlog::info("QKT Operation Test");
+            spdlog::debug("QKT Operation Test");
             auto my_single_op = add_op(std::make_shared<GEMM>("GEMM_atten_QKT_test", my_inputs_K));
             auto my_outputs = my_single_op->get_my_outputs(my_inputs_Q, TensorType::ACT);
             find_executable_node(my_inputs_Q[0]);
@@ -251,7 +251,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
                 my_inputs_S.push_back(my_S);
                 my_inputs_V.push_back(my_V);
             }
-            spdlog::info("SV Operation Test");
+            spdlog::debug("SV Operation Test");
             auto my_single_op = add_op(std::make_shared<GEMM>("GEMM_atten_SV_test", my_inputs_V));
             auto my_outputs = my_single_op->get_my_outputs(my_inputs_S, TensorType::ACT);
             find_executable_node(my_inputs_S[0]);
@@ -304,7 +304,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
         auto my_single_op = add_op(std::make_shared<Gelu>("gelu_op_test"));
         auto my_outputs = my_single_op->get_my_outputs(my_inputs);
 
-        spdlog::info("Test_gelu {}", my_single_op->get_name());
+        spdlog::debug("Test_gelu {}", my_single_op->get_name());
         find_executable_node(my_inputs[0]);
     }
     else if (test_single_op_type == Ops::SiLU) {
@@ -318,7 +318,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
         auto my_single_op = add_op(std::make_shared<SiLU>("silu_op_test"));
         auto my_outputs = my_single_op->get_my_outputs(my_inputs);
 
-        spdlog::info("Test_silu {}", my_single_op->get_name());
+        spdlog::debug("Test_silu {}", my_single_op->get_name());
         find_executable_node(my_inputs[0]);
     }
     else if (test_single_op_type == Ops::Softmax) {
@@ -331,7 +331,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
             my_inputs.push_back(my_input);
         }
         auto my_single_op = add_op(std::make_shared<Softmax>("softmax_op_test"));
-        spdlog::info("Test_softmax {}", my_single_op->get_name());
+        spdlog::debug("Test_softmax {}", my_single_op->get_name());
         auto my_outputs = my_single_op->get_my_outputs(my_inputs);
         find_executable_node(my_inputs[0]);
     }
@@ -354,7 +354,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
         my_inputs.insert(my_inputs.end(), my_inputs_2.begin(), my_inputs_2.end());
 
         auto my_single_op = add_op(std::make_shared<Add>("Add_op_test"));
-        spdlog::info("Test_Add {}", my_single_op->get_name());
+        spdlog::debug("Test_Add {}", my_single_op->get_name());
         auto my_outputs = my_single_op->get_my_outputs(my_inputs);
         find_executable_node(my_inputs[0]);
     }
@@ -376,7 +376,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
         my_inputs.insert(my_inputs.end(), my_inputs_2.begin(), my_inputs_2.end());
 
         auto my_single_op = add_op(std::make_shared<Mul>("Mul_op_test"));
-        spdlog::info("Test_Mul {}", my_single_op->get_name());
+        spdlog::debug("Test_Mul {}", my_single_op->get_name());
         auto my_outputs = my_single_op->get_my_outputs(my_inputs);
         find_executable_node(my_inputs[0]);
     }
@@ -397,7 +397,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
             "DataConvert_weight_src", weight_dim, TensorType::WGT, true, src_scheme);
         auto my_single_op = add_op(std::make_shared<DataConvert>(
             "DataConvert_single_op_test", src_scheme, dst_scheme));
-        spdlog::info("Test_DataConvert {}", my_single_op->get_name());
+        spdlog::debug("Test_DataConvert {}", my_single_op->get_name());
         auto my_outputs = my_single_op->get_my_outputs({my_weight}, TensorType::WGT);
         find_executable_node(my_weight);
     }
@@ -414,7 +414,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
             my_inputs.push_back(my_input);
         }
         auto my_single_op = add_op(std::make_shared<GEMV>("MyGEMV_op_test_Weight",  std::vector<Ptr<MyTensor>>{my_weight, my_bias}));
-        spdlog::info("Test GEMV Operation {}", my_single_op->get_name());
+        spdlog::debug("Test GEMV Operation {}", my_single_op->get_name());
 
         if (test_KVcache_append) {
             // KV Cache
@@ -444,7 +444,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
                 my_inputs_Q.push_back(std::make_shared<MyTensor>("Q", Q_dim, TensorType::ACT, true));
                 my_inputs_K.push_back(std::make_shared<MyTensor>("K", KVCache_dim, TensorType::KCache, true));
             }
-            spdlog::info("QKT GEMV Operation Test");
+            spdlog::debug("QKT GEMV Operation Test");
             auto my_single_op = add_op(std::make_shared<GEMV>("GEMV_atten_QKT_test", my_inputs_K));
             auto my_outputs = my_single_op->get_my_outputs(my_inputs_Q, TensorType::ACT);
             find_executable_node(my_inputs_Q[0]);
@@ -459,7 +459,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
                 my_inputs_S.push_back(std::make_shared<MyTensor>("S", S_dim, TensorType::ACT, true));
                 my_inputs_V.push_back(std::make_shared<MyTensor>("V", KVCache_dim, TensorType::VCache, true));
             }
-            spdlog::info("SV GEMV Operation Test");
+            spdlog::debug("SV GEMV Operation Test");
             auto my_single_op = add_op(std::make_shared<GEMV>("GEMV_atten_SV_test", my_inputs_V));
             auto my_outputs = my_single_op->get_my_outputs(my_inputs_S, TensorType::ACT);
             find_executable_node(my_inputs_S[0]);
@@ -506,7 +506,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
                 my_inputs_Q.push_back(std::make_shared<MyTensor>("Q", Q_dim, TensorType::ACT, true));
                 my_inputs_K.push_back(std::make_shared<MyTensor>("K", KVCache_dim, TensorType::KCache, true));
             }
-            spdlog::info("QKT PIM-GEMV Operation Test");
+            spdlog::debug("QKT PIM-GEMV Operation Test");
             auto my_single_op = add_op(std::make_shared<PIMGEMV>("PIM_GEMV_atten_QKT_test", my_inputs_K));
             auto my_outputs = my_single_op->get_my_outputs(my_inputs_Q, TensorType::ACT);
             find_executable_node(my_inputs_Q[0]);
@@ -523,7 +523,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
                 my_inputs_V.push_back(std::make_shared<MyTensor>("V", KVCache_dim, TensorType::VCache, true));
             }
 
-            spdlog::info("SV PIM-GEMV Operation Test");
+            spdlog::debug("SV PIM-GEMV Operation Test");
             auto my_single_op = add_op(std::make_shared<PIMGEMV>("PIM_GEMV_atten_SV_test", my_inputs_V));
             auto my_outputs = my_single_op->get_my_outputs(my_inputs_S, TensorType::ACT);
             find_executable_node(my_inputs_S[0]);
@@ -543,7 +543,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
             my_inputs_Q.push_back(std::make_shared<MyTensor>("Q", Q_dim, TensorType::ACT, true));
             my_inputs_K.push_back(std::make_shared<MyTensor>("K", KVCache_dim, TensorType::KCache, true));
         }
-        spdlog::info("QKT PIM-GEMV Operation Test");
+        spdlog::debug("QKT PIM-GEMV Operation Test");
         auto my_single_op = add_op(std::make_shared<PIMGEMV>("PIM_GEMV_atten_QKT_test", my_inputs_K));
         auto my_outputs = my_single_op->get_my_outputs(my_inputs_Q, TensorType::ACT);
         find_executable_node(my_inputs_Q[0]);
@@ -560,7 +560,7 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
             my_inputs_V.push_back(std::make_shared<MyTensor>("V", KVCache_dim, TensorType::VCache, true));
         }
 
-        spdlog::info("SV PIM-GEMV Operation Test");
+        spdlog::debug("SV PIM-GEMV Operation Test");
         auto my_single_op = add_op(std::make_shared<PIMGEMV>("PIM_GEMV_atten_SV_test", my_inputs_V));
         auto my_outputs = my_single_op->get_my_outputs(my_inputs_S, TensorType::ACT);
         find_executable_node(my_inputs_S[0]);
@@ -572,9 +572,9 @@ void StageProgram::init_program_single_op(Ops test_single_op_type) {
 
 
 void StageProgram::init_program_multi_layer() {
-    spdlog::info(">>>>>> Initialize Multi Layer Model Program <<<<<<");
+    spdlog::debug(">>>>>> Initialize Multi Layer Model Program <<<<<<");
     if (_test_multi_layer_name == "ffn"){
-        spdlog::info(">>>>>> Initialize Multi Layer Model Program: ffn <<<<<<");
+        spdlog::debug(">>>>>> Initialize Multi Layer Model Program: ffn <<<<<<");
         MyAddressAllocator::activation_malloc();
         uint32_t Demb = Config::system_config.model_n_embd;
         // generate activation for multi batches
@@ -588,7 +588,7 @@ void StageProgram::init_program_multi_layer() {
         find_executable_node(my_inputs);
     }
     else if (_test_multi_layer_name == "decode_ffn") {
-        spdlog::info(">>>>>> Initialize Multi Layer Model Program: decode ffn <<<<<<");
+        spdlog::debug(">>>>>> Initialize Multi Layer Model Program: decode ffn <<<<<<");
         _stage_platform = StagePlatform::PIM;
         uint32_t Demb = Config::system_config.model_n_embd;
         MyAddressAllocator::activation_malloc();
@@ -611,7 +611,7 @@ void StageProgram::init_program_multi_layer() {
         find_executable_node(my_inputs);
     }
     else if (_test_multi_layer_name == "decode_attn") {
-        spdlog::info(">>>>>> Initialize Multi Layer Model Program: decode attn <<<<<<");
+        spdlog::debug(">>>>>> Initialize Multi Layer Model Program: decode attn <<<<<<");
         _stage_platform = StagePlatform::PIM;
         uint32_t Demb = Config::system_config.model_n_embd;
         uint32_t num_heads = Config::system_config.model_n_head;
@@ -627,7 +627,7 @@ void StageProgram::init_program_multi_layer() {
         find_executable_node(my_inputs);
     }
     else if (_test_multi_layer_name == "attn") {
-        spdlog::info(">>>>>> Initialize Multi Layer Model Program: attn <<<<<<");
+        spdlog::debug(">>>>>> Initialize Multi Layer Model Program: attn <<<<<<");
         uint32_t Demb = Config::system_config.model_n_embd;
         MyAddressAllocator::activation_malloc();
 
@@ -642,7 +642,7 @@ void StageProgram::init_program_multi_layer() {
     }
     else if (_test_multi_layer_name == "decode" ||
              _test_multi_layer_name == "npu_decode") {
-        spdlog::info(">>>>>> Initialize Multi Layer Model Program: decode <<<<<<");
+        spdlog::debug(">>>>>> Initialize Multi Layer Model Program: decode <<<<<<");
         _stage_platform = _test_multi_layer_name == "npu_decode"
                               ? StagePlatform::SA
                               : StagePlatform::PIM;
@@ -678,7 +678,7 @@ void StageProgram::init_program_multi_layer() {
             Config::system_config.decode_pruning_compile_context =
                 decode_compile_pruning_enabled &&
                 !compile_npu_sample_fully;
-            spdlog::info(
+            spdlog::debug(
                 "Build Decode iteration {}/{} with KV length {}",
                 iteration + 1, decode_iterations,
                 _breq->_reqs.empty() ? 0 : _breq->_reqs.front()->input_size);
@@ -699,7 +699,7 @@ void StageProgram::init_program_multi_layer() {
         find_executable_node(my_inputs);
     }
     else if (_test_multi_layer_name == "prefill") {
-        spdlog::info(">>>>>> Initialize Multi Layer Model Program: Prefill <<<<<<");
+        spdlog::debug(">>>>>> Initialize Multi Layer Model Program: Prefill <<<<<<");
         MyAddressAllocator::activation_malloc();
         uint32_t Demb = Config::system_config.model_n_embd;        // generate activation for multi batches
         std::vector<Ptr<MyTensor>> my_inputs;
@@ -714,7 +714,7 @@ void StageProgram::init_program_multi_layer() {
         find_executable_node(my_inputs);
     }
     else if (_test_multi_layer_name == "llama_ffn") {
-        spdlog::info(">>>>>> Initialize Multi Layer Model Program: llama_ffn <<<<<<");
+        spdlog::debug(">>>>>> Initialize Multi Layer Model Program: llama_ffn <<<<<<");
         MyAddressAllocator::activation_malloc();
         uint32_t Demb = Config::system_config.model_n_embd;
         // generate activation for multi batches
@@ -728,7 +728,7 @@ void StageProgram::init_program_multi_layer() {
         find_executable_node(my_inputs);
     }
     else if (_test_multi_layer_name == "data_convert_weights") {
-        spdlog::info(">>>>>> Initialize Multi Layer Model Program: data_convert_weights <<<<<<");
+        spdlog::debug(">>>>>> Initialize Multi Layer Model Program: data_convert_weights <<<<<<");
         AllocationScheme src_scheme = MyAddressAllocator::allocation_scheme;
         AllocationScheme dst_scheme;
         if (src_scheme == AllocationScheme::NPU) {
@@ -1445,7 +1445,7 @@ std::vector<Ptr<MyTensor>> StageProgram::test_llama_decode_stage_ffn(std::vector
 
 
 Ptr<Operation> StageProgram::add_op(std::shared_ptr<Operation> op) {
-    // spdlog::info("operation {} added. add_op", op->get_name());
+    // spdlog::debug("operation {} added. add_op", op->get_name());
     _op_map[op->get_id()] = op;
     return op;
 }
@@ -1461,7 +1461,7 @@ std::vector<Ptr<MyTensor>> StageProgram::get_my_outputs(Ptr<Operation> op, std::
 
 void StageProgram::find_executable_node(Ptr<BTensor> tensor) {
     for (auto op : tensor->get_child_nodes()) {
-        // spdlog::info("initializing operation {} ...", op->get_name());
+        // spdlog::debug("initializing operation {} ...", op->get_name());
         if (op->check_executable()) {
             _executable_operations.push_back(op);
         }
@@ -1471,7 +1471,7 @@ void StageProgram::find_executable_node(Ptr<BTensor> tensor) {
 
 void StageProgram::find_executable_node(Ptr<MyTensor> tensor) {
     for (auto op : tensor->get_child_nodes()) {
-        // spdlog::info("initializing operation {} ...", op->get_name());
+        // spdlog::debug("initializing operation {} ...", op->get_name());
         if (op->check_executable()) {
             _executable_operations.push_back(op);
         }
@@ -1482,7 +1482,7 @@ void StageProgram::find_executable_node(Ptr<MyTensor> tensor) {
 void StageProgram::find_executable_node(std::vector<Ptr<MyTensor>> tensors) {
     for (const auto& tensor : tensors) {
         for (auto op : tensor->get_child_nodes()) {
-            // spdlog::info("initializing operation {} ...", op->get_name());
+            // spdlog::debug("initializing operation {} ...", op->get_name());
             if (op->check_executable() && !check_exist_in_executable(op->get_id())) {
                 _executable_operations.push_back(op);
             }
@@ -1503,18 +1503,18 @@ bool StageProgram::check_exist_in_executable(uint32_t op_id) {
 void StageProgram::finish_operation(uint32_t id) {
     _op_map[id]->set_finish();
     for (auto iter = _executable_operations.begin(); iter != _executable_operations.end(); iter++) {
-        // spdlog::info("iterating operation: {}", (*iter)->get_name());
+        // spdlog::debug("iterating operation: {}", (*iter)->get_name());
         if (id == (*iter)->get_id()) {
-            // spdlog::info("erasing operation: {}", (*iter)->get_name());
+            // spdlog::debug("erasing operation: {}", (*iter)->get_name());
             _executable_operations.erase(iter);
             break;
         }
     }
 
     for (auto op : _op_map[id]->get_child_nodes()) {
-        // spdlog::info("finding operation: {} / {} ", op->get_name(), op->get_id());
+        // spdlog::debug("finding operation: {} / {} ", op->get_name(), op->get_id());
         if (op->check_executable() && !check_exist_in_executable(op->get_id())) {
-            // spdlog::info("found operation: {}", op->get_name());
+            // spdlog::debug("found operation: {}", op->get_name());
             _executable_operations.push_back(op);
         }
     }

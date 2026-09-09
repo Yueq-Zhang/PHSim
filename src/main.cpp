@@ -2,10 +2,13 @@
 #include <limits>
 #include <fstream>
 #include <chrono>
+#include <filesystem>
+#include <set>
+#include <vector>
 
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/basic_file_sink.h"
-#include "spdlog/sinks/rotating_file_sink.h"
+#include "spdlog/sinks/stdout_color_sinks.h"
 #include "../ext/argparse.hpp"
 #include "../ext/json.hpp"
 
@@ -15,7 +18,6 @@
 
 
 int finish_trans;
-std::ofstream callback_record_file("../output/NMC_callback_record.txt");
 std::chrono::time_point<std::chrono::system_clock>  time_start = std::chrono::high_resolution_clock::now();
 std::chrono::time_point<std::chrono::system_clock>  time_end = std::chrono::high_resolution_clock::now();  // record the end time
 int record_interval = 200;
@@ -49,7 +51,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    try {
     nlohmann::json simulation_config = load_config(simulation_config_path);
+    using phsim::JsonValueKind;
+    phsim::ConfigValidator::ValidateJsonObject(
+        simulation_config, "simulation", simulation_config_path,
+        {
+            {"compute_die_config_file_path", JsonValueKind::String, true},
+            {"DRAM_config_file_path", JsonValueKind::String, true},
+            {"PIM_config_file_path", JsonValueKind::String, true},
+            {"model_config_file_path", JsonValueKind::String, true},
+            {"inference_config_file_path", JsonValueKind::String, true},
+            {"request_file_path", JsonValueKind::String, true},
+        });
 
     // load the config files
     compute_die_config_path = simulation_config["compute_die_config_file_path"];
@@ -59,18 +73,65 @@ int main(int argc, char *argv[]) {
     model_config_path= simulation_config["model_config_file_path"];;
     request_trace_file_path = simulation_config["request_file_path"];
 
+    for (const auto& config_path : {
+             std::pair<const char*, const std::string*>{
+                 "compute_die_config_file_path", &compute_die_config_path},
+             {"DRAM_config_file_path", &memory_config_path},
+             {"PIM_config_file_path", &pim_config_path},
+             {"inference_config_file_path", &inference_config_path},
+             {"model_config_file_path", &model_config_path}}) {
+        if (config_path.second->empty()) {
+            throw std::invalid_argument(
+                std::string(config_path.first) +
+                " must not be empty in simulation config '" +
+                simulation_config_path + "'");
+        }
+    }
+
+    if (output_path.empty()) {
+        throw std::invalid_argument("output_path must not be empty");
+    }
+    std::error_code directory_error;
+    std::filesystem::create_directories(output_path, directory_error);
+    if (directory_error || !std::filesystem::is_directory(output_path)) {
+        throw std::runtime_error(
+            "Cannot create output directory '" + output_path + "': " +
+            directory_error.message());
+    }
+
+    const nlohmann::json logging_config = load_config(compute_die_config_path);
+    std::string configured_log_level = "info";
+    if (const auto log_level = logging_config.find("log_level");
+        log_level != logging_config.end()) {
+        if (!log_level->is_string()) {
+            throw std::invalid_argument(
+                "Field 'log_level' in compute config '" +
+                compute_die_config_path + "' must be a string");
+        }
+        configured_log_level = log_level->get<std::string>();
+    }
+    static const std::set<std::string> supported_log_levels = {
+        "trace", "debug", "info", "warn", "error", "critical", "off"};
+    if (supported_log_levels.count(configured_log_level) == 0) {
+        throw std::invalid_argument(
+            "Unsupported log_level='" + configured_log_level +
+            "' in compute config '" + compute_die_config_path + "'");
+    }
+
     // create the log file
     try {
         std::string log_file_path = output_path + "/log.txt";
-        if (std::filesystem::exists(log_file_path)) {
-            if (!std::filesystem::remove(log_file_path)) {
-                throw std::runtime_error("Removing the exist log file " + log_file_path + " Failed" );
-            }
-            std::cout << "Remove the exist log file" << std::endl;
-        }
-        file_logger = spdlog::basic_logger_mt("logger",  log_file_path);
-        file_logger->set_level(spdlog::level::trace);
-        // spdlog::set_default_logger(file_logger);
+        auto console_sink =
+            std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+        auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
+            log_file_path, true);
+        std::vector<spdlog::sink_ptr> sinks = {console_sink, file_sink};
+        file_logger = std::make_shared<spdlog::logger>(
+            "phsim", sinks.begin(), sinks.end());
+        file_logger->set_level(spdlog::level::from_str(configured_log_level));
+        file_logger->flush_on(spdlog::level::warn);
+        file_logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
+        spdlog::set_default_logger(file_logger);
     } catch (const spdlog::spdlog_ex& ex) {
         throw std::runtime_error("Log init failed: " + std::string(ex.what()));
     }
@@ -103,20 +164,27 @@ int main(int argc, char *argv[]) {
     // Simulator structure
     auto simulator = std::make_unique<Simulator>(Config::system_config);
 
-    printf("Launching model\n");
+    spdlog::info("Launching model");
     simulator->launch_model(model);  // Add model structure to the simulator for simulation
     spdlog::info("Launch model: {}", model_name);
     simulator->run(model_name);
 
-    std::cout << "Finish the simulation" << std::endl;
+    spdlog::info("Finish the simulation");
 
     simulator.reset();
     model.reset();
     TwoLevelPageMapper::cleanup_two_level_mapper();
     MyAddressAllocator::cleanup();
-    file_logger->info("Finish the simulation");
-    file_logger->flush();
+    spdlog::default_logger()->flush();
     file_logger.reset();
+    spdlog::shutdown();
 
     return 0;
+    } catch (const std::exception& error) {
+        spdlog::critical("Simulation failed: {}", error.what());
+        if (spdlog::default_logger()) {
+            spdlog::default_logger()->flush();
+        }
+        return 1;
+    }
 }

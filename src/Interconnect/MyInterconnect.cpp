@@ -1,7 +1,9 @@
 
 #include "MyInterconnect.hpp"
 
-#include <cmath>
+#include "../clock_math.hpp"
+
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -25,14 +27,6 @@ MyInterconnect::MyInterconnect(const SysConfig& config) : _config(config) {
     spdlog::info("Initialize My Interconnect ({})",
                  config.icnt_type == IcntType::BOOKSIM2 ? "booksim2"
                                                         : "simple");
-
-    // period information (us) =  1 / MHZ
-    _icnt_period = 1.0 / static_cast<double>(_config.icnt_freq);
-    _dram_period = 1.0 / static_cast<double>(_config.dram_freq);
-    _icnt_freq = _config.icnt_freq;
-    _dram_freq = _config.dram_freq;
-    _dram_time = 0.0;
-    _icnt_time = 0.0;
 
     _latency = config.icnt_latency;
     _cycles = 0;
@@ -105,8 +99,15 @@ MyInterconnect::MyInterconnect(const SysConfig& config) : _config(config) {
 }
 
 bool MyInterconnect::running() {
-    return _booksim &&
-           _booksim_injected_packets != _booksim_ejected_packets;
+    if (_booksim) {
+        return _booksim_injected_packets != _booksim_ejected_packets;
+    }
+
+    const auto has_packets = [](const auto& buffers) {
+        return std::any_of(buffers.begin(), buffers.end(),
+                           [](const auto& buffer) { return !buffer.empty(); });
+    };
+    return has_packets(_in_buffers) || has_packets(_out_buffers);
 }
 
 void MyInterconnect::cycle() {
@@ -336,16 +337,16 @@ uint32_t MyInterconnect::get_booksim_packet_size(
 
 
 cycle_type MyInterconnect::get_core_cycle() {
-    return (cycle_type)((double)_cycles * (double)Config::system_config.core_freq /
-                        (double)Config::system_config.icnt_freq);
+    return phsim::clock::scale_cycles_floor(
+        _cycles, _config.icnt_freq, _config.core_freq);
 }
 
 
 cycle_type MyInterconnect::get_dram_cycle() {
-    double dram_cycle = std::ceil((double)_cycles * (double)Config::system_config.dram_freq / (double)Config::system_config.icnt_freq);
+    const cycle_type dram_cycle = phsim::clock::scale_cycles_ceil(
+        _cycles, _config.icnt_freq, _config.dram_freq);
     spdlog::info("get dram cycle is {}", dram_cycle);
-    return (cycle_type)(dram_cycle);
-
+    return dram_cycle;
 }
 
 cycle_type MyInterconnect::get_icnt_cycle() {
@@ -357,6 +358,10 @@ void MyInterconnect::print_stats() {
     std::ofstream json_out(
         Config::system_config.log_dir + "/icnt_traffic.json",
         std::ofstream::out);
+    if (!json_out.is_open()) {
+        throw std::runtime_error(
+            "Cannot open interconnect traffic statistics file");
+    }
     json_out << "{";
     for (uint32_t channel = 0; channel < _n_memories; ++channel) {
         const auto& measured = _measured_traffic[channel];
@@ -611,5 +616,6 @@ void MyInterconnect::consume_dram_pop(int mem_id)
 }
 
 uint64_t MyInterconnect::get_dram_tick(uint64_t global_cycle) {
-    return global_cycle * _config.dram_freq / _config.icnt_freq;     // 根据你的时钟调度方式替换这里
+    return phsim::clock::scale_cycles_floor(
+        global_cycle, _config.icnt_freq, _config.dram_freq);
 }

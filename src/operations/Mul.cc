@@ -1,4 +1,5 @@
 #include "Mul.h"
+#include "SramTilingValidation.hpp"
 
 Mul::Mul(std::string name) : Operation(std::move(name)) {}
 
@@ -18,7 +19,7 @@ std::vector<Ptr<MyTensor>> Mul::get_my_outputs(std::vector<Ptr<MyTensor>> inputs
         _my_inputs_2[i] = inputs[i + _batch_size];
         assert(_my_inputs_1[i]->get_dims() == _my_inputs_2[i]->get_dims());
         auto input_dims = _my_inputs_1[i]->get_dims();
-        spdlog::info("Mul input index: {} / input size: {}", i, inputs[i]->get_dims());
+        spdlog::debug("Mul input index: {} / input size: {}", i, inputs[i]->get_dims());
         _my_outputs[i] = std::make_shared<MyTensor>(_name + "_output", input_dims, output_tensor_type, false);
     }
 
@@ -45,11 +46,14 @@ void Mul::calculate_my_loops() {
     _inner_loop[0] = input_dims[0];
     _inner_loop[1] = input_dims[1];
 
-    while (sram_size_needed() > _config.spad_size KB / 2) {
-        _outer_loop[0] *= 2;
-        _inner_loop[0] = (_inner_loop[0] & 1) + (_inner_loop[0] >> 1);
+    const uint64_t available_sram_bytes =
+        phsim::AvailablePingPongSramBytes(_config.spad_size);
+    while (sram_size_needed() > available_sram_bytes) {
+        phsim::HalveSramTileDimensionAndDoubleCount(
+            _inner_loop, 0, _outer_loop, 0, "Mul '" + _name + "'",
+            sram_size_needed(), available_sram_bytes);
     }
-    spdlog::info("Mul for {} batches, inner loop: {}, outer loop: {}", _batch_size, _inner_loop, _outer_loop);
+    spdlog::debug("Mul for {} batches, inner loop: {}, outer loop: {}", _batch_size, _inner_loop, _outer_loop);
 }
 
 void Mul::initialize_my_tiles() {
@@ -145,11 +149,11 @@ Tile Mul::initialize_my_instructions(uint32_t N) {
     return tile;
 }
 
-uint32_t Mul::sram_size_needed() {
-    auto n = _inner_loop[0];
-    auto k = _inner_loop[1];
+uint64_t Mul::sram_size_needed() {
+    uint64_t n = _inner_loop[0];
+    uint64_t k = _inner_loop[1];
     if (k % _config.vector_core_width != 0) {
         k += _config.vector_core_width - k % _config.vector_core_width;
     }
-    return 3 * n * k * MyAddressAllocator::precision_activation;
+    return 3ULL * n * k * MyAddressAllocator::precision_activation;
 }

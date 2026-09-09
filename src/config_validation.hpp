@@ -4,24 +4,108 @@
 #include <cmath>
 #include <cctype>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 
+#include "json.hpp"
+
 namespace phsim {
+
+enum class JsonValueKind {
+    Boolean,
+    String,
+    UnsignedInteger,
+    UnsignedInteger64,
+    Number,
+};
+
+struct JsonFieldSpec {
+    const char* name;
+    JsonValueKind kind;
+    bool required;
+};
 
 // Configuration contracts shared by the JSON front end, the DRAM INI parser,
 // and tests. Keeping cross-file checks here prevents one backend from silently
 // interpreting a duplicated setting differently from another backend.
 class ConfigValidator {
 public:
+    static void ValidateJsonObject(
+        const nlohmann::json& config, const std::string& config_role,
+        const std::string& config_path,
+        std::initializer_list<JsonFieldSpec> fields) {
+        if (!config.is_object()) {
+            throw std::invalid_argument(
+                config_role + " config '" + config_path +
+                "' must contain a JSON object");
+        }
+
+        for (const auto& entry : config.items()) {
+            const JsonFieldSpec* field = nullptr;
+            for (const auto& candidate : fields) {
+                if (entry.key() == candidate.name) {
+                    field = &candidate;
+                    break;
+                }
+            }
+            if (field == nullptr) {
+                throw std::invalid_argument(
+                    "Unknown field '" + entry.key() + "' in " +
+                    config_role + " config '" + config_path + "'");
+            }
+            if (!JsonValueMatches(entry.value(), field->kind)) {
+                throw std::invalid_argument(
+                    "Field '" + entry.key() + "' in " + config_role +
+                    " config '" + config_path + "' must be " +
+                    JsonKindName(field->kind));
+            }
+        }
+
+        for (const auto& field : fields) {
+            if (field.required && !config.contains(field.name)) {
+                throw std::invalid_argument(
+                    "Missing required field '" + std::string(field.name) +
+                    "' in " + config_role + " config '" + config_path +
+                    "'");
+            }
+        }
+    }
+
     static void ValidateBackendCapabilities(bool event_driven,
                                             bool enable_self_refresh) {
         if (event_driven && enable_self_refresh) {
             throw std::invalid_argument(
                 "EventDriven DRAM does not model self-refresh timing; disable "
                 "enable_self_refresh or use the CycleAccurate backend");
+        }
+    }
+
+    static void ValidateFeatureCompatibility(
+        bool data_container_enabled, bool virtual_memory_enabled,
+        bool acceleration_enabled, const std::string& acceleration_method,
+        bool decode_pruning_enabled) {
+        if (data_container_enabled && acceleration_enabled) {
+            throw std::invalid_argument(
+                "dram_data_container_enable=true is incompatible with "
+                "accelerate_ctrl=true because DataContainer requires exact "
+                "per-request data side effects");
+        }
+        if (virtual_memory_enabled && acceleration_enabled &&
+            acceleration_method != "Proportional") {
+            throw std::invalid_argument(
+                "virtual_mem_hash_enable=true is incompatible with "
+                "accelerate_method='" + acceleration_method +
+                "'; virtual-memory side-effect replay supports only "
+                "Proportional acceleration");
+        }
+        if (data_container_enabled && decode_pruning_enabled) {
+            throw std::invalid_argument(
+                "dram_data_container_enable=true is incompatible with "
+                "decode_pruning_enabled=true because DataContainer requires "
+                "exact per-request data side effects");
         }
     }
 
@@ -294,6 +378,48 @@ public:
     }
 
 private:
+    static bool JsonValueMatches(const nlohmann::json& value,
+                                 JsonValueKind kind) {
+        switch (kind) {
+            case JsonValueKind::Boolean:
+                return value.is_boolean();
+            case JsonValueKind::String:
+                return value.is_string();
+            case JsonValueKind::UnsignedInteger:
+                return IsNonNegativeInteger(value) &&
+                       value.get<uint64_t>() <=
+                           std::numeric_limits<uint32_t>::max();
+            case JsonValueKind::UnsignedInteger64:
+                return IsNonNegativeInteger(value);
+            case JsonValueKind::Number:
+                return value.is_number();
+        }
+        return false;
+    }
+
+    static const char* JsonKindName(JsonValueKind kind) {
+        switch (kind) {
+            case JsonValueKind::Boolean:
+                return "a boolean";
+            case JsonValueKind::String:
+                return "a string";
+            case JsonValueKind::UnsignedInteger:
+                return "a non-negative integer in the uint32 range";
+            case JsonValueKind::UnsignedInteger64:
+                return "a non-negative integer in the uint64 range";
+            case JsonValueKind::Number:
+                return "a number";
+        }
+        return "a valid value";
+    }
+
+    static bool IsNonNegativeInteger(const nlohmann::json& value) {
+        if (value.is_number_unsigned()) {
+            return true;
+        }
+        return value.is_number_integer() && value.get<int64_t>() >= 0;
+    }
+
     static bool IsPowerOfTwo(uint32_t value) {
         return value != 0 && (value & (value - 1)) == 0;
     }

@@ -36,7 +36,7 @@ Operation::Operation(std::string name) {
     _name = name;
     _finish = false;
 
-    // spdlog::info("operation {} generated", name);
+    // spdlog::debug("operation {} generated", name);
 
     _stat = OperationStat(_name);
     _acc_spad_addr = ACCUM_SPAD_BASE;
@@ -57,19 +57,19 @@ std::pair<addr_type, uint32_t> Operation::allocate_sram_addr(uint32_t size, bool
 }
 
 std::vector<Ptr<BTensor>> Operation::get_outputs(std::vector<Ptr<BTensor>> inputs) {
-    spdlog::info("parent");
+    spdlog::debug("parent");
 
     return {};
 }
 
 std::vector<Ptr<MyTensor>> Operation::get_my_outputs(std::vector<Ptr<MyTensor>> inputs, TensorType output_tensor_type) {
-    spdlog::info("parent");
+    spdlog::debug("parent");
 
     return {};
 }
 
 std::vector<Ptr<MyTensor>> Operation::kvcache_append(std::vector<Ptr<MyTensor>> inputs, std::vector<Ptr<MyTensor>> kvcaches, TensorType output_tensor_type) {
-    spdlog::info("parent");
+    spdlog::debug("parent");
 
     return {};
 }
@@ -123,7 +123,7 @@ std::vector<std::shared_ptr<Operation>> Operation::get_child_nodes() {
 
     if (_num_outputs == 1) {
         auto output = _my_outputs[0];
-        spdlog::info("Operation {} has {} child nodes", _name, output->num_child_nodes());
+        spdlog::debug("Operation {} has {} child nodes", _name, output->num_child_nodes());
         for (auto child : output->get_child_nodes()) {
             result.push_back(child);
         }
@@ -133,7 +133,7 @@ std::vector<std::shared_ptr<Operation>> Operation::get_child_nodes() {
     }
     /*
     for (auto output : _my_outputs) {
-        spdlog::info("Operation {} has {} child nodes", _name, output->num_child_nodes());
+        spdlog::debug("Operation {} has {} child nodes", _name, output->num_child_nodes());
         for (auto child : output->get_child_nodes()) {
             result.push_back(child);
         }
@@ -147,7 +147,7 @@ bool Operation::check_executable() {
     bool result = true;
     /*
     if (_num_inputs == 2) {
-        spdlog::info("Add");
+        spdlog::debug("Add");
     }
     */
 

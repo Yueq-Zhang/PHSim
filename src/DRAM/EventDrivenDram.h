@@ -4,7 +4,6 @@
 #define ENABLE_DRAM_ALIGNMENT_TRACE 0
 #endif
 
-#include "../DRAM/Dram.h"
 #include "../DRAM/IDramBackend.h"
 #include "../common_function.hpp"
 
@@ -12,7 +11,6 @@
 #include <array>
 #include <deque>
 #include <fstream>
-#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -23,6 +21,10 @@
 #include <vector>
 
 #define USE_PRIORITY_ROUND_ROBIN_EXECUTE_QUEUE
+
+namespace dramsim3 {
+class Config;
+}
 
 
 class PriorityRoundRobinEventScheduler {
@@ -298,9 +300,9 @@ private:
     }
 };
 
-// EventDrivenDram owns the small DRAM hierarchy it actually uses. These
-// declarations were previously pulled from src/NMC_System, but keeping them
-// here makes the event-driven model self-contained and avoids unused NMC code
+// EventDrivenDram owns the small DRAM hierarchy it actually uses. Keeping the
+// hierarchy beside its implementation makes the event-driven model
+// self-contained and prevents a second, divergent DRAM hierarchy.
 enum class RowBufPolicy {OPEN_PAGE, CLOSE_PAGE};
 
 class DRAMBank {
@@ -541,11 +543,19 @@ public:
                              uint64_t pending_before) {
 #if ENABLE_DRAM_ALIGNMENT_TRACE
         static std::ofstream trace = [] {
-            std::ofstream out(Config::system_config.log_dir +
-                                  "/read_merge_eventdriven.csv",
+            const std::string path = Config::system_config.log_dir +
+                                     "/read_merge_eventdriven.csv";
+            std::ofstream out(path,
                               std::ofstream::out | std::ofstream::trunc);
-            if (out.is_open()) {
-                out << "sequence,channel,merge_cycle,address,first_added_cycle,age_cycles,pending_before\n";
+            if (!out.is_open()) {
+                throw std::runtime_error(
+                    "Cannot open EventDriven read-merge trace: " + path);
+            }
+            out << "sequence,channel,merge_cycle,address,first_added_cycle,age_cycles,pending_before\n";
+            if (!out.good()) {
+                throw std::runtime_error(
+                    "Failed to write EventDriven read-merge trace header: " +
+                    path);
             }
             return out;
         }();
@@ -561,6 +571,10 @@ public:
                   << first_added_cycle << ','
                   << age_cycles << ','
                   << pending_before << '\n';
+            if (!trace.good()) {
+                throw std::runtime_error(
+                    "Failed to write EventDriven read-merge trace");
+            }
         }
 #else
         (void)address;
@@ -596,6 +610,14 @@ public:
     EventDrivenDram(const SysConfig& config,
                     DramDataContainer* data_container = nullptr);
     ~EventDrivenDram() override;
+    void advance_cycle(cycle_type current_cycle, size_t unstable_length,
+                       size_t sample_length,
+                       double instruction_ratio) override;
+    void synchronize_cycles(cycle_type skipped_cycles) override;
+    void prepare_request(MemoryAccess* request,
+                         cycle_type current_cycle) override;
+    void schedule_pending_work(uint32_t cid,
+                               cycle_type current_cycle) override;
     void push(uint32_t cid, MemoryAccess *req) override;  // Push Memory Access
     void pop(uint32_t cid) override;
 
@@ -645,26 +667,30 @@ public:
     std::vector<ResponseQueue> response_event_queues_;
 
     uint32_t get_channel_id(MemoryAccess *access) override;
-    double   get_avg_bw_util();
-    uint64_t get_avg_pim_cycle();
-    void     reset_pim_cycle();
-    void     log(Stage)           {}
-    void     print_stat()        ;
+    double   get_avg_bw_util() override;
+    uint64_t get_avg_pim_cycle() override;
+    void     reset_pim_cycle() override;
+    void     log(Stage) override {}
+    void     print_stat() override;
     void apply_estimated_workload(
         const ProportionalWorkloadStat& workload,
-        const std::vector<uint64_t>* write_command_override = nullptr);
-    void begin_proportional_command_sampling();
-    void mark_proportional_command_warmup_complete(double warmup_weight);
-    void apply_estimated_time(cycle_type skipped_dram_cycles);
-    void begin_decode_pruning_state_sample(const std::string& operation);
+        const std::vector<uint64_t>* write_command_override = nullptr) override;
+    void begin_proportional_command_sampling() override;
+    void mark_proportional_command_warmup_complete(
+        double warmup_weight) override;
+    void apply_estimated_time(cycle_type skipped_dram_cycles,
+                              bool physical_tail_pending) override;
+    void begin_decode_pruning_state_sample(
+        const std::string& operation) override;
     void finish_decode_pruning_state_sample(
-        const std::string& operation, uint32_t required_samples);
+        const std::string& operation, uint32_t required_samples) override;
     std::vector<uint64_t> decode_pruning_sampled_write_requests(
-        const std::string& operation) const;
+        const std::string& operation) const override;
     std::vector<uint64_t> decode_pruning_sampled_write_commands(
-        const std::string& operation) const;
+        const std::string& operation) const override;
     void apply_decode_pruning_state(
-        const std::string& operation, cycle_type skipped_dram_cycles);
+        const std::string& operation,
+        cycle_type skipped_dram_cycles) override;
 
 private:
 

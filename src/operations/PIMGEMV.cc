@@ -1,4 +1,5 @@
 #include "PIMGEMV.h"
+#include "SramTilingValidation.hpp"
 
 namespace {
 constexpr uint32_t kInstrAddrGranularityBytes = 1024;
@@ -195,7 +196,7 @@ std::vector<Ptr<MyTensor>> PIMGEMV::get_my_outputs(std::vector<Ptr<MyTensor>> in
             _my_inputs[i] = inputs[i];
             auto input_dims = _my_inputs[i]->get_dims();
             assert(*input_dims.rbegin() == *(_matrix_dim.rbegin() + 1));
-            spdlog::info("GEMM input index: {} / input size: {}", i, inputs[i]->get_dims());
+            spdlog::debug("GEMM input index: {} / input size: {}", i, inputs[i]->get_dims());
             // Compute output dimensions.
             std::vector<uint32_t> output_dims = {0, 0};
             *(output_dims.rbegin() + 1) = *(_my_inputs[i]->get_dims().rbegin() + 1);
@@ -216,7 +217,7 @@ std::vector<Ptr<MyTensor>> PIMGEMV::get_my_outputs(std::vector<Ptr<MyTensor>> in
                 auto K_dims = _my_weights[i]->get_dims();
                 output_dims={MyAddressAllocator::h, Q_dims[0], K_dims[0]};
                 _my_outputs[i] = std::make_shared<MyTensor>(_name + "_output", output_dims, output_tensor_type, false);
-                spdlog::info("The dimension of Batch {} QKT operation: input Tensor {} and {}, output Tensor {}",i, Q_dims,K_dims,output_dims);
+                spdlog::debug("The dimension of Batch {} QKT operation: input Tensor {} and {}, output Tensor {}",i, Q_dims,K_dims,output_dims);
             }
         }
         else if (matrix_tensor_type == TensorType::VCache) {
@@ -225,7 +226,7 @@ std::vector<Ptr<MyTensor>> PIMGEMV::get_my_outputs(std::vector<Ptr<MyTensor>> in
                 auto V_dims = _my_weights[i]->get_dims();
                 output_dims={S_dims[S_dims.size() - 2], MyAddressAllocator::h * MyAddressAllocator::d_k};
                 _my_outputs[i] = std::make_shared<MyTensor>(_name + "_output", output_dims, output_tensor_type, false);
-                spdlog::info("The dimension of Batch {} SV operation: input Tensor {} and {}, output Tensor {}",i, S_dims,V_dims,output_dims);
+                spdlog::debug("The dimension of Batch {} SV operation: input Tensor {} and {}, output Tensor {}",i, S_dims,V_dims,output_dims);
             }
         }
     }
@@ -264,10 +265,10 @@ std::vector<Ptr<MyTensor>> PIMGEMV::kvcache_append(std::vector<Ptr<MyTensor>> in
         _my_outputs[i]->Cache_capacity -= output_dim[0];
 
         if (_my_outputs[0]->_tensor_type == TensorType::KCache) {
-            spdlog::info("GEMV Result is append to Batch {} KCaches with cache length = {}", i, _my_outputs[0]->Cache_length);
+            spdlog::debug("GEMV Result is append to Batch {} KCaches with cache length = {}", i, _my_outputs[0]->Cache_length);
         }
         else if (_my_outputs[0]->_tensor_type == TensorType::VCache) {
-            spdlog::info("GEMV Result is append to Batch {} VCaches with cache length = {}", i, _my_outputs[0]->Cache_length);
+            spdlog::debug("GEMV Result is append to Batch {} VCaches with cache length = {}", i, _my_outputs[0]->Cache_length);
         }
         else {
             throw std::runtime_error("Invalid Number of PIM-GEMV Inputs");
@@ -296,12 +297,16 @@ void PIMGEMV::calculate_my_loops() {
         _inner_loop[0] = _prod_batches;
         _inner_loop[1] = input_dims[1];
 
-        while (sram_size_needed() > _config.spad_size KB / 2) {  // PIM
-            _outer_loop[0] *= 2;
-            _inner_loop[0] = (_inner_loop[0] & 1) + (_inner_loop[0] >> 1);
+        const uint64_t available_sram_bytes =
+            phsim::AvailablePingPongSramBytes(_config.spad_size);
+        while (sram_size_needed() > available_sram_bytes) {  // PIM
+            phsim::HalveSramTileDimensionAndDoubleCount(
+                _inner_loop, 0, _outer_loop, 0,
+                "PIMGEMV '" + _name + "'", sram_size_needed(),
+                available_sram_bytes);
         }
 
-        spdlog::info("For NPU side PIM_GEMV operation, inner_loop: {}, outer_loop {}", _inner_loop, _outer_loop);
+        spdlog::debug("For NPU side PIM_GEMV operation, inner_loop: {}, outer_loop {}", _inner_loop, _outer_loop);
         pim_gemv_granularity = std::min( _config.pim_PE_num, MyAddressAllocator::dram_burst_size / MyAddressAllocator::precision_weight);
         // pim_gemv_granularity = weight_rows_per_bank_row;
 
@@ -352,7 +357,7 @@ void PIMGEMV::calculate_my_loops() {
         assert(_pim_inner_loop[0] >= 1);
         _pim_outer_loop[0] = _batch_size / _pim_inner_loop[0];
 
-        spdlog::info("Current PIM Output Buffer size {} Byte, PIM Input Global Buffer size {} Byte, Corresponding to {} output {} inputs, "
+        spdlog::debug("Current PIM Output Buffer size {} Byte, PIM Input Global Buffer size {} Byte, Corresponding to {} output {} inputs, "
             "column_interleave = {}, weight_rows_per_bank_row = {}, Data in each Page is {}", pim_output_buffer_size, pim_global_input_buffer_size,
              pim_output_buffer_size/MyAddressAllocator::precision_weight, pim_global_input_buffer_size/MyAddressAllocator::precision_weight,
             column_interleave, weight_rows_per_bank_row, MyAddressAllocator::page_size_bytes / MyAddressAllocator::precision_weight);
@@ -422,7 +427,7 @@ void PIMGEMV::calculate_my_loops() {
         _pim_outer_loop[2] = std::ceil(static_cast<double>(_matrix_dim[1])/(_pim_inner_loop[2] * MyAddressAllocator::total_banks));
         // _pim_inner_loop[2] = std::floor(static_cast<double>(pim_output_buffer_size) / _my_outputs[0]->_precision);
         // _pim_outer_loop[2] = std::ceil(static_cast<double>(_matrix_dim[1])/ _pim_inner_loop[2]);
-        spdlog::info("For PIM side PIM_GEMV operation for Weight, inner_loop: {}, outer_loop {}. The actual inner_loop[2] with Total {} banks is = {}", _pim_inner_loop, _pim_outer_loop,
+        spdlog::debug("For PIM side PIM_GEMV operation for Weight, inner_loop: {}, outer_loop {}. The actual inner_loop[2] with Total {} banks is = {}", _pim_inner_loop, _pim_outer_loop,
             MyAddressAllocator::total_banks, _pim_inner_loop[2] * MyAddressAllocator::total_banks);
     }
     else if (matrix_tensor_type == TensorType::KCache) {
@@ -437,12 +442,17 @@ void PIMGEMV::calculate_my_loops() {
             _inner_loop[0] = input0_dims[0];
             _inner_loop[1] = input0_dims[1];
 
-            while (sram_size_needed() > _config.spad_size KB / 2) {
-                _outer_loop[0] *= 2;
-                _inner_loop[0] = (_inner_loop[0] & 1) + (_inner_loop[0] >> 1);
+            const uint64_t available_sram_bytes =
+                phsim::AvailablePingPongSramBytes(_config.spad_size);
+            while (sram_size_needed() > available_sram_bytes) {
+                phsim::HalveSramTileDimensionAndDoubleCount(
+                    _inner_loop, 0, _outer_loop, 0,
+                    "KCache PIMGEMV '" + _name + "'",
+                    sram_size_needed(), available_sram_bytes,
+                    "batch=" + std::to_string(i));
             }
-            spdlog::info("For NPU side PIM_GEMV operation, inner_loop: {}, outer_loop {}", _inner_loop, _outer_loop);
-            spdlog::info("PIM GEMV operation for QKT with {} attention head and {} length of each head", MyAddressAllocator::h, MyAddressAllocator::d_k);
+            spdlog::debug("For NPU side PIM_GEMV operation, inner_loop: {}, outer_loop {}", _inner_loop, _outer_loop);
+            spdlog::debug("PIM GEMV operation for QKT with {} attention head and {} length of each head", MyAddressAllocator::h, MyAddressAllocator::d_k);
             auto kcache_length = input1_dims[0];
             head_per_iteration = std::ceil(static_cast<double>(MyAddressAllocator::allocated_KCache_head_per_iteration) / MyAddressAllocator::dram_channels); 
             head_compute_iteration = std::ceil((double)MyAddressAllocator::h / MyAddressAllocator::allocated_KCache_head_per_iteration);
@@ -466,7 +476,7 @@ void PIMGEMV::calculate_my_loops() {
             // _pim_outer_loop[1] = std::ceil(static_cast<double>(_inner_loop[1]) / _pim_inner_loop[1]);
             _pim_inner_loop[2] = std::floor(static_cast<double>(pim_output_buffer_size) / _my_outputs[0]->_precision);
             _pim_outer_loop[2] = std::ceil(static_cast<double>(_matrix_dim[0]) / (_pim_inner_loop[2] * MyAddressAllocator::KCache_interleaved_banks_per_head));
-            spdlog::info("For PIM side PIM_GEMV operation, inner_loop: {}, outer_loop {}", _pim_inner_loop, _pim_outer_loop);
+            spdlog::debug("For PIM side PIM_GEMV operation, inner_loop: {}, outer_loop {}", _pim_inner_loop, _pim_outer_loop);
 
             _inner_loop_attn.push_back(_inner_loop);
             _outer_loop_attn.push_back(_outer_loop);
@@ -485,14 +495,20 @@ void PIMGEMV::calculate_my_loops() {
             _inner_loop[1] = input0_dims[2];
             _outer_loop.assign(1, 1);
 
-            while (sram_size_needed() > _config.spad_size KB / 2) {
-                _inner_loop[0] = (_inner_loop[0] & 1) + (_inner_loop[0] >> 1);
+            const uint64_t available_sram_bytes =
+                phsim::AvailablePingPongSramBytes(_config.spad_size);
+            while (sram_size_needed() > available_sram_bytes) {
+                phsim::HalveSramTileDimensionAndDoubleCount(
+                    _inner_loop, 0, _outer_loop, 0,
+                    "VCache PIMGEMV '" + _name + "'",
+                    sram_size_needed(), available_sram_bytes,
+                    "batch=" + std::to_string(i));
             }
 
             auto vcache_length = input0_dims[2];
 
-            spdlog::info("For NPU side PIM_GEMV operation, inner_loop: {}, outer_loop {}", _inner_loop, _outer_loop);
-            spdlog::info("PIM GEMV operation for SV with {} attention head and {} length of V Cache", MyAddressAllocator::h, vcache_length);
+            spdlog::debug("For NPU side PIM_GEMV operation, inner_loop: {}, outer_loop {}", _inner_loop, _outer_loop);
+            spdlog::debug("PIM GEMV operation for SV with {} attention head and {} length of V Cache", MyAddressAllocator::h, vcache_length);
 
             head_per_iteration = std::ceil(static_cast<double>(MyAddressAllocator::allocated_VCache_head_per_iteration) / MyAddressAllocator::dram_channels);
             head_compute_iteration = std::ceil((double)MyAddressAllocator::h / MyAddressAllocator::allocated_VCache_head_per_iteration);
@@ -523,7 +539,7 @@ void PIMGEMV::calculate_my_loops() {
             assert(pim_output_buffer_size / _my_outputs[0]->_precision >= MyAddressAllocator::VCache_columns_per_bank);
             _pim_inner_loop[2] = MyAddressAllocator::VCache_columns_per_bank;
             _pim_outer_loop[2] = std::ceil((double)MyAddressAllocator::d_k / (MyAddressAllocator::VCache_columns_per_bank * MyAddressAllocator::VCache_interleaved_banks_per_head));
-            spdlog::info("For PIM side PIM_GEMV operation, inner_loop: {}, outer_loop {}", _pim_inner_loop, _pim_outer_loop);
+            spdlog::debug("For PIM side PIM_GEMV operation, inner_loop: {}, outer_loop {}", _pim_inner_loop, _pim_outer_loop);
 
             // save batch information
             _inner_loop_attn.push_back(_inner_loop);
@@ -538,10 +554,10 @@ void PIMGEMV::calculate_my_loops() {
 
 }
 
-uint32_t PIMGEMV::sram_size_needed() {
+uint64_t PIMGEMV::sram_size_needed() {
     // batch number and vector length of current tensor
-    uint32_t m = _inner_loop[0];
-    uint32_t k = _inner_loop[1];
+    uint64_t m = _inner_loop[0];
+    uint64_t k = _inner_loop[1];
 
     return  m * k * _my_inputs[0]->_precision;
 }
@@ -735,7 +751,7 @@ Tile PIMGEMV::initialize_my_instructions(uint32_t npu_tile_index, uint32_t M, ui
         std::vector<addr_type> vector_addrs;
         uint32_t vector_index_size = 0;
         if (vector_indexes.empty()) {
-            spdlog::info("No valid activation tiles to load.");
+            spdlog::debug("No valid activation tiles to load.");
         }
         else {
             for (const auto& [batch_id, indexes] : vector_indexes) {
@@ -747,7 +763,7 @@ Tile PIMGEMV::initialize_my_instructions(uint32_t npu_tile_index, uint32_t M, ui
         }
 
         if (vector_addrs.empty()) {
-            // spdlog::info("zero load for activation / activation tensor dim: {}", vector_tensor->get_dims());
+            // spdlog::debug("zero load for activation / activation tensor dim: {}", vector_tensor->get_dims());
         }
         else {
             tile.instructions.push_back(Instruction{
@@ -908,7 +924,7 @@ Tile PIMGEMV::initialize_my_instructions(uint32_t npu_tile_index, uint32_t M, ui
             }
 
             if (output_indexes.empty()) {
-                spdlog::info("No valid output tiles to store.");
+                spdlog::debug("No valid output tiles to store.");
             } else {
                 for (const auto& [batch_id, indexes] : output_indexes) {
                     output_index_size += indexes.size();
@@ -920,7 +936,7 @@ Tile PIMGEMV::initialize_my_instructions(uint32_t npu_tile_index, uint32_t M, ui
 
         // MyAddressAllocator::check_addrs(output_addrs);
         std::string pim_movout_info = fmt::format("Store the PIM-GEMV Computation Result with {} times burst", output_addrs.size());
-        spdlog::info(pim_movout_info);
+        spdlog::debug(pim_movout_info);
         append_rope_if_enabled(tile.instructions, _apply_rope, sram_acc_addr,
                                output_index_size,
                                "Apply RoPE before storing PIM-GEMV projection");
@@ -934,7 +950,7 @@ Tile PIMGEMV::initialize_my_instructions(uint32_t npu_tile_index, uint32_t M, ui
             .inst_information = pim_movout_info
         });
     }
-    // spdlog::info("Tile initialized, NPU_tile_index {}, M = {}, N = {}, K = {}", npu_tile_index, M, N, K);
+    // spdlog::debug("Tile initialized, NPU_tile_index {}, M = {}, N = {}, K = {}", npu_tile_index, M, N, K);
     return tile;
 }
 
@@ -987,12 +1003,12 @@ Tile PIMGEMV::initialize_my_attention_instructions(uint32_t B, uint32_t npu_tile
             }
             std::vector<addr_type> vector_addrs = vector_tensor->generate_addrs_based_on_indexes(vector_indexes);
             if (vector_addrs.empty()) {
-                spdlog::info("zero load for activation / activation tensor dim: {}", vector_tensor->get_dims());
+                spdlog::debug("zero load for activation / activation tensor dim: {}", vector_tensor->get_dims());
             }
             else {
                 std::string pheader_info = fmt::format("Load Q Vector m = {}-{} and k = {}-{} for QKT PIM-GEMV operation",
                     vector_indexes.front()[0], vector_indexes.back()[0], vector_indexes.front()[1], vector_indexes.back()[1]);
-                spdlog::info(pheader_info);
+                spdlog::debug(pheader_info);
                 tile.instructions.push_back(Instruction{
                     .opcode = Opcode::MOVIN,
                     .dest_addr = sram_addr,
@@ -1009,7 +1025,7 @@ Tile PIMGEMV::initialize_my_attention_instructions(uint32_t B, uint32_t npu_tile
         std::string pheader_info = fmt::format("Start QKT PIM-GEMV Computation for head interation index {} with N = {} - {}",
             head_iteration_index, N * _pim_inner_loop_attn[B][2] * MyAddressAllocator::KCache_interleaved_banks_per_head,
             std::max((N+1) * _pim_inner_loop_attn[B][2] * MyAddressAllocator::KCache_interleaved_banks_per_head - 1, K_max-1));
-        spdlog::info(pheader_info);
+        spdlog::debug(pheader_info);
         tile.instructions.push_back(Instruction{
             .opcode = Opcode::PIM_HEADER,
             .dest_addr = 0,
@@ -1064,7 +1080,7 @@ Tile PIMGEMV::initialize_my_attention_instructions(uint32_t B, uint32_t npu_tile
 
         std::string pim_comp_info = fmt::format("QKT PIM-GEMV operation with {} COMP instructions for the K Cache with head iteration index {}, k = {}-{}, n = {}-{}",
             pim_comp_addrs.size(), head_iteration_index,pim_comp_indexes.front()[0], pim_comp_indexes.back()[0],pim_comp_indexes.front()[1], pim_comp_indexes.back()[1]);
-        // spdlog::info(pim_comp_info);
+        // spdlog::debug(pim_comp_info);
 
         if (MyAddressAllocator::virtual_mem_hash_enable) {
             PushHashedPIMCompInstructions(
@@ -1093,7 +1109,7 @@ Tile PIMGEMV::initialize_my_attention_instructions(uint32_t B, uint32_t npu_tile
             if (should_read) {
                 std::string pim_readers_info = fmt::format("Readers For QKT Result for head iteration index {}, n = {}-{}",
                 head_iteration_index, pim_comp_indexes.front()[1], pim_comp_indexes.back()[1]);
-                spdlog::info(pim_readers_info);
+                spdlog::debug(pim_readers_info);
                 uint32_t pim_readers_burst_times = std::ceil(pim_output_buffer_size * MyAddressAllocator::banks_per_channel / MyAddressAllocator::dram_burst_size);
                 tile.instructions.push_back(Instruction{
                     .opcode = Opcode::PIM_READRES,
@@ -1129,7 +1145,7 @@ Tile PIMGEMV::initialize_my_attention_instructions(uint32_t B, uint32_t npu_tile
             }
             // std::vector<addr_type> output_addrs = output_tensor->generate_addrs_based_on_indexes(output_indexes);
             std::string pim_movout_info = fmt::format("Store the QKT Computation Result with {} times burst", output_addrs.size());
-            spdlog::info(pim_movout_info);
+            spdlog::debug(pim_movout_info);
             tile.instructions.push_back(Instruction{
                 .opcode = Opcode::MOVOUT,
                 .dest_addr = sram_acc_addr,
@@ -1176,12 +1192,12 @@ Tile PIMGEMV::initialize_my_attention_instructions(uint32_t B, uint32_t npu_tile
             }
 
             if (vector_addrs.empty()) {
-                spdlog::info("zero load for activation / activation tensor dim: {}", vector_tensor->get_dims());
+                spdlog::debug("zero load for activation / activation tensor dim: {}", vector_tensor->get_dims());
             }
             else {
                 std::string pheader_info = fmt::format("Load S Vector m = {}-{} and k = {}-{} of {} heads for SV PIM-GEMV operation",
                     vector_indexes.front()[0], vector_indexes.back()[0], vector_indexes.front()[1], vector_indexes.back()[1], MyAddressAllocator::h);
-                spdlog::info(pheader_info);
+                spdlog::debug(pheader_info);
                 tile.instructions.push_back(Instruction{
                     .opcode = Opcode::MOVIN,
                     .dest_addr = sram_addr,
@@ -1197,7 +1213,7 @@ Tile PIMGEMV::initialize_my_attention_instructions(uint32_t B, uint32_t npu_tile
         std::string pheader_info = fmt::format("Start SV PIM-GEMV Computation for head interation index {} with K = {} - {} and N = {} - {}",
             head_iteration_index, K * _pim_inner_loop_attn[B][1], std::max((K+1) * _pim_inner_loop_attn[B][1], K_max-1),
             N * _pim_inner_loop_attn[B][2] * MyAddressAllocator::VCache_interleaved_banks_per_head, (N+1) * _pim_inner_loop_attn[B][2] * MyAddressAllocator::VCache_interleaved_banks_per_head - 1);
-        spdlog::info(pheader_info);
+        spdlog::debug(pheader_info);
         tile.instructions.push_back(Instruction{
             .opcode = Opcode::PIM_HEADER,
             .dest_addr = 0,
@@ -1255,7 +1271,7 @@ Tile PIMGEMV::initialize_my_attention_instructions(uint32_t B, uint32_t npu_tile
             pim_comp_addrs.size(),head_iteration_index,
             pim_comp_indexes.front()[0], pim_comp_indexes.back()[0],
             pim_comp_indexes.front()[1], pim_comp_indexes.back()[1]);
-        // spdlog::info(pim_comp_info);
+        // spdlog::debug(pim_comp_info);
         if (MyAddressAllocator::virtual_mem_hash_enable) {
             PushHashedPIMCompInstructions(
                 tile.instructions, sram_addr, pim_comp_addrs,
@@ -1283,7 +1299,7 @@ Tile PIMGEMV::initialize_my_attention_instructions(uint32_t B, uint32_t npu_tile
             if (should_read) {
                 std::string pim_readers_info = fmt::format("Readers For SV Result for head iteration index {}, n = {}-{}",
                 head_iteration_index, pim_comp_indexes.front()[1], pim_comp_indexes.back()[1]);
-                spdlog::info(pim_readers_info);
+                spdlog::debug(pim_readers_info);
                 uint32_t pim_readers_burst_times = std::ceil(pim_output_buffer_size * MyAddressAllocator::banks_per_channel / MyAddressAllocator::dram_burst_size);
                 tile.instructions.push_back(Instruction{
                     .opcode = Opcode::PIM_READRES,
@@ -1306,7 +1322,7 @@ Tile PIMGEMV::initialize_my_attention_instructions(uint32_t B, uint32_t npu_tile
             }
             auto output_addrs = output_tensor->generate_addrs_based_on_indexes(output_indexes);
             std::string pim_movout_info = fmt::format("Store the SV Computation Result with {} times burst", output_addrs.size());
-            spdlog::info(pim_movout_info);
+            spdlog::debug(pim_movout_info);
             tile.instructions.push_back(Instruction{ // MOVOUT
                 .opcode = Opcode::MOVOUT,
                 .dest_addr = sram_acc_addr,

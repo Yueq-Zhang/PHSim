@@ -1,16 +1,11 @@
 #pragma once
 
-#include "DRAM/EventDrivenDram.h"
-
-#include "DRAM/Dram.h"
 #include "DRAM/DramDataContainer.h"
 #include "DRAM/IDramBackend.h"
 #include "common_function.hpp"
 
 #include "Model/Model.h"
-#include "Interconnect/Interconnect.h"
 #include "Client/Client.h"
-#include "Core/Core.h"
 
 #include "Scheduler/MyScheduler.hpp"
 #include "Core/MyCore.hpp"
@@ -22,6 +17,8 @@
 #define DRAM_MASK 0x1 << 2
 #define ICNT_MASK 0x1 << 3
 
+class EventDrivenDram;
+
 class Simulator {
 public:
     Simulator(const SysConfig& config);
@@ -30,7 +27,6 @@ public:
     void launch_model(Ptr<Model> model);
     void run(std::string model_name);
 
-    // addr_type get_addr_align() { return _dram->get_addr_align(); }
     void cycle();
     bool running();
     void set_cycle_mask();
@@ -39,7 +35,7 @@ public:
     void log_stage_stat();
     void log_data_container_stat() const;
     void log_virtual_memory_stat() const;
-    void advance_accelerated_time(cycle_type target_core_cycle);
+    cycle_type advance_accelerated_time(cycle_type target_core_cycle);
 
     const SysConfig& _config;
 
@@ -75,10 +71,11 @@ public:
 
     DramMode _dram_mode;
     std::unique_ptr<DramDataContainer> _data_container;
-    std::unique_ptr<PIM> _dram; // std::unique_ptr<MemorySystem> _dram;
-    std::unique_ptr<EventDrivenDram> _event_driven_dram; // event driven dram structure
-    IDramBackend* _active_dram_backend = nullptr;
+    std::unique_ptr<IDramBackend> _dram_backend;
+    // Populated only by the optional CA-vs-ED trace comparison build.
+    std::unique_ptr<EventDrivenDram> _comparison_event_driven_dram;
     cycle_type _dram_cycle_count;
+    cycle_type _icnt_cycle_count;
 
     // 对于两种DRAM执行Trace的记录与对比
     std::vector<std::unique_ptr<MemoryAccess>> _event_driven_compare_copies;
@@ -91,15 +88,6 @@ public:
 
     std::unique_ptr<MyScheduler> _scheduler;
     std::unique_ptr<Client> _client;
-
-    // period information (us)
-    double _core_period;
-    double _icnt_period;
-    double _dram_period;
-    //
-    double _core_time;
-    double _icnt_time;
-    double _dram_time;
 
     addr_type _dram_ch_stride_size;
     uint64_t _core_cycles;
@@ -158,19 +146,5 @@ public:
 
     // ========== DRAM模式控制开关 ==========
     bool _use_event_dram = true;   // true=事件驱动, false=周期精确
-
-    // 当前这一轮事件发生的物理时刻（秒）
-    // 由 set_cycle_mask() 中的 minimum_time 得到
-    double _curr_event_time = 0.0;
-
-    // ED模式下：每个memory channel下一次最早允许被dram采样新trace的物理时刻
-    // 单位与 _core_time / _icnt_time / _dram_time 相同，都是绝对物理时间
-    std::vector<double> _ed_next_push_time;
-
-    // 将任意物理时刻 t 对齐到不早于 t 的第一个 dram 上升沿时刻”
-    double align_to_dram_edge(double t) const;
-
-    // 将已经对齐到dram边沿的物理时刻转换成 dram cycle 编号
-    cycle_type time_to_dram_cycle(double t) const;
 
 };

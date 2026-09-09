@@ -34,11 +34,11 @@ std::vector<Ptr<MyTensor>> Split::get_my_outputs(std::vector<Ptr<MyTensor>> inpu
 
     std::vector<uint32_t> output_dim(input_dim);
 
-    spdlog::info("Split input dim: {}", input->get_dims());
+    spdlog::debug("Split input dim: {}", input->get_dims());
     for (int i = 0; i < _units.size(); ++i) {
         auto output_dim_buf = output_dim;
         output_dim_buf[_dim] = _units[i];
-        spdlog::info("Split output dim: {}", output_dim_buf);
+        spdlog::debug("Split output dim: {}", output_dim_buf);
         _my_outputs[i] = std::make_shared<MyTensor>(_name + "_output" + std::to_string(i), output_dim_buf, TensorType::ACT, false);
     }
 

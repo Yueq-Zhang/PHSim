@@ -1,4 +1,5 @@
 #include "Add.h"
+#include "SramTilingValidation.hpp"
 
 Add::Add(std::string name) : Operation(name) {}
 
@@ -21,7 +22,7 @@ std::vector<Ptr<MyTensor>> Add::get_my_outputs(std::vector<Ptr<MyTensor>> inputs
         _my_inputs_2[i] = inputs[i+_batch_size];
         assert(_my_inputs_1[i]->get_dims() == _my_inputs_2[i]->get_dims());
         auto input_dims = _my_inputs_1[i]->get_dims();
-        spdlog::info("Add input index: {} / input size: {}", i, inputs[i]->get_dims());
+        spdlog::debug("Add input index: {} / input size: {}", i, inputs[i]->get_dims());
         _my_outputs[i] = std::make_shared<MyTensor>(_name + "_output", input_dims, output_tensor_type, false);
     }
 
@@ -51,11 +52,14 @@ void Add::calculate_my_loops() {
     _inner_loop[0] = input_dims[0];
     _inner_loop[1] = input_dims[1];
 
-    while (sram_size_needed() > _config.spad_size KB / 2) {
-        _outer_loop[0] *= 2;
-        _inner_loop[0] = (_inner_loop[0] & 1) + (_inner_loop[0] >> 1);
+    const uint64_t available_sram_bytes =
+        phsim::AvailablePingPongSramBytes(_config.spad_size);
+    while (sram_size_needed() > available_sram_bytes) {
+        phsim::HalveSramTileDimensionAndDoubleCount(
+            _inner_loop, 0, _outer_loop, 0, "Add '" + _name + "'",
+            sram_size_needed(), available_sram_bytes);
     }
-    spdlog::info("Add for {} batches, inner loop: {}, outer loop: {}", _batch_size, _inner_loop, _outer_loop);
+    spdlog::debug("Add for {} batches, inner loop: {}, outer loop: {}", _batch_size, _inner_loop, _outer_loop);
     /*
     _prod_batches = 1;
     for (size_t i = 0; i + 1 < _input_dim.size(); i++) {
@@ -262,12 +266,12 @@ Tile Add::initialize_my_instructions(uint32_t N) {
 }
 
 
-uint32_t Add::sram_size_needed() {
-    auto n = _inner_loop[0];
-    auto k = _inner_loop[1];
+uint64_t Add::sram_size_needed() {
+    uint64_t n = _inner_loop[0];
+    uint64_t k = _inner_loop[1];
     if (k % _config.core_width != 0) {
         k += _config.core_width - k % _config.core_width;
     }
 
-    return 3 * n * k * _config.precision;  // 两个输入，一个输出，一共×3
+    return 3ULL * n * k * _config.precision;  // 两个输入，一个输出，一共×3
 }

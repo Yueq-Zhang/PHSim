@@ -33,6 +33,7 @@
     "layout": "NHWC",
     "scheduler": "simple",
     "operation_log_output_path": "",
+    "log_level": "debug",
 
     "precision_weight": 2,
     "precision_activation": 2,

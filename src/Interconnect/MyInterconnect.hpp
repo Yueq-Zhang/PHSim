@@ -40,14 +40,6 @@ public:
 
 protected:
     const SysConfig& _config;
-    // period information (us) =  1 / MHZ
-    double _icnt_period;
-    double _dram_period;
-    uint32_t _icnt_freq;
-    uint32_t _dram_freq;
-    double _icnt_time;
-    double _dram_time;
-
     uint32_t _n_nodes;
     uint32_t _n_cores;
     uint32_t _n_memories;

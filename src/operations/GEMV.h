@@ -33,7 +33,7 @@ private:
 
     void calculate_attention_loops();
 
-    uint32_t sram_size_needed();
+    uint64_t sram_size_needed();
 
     bool cache_append;
 };
