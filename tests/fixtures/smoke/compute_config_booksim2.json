@@ -28,7 +28,7 @@
     "icnt_latency": 1,
     "icnt_freq": 400,
     "icnt_ctrl_size": 8,
-    "icnt_config_path": "configs/booksim2_configs/mesh_2x2.icnt",
+    "icnt_config_path": "../../../configs/booksim2_configs/mesh_2x2.icnt",
 
     "precision": 2,
     "layout": "NHWC",

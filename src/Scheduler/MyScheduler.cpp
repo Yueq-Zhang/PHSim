@@ -146,7 +146,6 @@ void MyScheduler::init_batches() {
             batch_size++;
         }
     }
-    //TODO:: Multi Batch Inference
 }
 
 
@@ -388,7 +387,6 @@ void MyScheduler::cycle() {
         init_batches();
     }
 
-    // TODO:: Multi-batch inference
     bool program_none = _model_program == nullptr;
     bool exist_request = !_breq.empty();
     if (program_none && exist_request) {   // has request but no program

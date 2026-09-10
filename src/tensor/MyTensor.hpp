@@ -69,15 +69,10 @@ public:
     // (burst containing chunk start), same mapping path as Activation via get_sequence_address.
     std::vector<addr_type> generate_weight_column_major_1kb_base_addrs(uint32_t k0, uint32_t n0, uint32_t k1, uint32_t n1, uint32_t granularity_bytes = 1024);
 
-    // std::vector<addr_type> generate_pim_addrs_based_on_vector_indexes(std::vector<uint32_t> indexes);
-    // std::vector<addr_type> generate_pim_addrs_based_on_kcache_indexes(uint32_t head_tile_index, std::vector<uint32_t> indexes);
-
     std::vector<addr_type> generate_pim_comp_addrs(std::vector<uint32_t> start_rows, std::vector<uint32_t> indexes);
     std::vector<addr_type> generate_pim_comp_addrs_attention(uint32_t head_iteration_index, std::vector<std::vector<uint32_t>> indexes);
 
     void cache_append();
-
-    uint32_t pim_output_elements_per_bank();
 
     void initial_data_container(DramDataContainer& data_container);
     void append_data_into_container(const std::vector<uint8_t>& data,

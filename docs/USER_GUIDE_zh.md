@@ -14,7 +14,7 @@ cmake --build build -j2
 ctest --test-dir build --output-on-failure
 ```
 
-配置文件中的相对路径按照程序启动时的工作目录解析。仓库提供的 Case 都以 `build/` 为工作目录，因此进入 `build/` 后运行；输出目录不存在时程序会自动创建：
+配置文件内部的相对路径统一按照“包含该字段的配置文件所在目录”解析，因此启动目录不会改变实际选择的计算、DRAM、PIM、模型、请求或BookSim配置。命令行的 `--simulation_config` 和 `--output_path` 仍相对于程序启动目录解析；输出目录不存在时程序会自动创建：
 
 ```bash
 cd build
@@ -104,7 +104,7 @@ JSON 顶层必须是对象；未知字段、缺失的必填字段、类型错误
 | `icnt_type` | 字符串 | 必填 | `simple` 使用原有固定延迟互连；`booksim2` 使用逐flit的BookSim 2网络模型。其他值在解析时拒绝。 |
 | `icnt_latency` | 无符号整数/互连周期 | 必填 | `simple`互连延迟，必须显式提供且大于0；BookSim的路由/分配/交换延迟由 `.icnt` 文件控制，该字段不再作为数据包固定延迟。 |
 | `icnt_freq` | 无符号整数/MHz | 必填 | 互连频率，必须大于0。 |
-| `icnt_config_path` | 字符串/路径 | `simple`时可省略 | `booksim2`时必填，指向BookSim INI格式配置；文件必须存在，拓扑端点数必须等于 `num_cores * dram_channels + dram_channels`。 |
+| `icnt_config_path` | 字符串/路径 | `simple`时可省略 | `booksim2`时必填，路径相对于当前计算配置JSON所在目录，指向BookSim INI格式配置；文件必须存在，拓扑端点数必须等于 `num_cores * dram_channels + dram_channels`。 |
 | `icnt_ctrl_size` | 无符号整数/byte | `8` | BookSim中不携带payload的请求/响应大小，必须大于0。WRITE/GWRITE请求和READ/READRES响应使用实际数据字节数。 |
 | `icnt_input_buffer_size` | 无符号整数/packet/node | `0`（无限） | 仅用于`simple`：每个源节点的输入队列容量。设为正数后，队列达到容量时`is_full()`向Core/DRAM返回背压；不得为负数。 |
 | `icnt_output_buffer_size` | 无符号整数/packet/node | `0`（无限） | 仅用于`simple`：每个目的节点的输出队列容量。设为正数后，目的队列满时数据包保留在源输入队列，并逐步向上游传播背压；不得为负数。 |
@@ -791,7 +791,7 @@ mkdir -p output/vm-dc-ca output/vm-dc-ed
 
 ### 6.8 BookSim互连
 
-仓库提供一个4端点的2×2 mesh小型case，对应1个核心、2个核心到DRAM通道端口和2个DRAM端口。该测试fixture中的路径相对仓库根目录，因此这一例从仓库根目录运行：
+仓库提供一个4端点的2×2 mesh小型case，对应1个核心、2个核心到DRAM通道端口和2个DRAM端口。fixture内部路径相对于各自配置文件解析；下面仅因为命令行中的可执行文件、主配置和输出路径写法而从仓库根目录运行：
 
 ```bash
 mkdir -p output/booksim-smoke
@@ -805,7 +805,7 @@ mkdir -p output/booksim-smoke
 ```json
 {
   "icnt_type": "booksim2",
-  "icnt_config_path": "configs/booksim2_configs/mesh_2x2.icnt",
+  "icnt_config_path": "../../../configs/booksim2_configs/mesh_2x2.icnt",
   "icnt_ctrl_size": 8
 }
 ```
@@ -848,7 +848,7 @@ ctest --test-dir . --output-on-failure -R "interconnect_backpressure|booksim2_(u
 运行前：
 
 1. 输出目录已创建且为空或使用新名称；
-2. 所有路径相对于 `build/` 有效；
+2. 主配置内的引用相对于主配置文件，`icnt_config_path`相对于计算配置文件；
 3. PIM `dram_channels` 等于INI `channels`；
 4. DRAM几何是2的幂且 `bus_width/device_width/BL`一致；
 5. `model_n_embd % model_n_head == 0`；

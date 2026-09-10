@@ -1436,14 +1436,6 @@ std::vector<Ptr<MyTensor>> StageProgram::test_decode_stage_ffn(std::vector<Ptr<M
 
 
 
-std::vector<Ptr<MyTensor>> StageProgram::test_llama_decode_stage_ffn(std::vector<Ptr<MyTensor>> inputs, int layer) {
-    throw std::logic_error(
-        "test_llama_decode_stage_ffn is not implemented");
-}
-
-
-
-
 Ptr<Operation> StageProgram::add_op(std::shared_ptr<Operation> op) {
     // spdlog::debug("operation {} added. add_op", op->get_name());
     _op_map[op->get_id()] = op;

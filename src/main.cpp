@@ -66,12 +66,39 @@ int main(int argc, char *argv[]) {
         });
 
     // load the config files
-    compute_die_config_path = simulation_config["compute_die_config_file_path"];
-    memory_config_path = simulation_config["DRAM_config_file_path"];
-    pim_config_path = simulation_config["PIM_config_file_path"];
-    inference_config_path= simulation_config["inference_config_file_path"];
-    model_config_path= simulation_config["model_config_file_path"];;
-    request_trace_file_path = simulation_config["request_file_path"];
+    const auto resolve_reference =
+        [&simulation_config_path](const std::string& configured_path,
+                                  const char* field) {
+            const auto resolved = phsim::ResolveConfigPath(
+                configured_path, simulation_config_path);
+            if (resolved.used_legacy_working_directory) {
+                spdlog::warn(
+                    "{} in '{}' uses deprecated working-directory-relative "
+                    "resolution; rewrite it relative to the simulation "
+                    "configuration file",
+                    field, simulation_config_path);
+            }
+            return resolved.path.string();
+        };
+
+    compute_die_config_path = resolve_reference(
+        simulation_config["compute_die_config_file_path"].get<std::string>(),
+        "compute_die_config_file_path");
+    memory_config_path = resolve_reference(
+        simulation_config["DRAM_config_file_path"].get<std::string>(),
+        "DRAM_config_file_path");
+    pim_config_path = resolve_reference(
+        simulation_config["PIM_config_file_path"].get<std::string>(),
+        "PIM_config_file_path");
+    inference_config_path = resolve_reference(
+        simulation_config["inference_config_file_path"].get<std::string>(),
+        "inference_config_file_path");
+    model_config_path = resolve_reference(
+        simulation_config["model_config_file_path"].get<std::string>(),
+        "model_config_file_path");
+    request_trace_file_path = resolve_reference(
+        simulation_config["request_file_path"].get<std::string>(),
+        "request_file_path");
 
     for (const auto& config_path : {
              std::pair<const char*, const std::string*>{

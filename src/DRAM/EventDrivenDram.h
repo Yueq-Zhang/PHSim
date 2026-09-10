@@ -315,7 +315,6 @@ public:
     void Precharge(std::shared_ptr<Event> event);
     void Read(std::shared_ptr<Event> event);
     void Write(std::shared_ptr<Event> event);
-    void PIM(std::shared_ptr<Event> event);
     void AddPendingPrechargeEvent(std::shared_ptr<Event> event);
     void PushPendingSwitchRow(std::shared_ptr<Event> event);
 
@@ -429,11 +428,6 @@ class DRAMChannel {
 public:
     DRAMChannel(MemConfig& mem_config, int channel_id);
     ~DRAMChannel();
-
-    void ScheduleTransaction() {}
-    void WriteBufferDrain() {}
-    void ArrangeWriteBufferDrain() {}
-    // void OtherRankTimingUpdate(uint64_t processing_cycle, bool is_write, int rank_id);
 
     void IssueActivateEvent(std::shared_ptr<Event> event);
     void IssuePrechargeEvent(std::shared_ptr<Event> event);

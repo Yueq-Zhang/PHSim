@@ -205,7 +205,16 @@ void SysConfig::initialize_compute_die_system_config(std::string sys_config_path
     icnt_output_buffer_size =
         read_optional_capacity("icnt_output_buffer_size");
     if (config.contains("icnt_config_path")) {
-        icnt_config_path = config["icnt_config_path"];
+        const auto resolved = phsim::ResolveConfigPath(
+            config["icnt_config_path"].get<std::string>(), sys_config_path);
+        icnt_config_path = resolved.path.string();
+        if (resolved.used_legacy_working_directory) {
+            spdlog::warn(
+                "icnt_config_path in '{}' uses deprecated "
+                "working-directory-relative resolution; rewrite it relative "
+                "to the compute configuration file",
+                sys_config_path);
+        }
     }
     if (icnt_type == IcntType::BOOKSIM2 && icnt_config_path.empty()) {
         throw std::invalid_argument(

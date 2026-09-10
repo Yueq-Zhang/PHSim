@@ -89,15 +89,8 @@ void Operation::set_as_parent_tensor(std::vector<Ptr<MyTensor>> inputs) {
 }
 
 void Operation::reduce_tile(Tile &tile) {
-    // xxx is it necessary?
-    // _op_stat.tile_stats.push_back(tile.stat);
     _stat.update_stat(tile.stat);
 }
-
-// xxx no need for this operation. pass it to _stat->repr()
-// std::string Operation::repr() {
-//     return _stat.repr();
-// }
 
 Operation::Operation(const Operation &operation) {
     _id = operation._id;

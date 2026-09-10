@@ -67,10 +67,11 @@ manually from the Actions page.
 
 ## Run a simulation
 
-Relative paths inside a simulation JSON are resolved against the process's
-working directory. The normal cases under `configs/Cases/` are written for a
-process launched from `build/`. Create the output directory, enter the build
-directory, and launch the simulator from there:
+Relative paths stored in a configuration file are resolved against the
+directory containing that file. The launch directory therefore does not change
+which compute, memory, model, request, or BookSim configuration is selected.
+The command-line `--simulation_config` and `--output_path` arguments remain
+relative to the process working directory. For example:
 
 ```bash
 mkdir -p output/nano
@@ -324,14 +325,15 @@ To select BookSim, set the compute configuration to:
 ```json
 {
   "icnt_type": "booksim2",
-  "icnt_config_path": "../configs/booksim2_configs/mesh_2x2.icnt",
+  "icnt_config_path": "../booksim2_configs/mesh_2x2.icnt",
   "icnt_ctrl_size": 8
 }
 ```
 
-Adjust the path to match the process working directory and the selected
-topology. A normal BookSim run should finish with equal injected/ejected packet
-and payload-byte counts in `booksim2_stats.json`.
+This example assumes the compute JSON is under `configs/compute_die_config/`;
+select the relative path for that file and the desired topology. A normal
+BookSim run should finish with equal
+injected/ejected packet and payload-byte counts in `booksim2_stats.json`.
 
 ## Repository layout
 

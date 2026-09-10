@@ -67,7 +67,6 @@ class StageProgram {
 
     // new generate blocks for llama model
     std::vector<Ptr<MyTensor>> test_llama_ffn_block(std::vector<Ptr<MyTensor>> inputs, int layer);
-    std::vector<Ptr<MyTensor>> test_llama_decode_stage_ffn(std::vector<Ptr<MyTensor>> inputs, int layer);
     std::vector<Ptr<MyTensor>> test_llama_attn_block(std::vector<Ptr<MyTensor>> inputs, int layer);
     std::vector<Ptr<MyTensor>> test_llama_decode_stage_atten(std::vector<Ptr<MyTensor>> inputs, int layer);
 };

@@ -492,11 +492,6 @@ void DRAMBank::Write(std::shared_ptr<Event> event) {
 }
 
 
-void DRAMBank::PIM(std::shared_ptr<Event> event) {
-    // TODO::PIM Operation is not support
-}
-
-
 void DRAMBank::AddPendingPrechargeEvent(std::shared_ptr<Event> event) {
     const bool row_has_pending_events = pending_precharge_event.find(event->row_index) != pending_precharge_event.end();
     const bool row_already_ordered = std::find(pending_precharge_order_queue.begin(), pending_precharge_order_queue.end(), event->row_index) != pending_precharge_order_queue.end();
@@ -3202,7 +3197,7 @@ void EventDrivenDram::print_stat() {
     for (uint32_t cid = 0; cid < _stats.size(); ++cid) {
         accumulate_background_cycles(cid, _memsys->dram_channels[cid]->_dram_cycle);
     }
-    write_event_driven_stats(true);  // TODO::
+    write_event_driven_stats(true);
 
     const auto &mem_config = _memsys->config_;
     const int num_channels = mem_config.channels;

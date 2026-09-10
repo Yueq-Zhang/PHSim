@@ -594,4 +594,14 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
         booksim2_full_simulation_smoke_test PROPERTIES TIMEOUT 60)
+
+    add_test(
+        NAME config_relative_path_test
+        COMMAND ${CMAKE_COMMAND}
+            -DSIMULATOR=$<TARGET_FILE:NMC_Simulator>
+            -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -DBINARY_DIR=${PROJECT_BINARY_DIR}
+            -P ${PROJECT_SOURCE_DIR}/tests/config_relative_path_test.cmake
+    )
+    set_tests_properties(config_relative_path_test PROPERTIES TIMEOUT 30)
 endif()

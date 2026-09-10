@@ -1644,25 +1644,6 @@ std::vector<addr_type> MyTensor::generate_weight_column_major_1kb_base_addrs(uin
 
 
 
-uint32_t MyTensor::pim_output_elements_per_bank() {
-    // TODO:: Incomplete and Unused
-    uint32_t pim_result_elements_per_bank = 0;
-    if (_tensor_type == TensorType::WGT) {
-        pim_result_elements_per_bank = MyAddressAllocator::bank_allocated_columns_per_tile * allocate_rows.size();
-    }
-    else if (_tensor_type == TensorType::KCache) {
-        pim_result_elements_per_bank = std::ceil((double)_dims[0] / (MyAddressAllocator::KCache_interleaved_banks_per_head * MyAddressAllocator::dram_channels));
-    }
-    else if (_tensor_type == TensorType::VCache) {
-        pim_result_elements_per_bank = std::ceil((double)MyAddressAllocator::d_k / (MyAddressAllocator::VCache_interleaved_banks_per_head * MyAddressAllocator::dram_channels));
-    }
-    else {
-        throw std::runtime_error("unsupported tensor type");
-    }
-    return pim_result_elements_per_bank;
-}
-
-
 void MyTensor::initial_data_container(DramDataContainer& data_container) {
     // The instance-owned container is sparse: an untouched tensor already
     // reads as zero, so allocating complete DRAM rows here is unnecessary.

@@ -31,6 +31,7 @@
 
 #include "json.hpp"
 #include "INIReader.h"
+#include "config_path.hpp"
 #include "dram_geometry.hpp"
 
 #include <spdlog/fmt/ranges.h>
@@ -1618,7 +1619,6 @@ typedef struct OperationStat {
     uint64_t memory_reads;
     uint64_t memory_writes;
 
-    // TODO: count num_calculation for vector operations
     uint64_t num_calculation;
 
     uint64_t measured_tiles;
