@@ -5,6 +5,9 @@ with conventional DRAM and processing-in-memory (PIM) support. It models the
 compute cores, interconnect, memory allocation, transformer operations, and two
 DRAM execution backends.
 
+This repository provides the code implementation for the AICAS 2026 paper
+**PHSim: An Efficient Simulator for LLM Inference on PIM-based Heterogeneous Systems**.
+
 PHSim is an independent open-source research project. It is not an official
 Intel product and is not affiliated with or endorsed by Intel.
 
